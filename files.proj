@@ -1,3 +1,4 @@
+"./.gitconfig"
 "./dev.gdio.diff"
 "./docker-compose.yml"
 "./find_large_files_with_cache.go"
