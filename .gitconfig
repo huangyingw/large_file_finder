@@ -3,3 +3,6 @@
 	fetch = +refs/heads/*:refs/remotes/origin/*
 [push]
     remote = origin
+[gsync]
+    remote = origin
+    target = origin/dev
