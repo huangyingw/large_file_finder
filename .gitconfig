@@ -1,0 +1,5 @@
+[remote "origin"]
+	url = git@github.com:huangyingw/large_file_finder.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[push]
+    remote = origin
