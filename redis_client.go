@@ -1,3 +1,4 @@
+// redis_client.go
 package main
 
 import (
@@ -70,4 +71,33 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 		}
 	}
 	return nil
+}
+
+// getAllFileHashes 从Redis中检索所有文件的哈希值及其对应的路径。
+func getAllFileHashes(rdb *redis.Client, ctx context.Context) (map[string][]string, error) {
+	fileHashes := make(map[string][]string)
+
+	// Scan用于查找所有哈希键
+	iter := rdb.Scan(ctx, 0, "hash:*", 0).Iterator()
+	for iter.Next(ctx) {
+		hashKey := iter.Val()
+		// 获取原始的hashedKey
+		hashedKey := strings.TrimPrefix(hashKey, "hash:")
+
+		// 获取与hashedKey相关的文件路径
+		filePath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
+		if err != nil {
+			// 处理错误
+			continue
+		}
+
+		// 提取哈希值
+		hashValue := strings.TrimPrefix(hashKey, "hash:")
+		fileHashes[hashValue] = append(fileHashes[hashValue], filePath)
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+
+	return fileHashes, nil
 }
