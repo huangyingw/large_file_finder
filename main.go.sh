@@ -11,6 +11,7 @@ go get -u github.com/mattn/go-zglob/fastwalk
 go get -u github.com/karrick/godirwalk
 
 #docker-compose down -v
+#docker-compose restart
 docker-compose up -d
 
 go run . /media
