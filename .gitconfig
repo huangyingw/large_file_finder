@@ -1,6 +1,6 @@
 [remote "origin"]
-	url = git@github.com:huangyingw/large_file_finder.git
-	fetch = +refs/heads/*:refs/remotes/origin/*
+    url = git@github.com:huangyingw/efficient_file_scanner.git
+    fetch = +refs/heads/*:refs/remotes/origin/*
 [push]
     remote = origin
 [gsync]
