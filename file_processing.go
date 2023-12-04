@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"github.com/go-redis/redis/v8"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -56,8 +57,18 @@ func saveToFile(dir, filename string, sortByModTime bool) error {
 	return nil
 }
 
-func processFile(path string, typ os.FileMode) {
-	if typ.IsDir() {
+func processFile(path string, typ os.FileMode, rdb *redis.Client) {
+	// 生成文件路径的哈希作为键
+	hashedKey := generateHash(path)
+
+	// 检查Redis中是否已存在该文件的信息
+	exists, err := rdb.Exists(ctx, hashedKey).Result()
+	if err != nil {
+		// 处理错误情况
+		return
+	}
+	if exists > 0 {
+		// 文件已存在于Redis中，跳过处理
 		return
 	}
 
@@ -75,7 +86,7 @@ func processFile(path string, typ os.FileMode) {
 	}
 
 	// Generate hash for the file path
-	hashedKey := generateHash(path)
+	hashedKey = generateHash(path)
 
 	// 使用管道批量处理Redis命令
 	pipe := rdb.Pipeline()
