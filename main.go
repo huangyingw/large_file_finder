@@ -21,7 +21,6 @@ var rdb *redis.Client     // Redis client
 var ctx = context.Background()
 
 func main() {
-	// 主函数，程序入口
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: ./find_large_files_with_cache <directory>")
 		return
