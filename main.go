@@ -10,6 +10,7 @@ import (
 	"github.com/karrick/godirwalk"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync/atomic"
 	"time"
 )
@@ -17,18 +18,58 @@ import (
 var progressCounter int32 // Progress counter
 
 func main() {
-	startTime := time.Now().Unix() // 记录当前时间的Unix时间戳
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: ./find_large_files_with_cache <directory>")
+	startTime := time.Now().Unix()
+	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, err := initializeApp(os.Args)
+	if err != nil {
+		fmt.Println(err)
 		return
 	}
 
-	// 将context和redis客户端设置为局部变量
-	ctx := context.Background()
-	rdb := newRedisClient(ctx)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go monitorProgress(ctx, &progressCounter)
+
+	workerCount := 20
+	taskQueue, poolWg := NewWorkerPool(workerCount)
+
+	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
+
+	close(taskQueue)
+	poolWg.Wait()
+	fmt.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
+
+	err = cleanUpOldRecords(rdb, ctx, startTime)
+	if err != nil {
+		fmt.Println("Error cleaning up old records:", err)
+	}
+
+	// 文件处理完成后的保存操作
+	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
+	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
+}
+
+// 初始化Redis客户端
+func newRedisClient(ctx context.Context) *redis.Client {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379", // 该地址应从配置中获取
+	})
+	_, err := rdb.Ping(ctx).Result()
+	if err != nil {
+		fmt.Println("Error connecting to Redis:", err)
+		os.Exit(1)
+	}
+	return rdb
+}
+
+// initializeApp 初始化应用程序设置
+func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Client, context.Context, error) {
+	if len(args) < 2 {
+		return "", 0, nil, nil, nil, fmt.Errorf("usage: ./find_large_files_with_cache <directory>")
+	}
 
 	// Root directory to start the search
-	rootDir := os.Args[1]
+	rootDir := args[1]
 
 	// Minimum file size in bytes
 	minSize := 200 // Default size is 200MB
@@ -36,33 +77,20 @@ func main() {
 
 	excludeRegexps, err := compileExcludePatterns(filepath.Join(rootDir, "exclude_patterns.txt"))
 	if err != nil {
-		fmt.Println(err)
-		return
+		return "", 0, nil, nil, nil, err
 	}
 
-	// 创建一个可以取消的context
-	progressCtx, cancel := context.WithCancel(ctx)
-	defer cancel() // 确保在main函数结束时调用cancel
+	// 创建 Redis 客户端
+	ctx := context.Background()
+	rdb := newRedisClient(ctx)
 
-	go func() {
-		for {
-			select {
-			case <-progressCtx.Done(): // 检查context是否被取消
-				return
-			case <-time.After(1 * time.Second):
-				fmt.Printf("Progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
-			}
-		}
-	}()
+	return rootDir, minSizeBytes, excludeRegexps, rdb, ctx, nil
+}
 
-	// Use godirwalk.Walk instead of fastwalk.Walk or filepath.Walk
-	// 初始化工作池
-	workerCount := 20 // 可以根据需要调整工作池的大小
-	taskQueue, poolWg := NewWorkerPool(workerCount)
-
-	// 使用 godirwalk.Walk 遍历文件
-	err = godirwalk.Walk(rootDir, &godirwalk.Options{
-		Callback: func(osPathname string, de *godirwalk.Dirent) error {
+// walkFiles 遍历指定目录下的文件，并根据条件进行处理
+func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Regexp, taskQueue chan<- Task, rdb *redis.Client, ctx context.Context, startTime int64) error {
+	return godirwalk.Walk(rootDir, &godirwalk.Options{
+		Callback: func(osPathname string, dirent *godirwalk.Dirent) error {
 			// 排除模式匹配
 			for _, re := range excludeRegexps {
 				if re.MatchString(osPathname) {
@@ -93,36 +121,24 @@ func main() {
 					fmt.Printf("Skipping unknown type: %s\n", osPathname)
 				}
 			}
-
 			return nil
 		},
-		Unsorted: true,
+		Unsorted: true, // 设置为true以提高性能
 	})
-
-	// 关闭任务队列，并等待所有任务完成
-	close(taskQueue)
-	poolWg.Wait()
-	fmt.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
-
-	err = cleanUpOldRecords(rdb, ctx, startTime)
-	if err != nil {
-		fmt.Println("Error cleaning up old records:", err)
-	}
-
-	// 文件处理完成后的保存操作
-	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
-	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
 }
 
-// 初始化Redis客户端
-func newRedisClient(ctx context.Context) *redis.Client {
-	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379", // 该地址应从配置中获取
-	})
-	_, err := rdb.Ping(ctx).Result()
-	if err != nil {
-		fmt.Println("Error connecting to Redis:", err)
-		os.Exit(1)
+// monitorProgress 在给定的上下文中定期打印处理进度
+func monitorProgress(ctx context.Context, progressCounter *int32) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done(): // 检查上下文是否被取消
+			return
+		case <-ticker.C: // 每秒触发一次
+			processed := atomic.LoadInt32(progressCounter)
+			fmt.Printf("Progress: %d files processed.\n", processed)
+		}
 	}
-	return rdb
 }
