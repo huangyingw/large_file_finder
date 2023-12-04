@@ -3,6 +3,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/gob"
 	"fmt"
 	"github.com/go-redis/redis/v8"
@@ -11,7 +12,7 @@ import (
 	"sync/atomic"
 )
 
-func saveToFile(dir, filename string, sortByModTime bool) error {
+func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
 	file, err := os.Create(filepath.Join(dir, filename))
 	if err != nil {
 		return err
@@ -57,7 +58,7 @@ func saveToFile(dir, filename string, sortByModTime bool) error {
 	return nil
 }
 
-func processFile(path string, typ os.FileMode, rdb *redis.Client) {
+func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context) {
 	// Update progress counter atomically
 	atomic.AddInt32(&progressCounter, 1)
 	// 生成文件路径的哈希作为键
