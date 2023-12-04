@@ -88,7 +88,7 @@ func main() {
 				if fileInfo.Mode().IsDir() {
 					processDirectory(osPathname)
 				} else if fileInfo.Mode().IsRegular() {
-					processFile(osPathname, fileInfo.Mode())
+					processFile(osPathname, fileInfo.Mode(), rdb)
 				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
 					processSymlink(osPathname)
 				} else {
