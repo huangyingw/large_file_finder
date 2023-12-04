@@ -68,3 +68,36 @@ func performSaveOperation(rootDir, filename string, sortByModTime bool, rdb *red
 		fmt.Printf("Saved data to %s\n", filepath.Join(rootDir, filename))
 	}
 }
+
+func writeLinesToFile(filename string, lines []string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	for _, line := range lines {
+		if _, err := fmt.Fprintln(file, line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func findAndLogDuplicates(rdb *redis.Client, ctx context.Context) error {
+	hashes, err := getAllFileHashes(rdb, ctx)
+	if err != nil {
+		return err
+	}
+
+	var lines []string
+	for hash, paths := range hashes {
+		if len(paths) > 1 {
+			lines = append(lines, fmt.Sprintf("Duplicate files for hash %s:", hash))
+			lines = append(lines, paths...) // 将所有重复文件的路径添加到列表中
+		}
+	}
+
+	// 使用 writeLinesToFile 来写入文件
+	return writeLinesToFile("fav.log.dup", lines)
+}
