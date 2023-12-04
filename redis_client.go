@@ -62,11 +62,21 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 			pipe.Del(ctx, hashedKey)         // 删除与hashedKey相关的数据
 			pipe.Del(ctx, "path:"+hashedKey) // 删除与path:hashedKey相关的数据
 
+			// 获取文件哈希值
+			fileHash, err := rdb.Get(ctx, "hash:"+hashedKey).Result()
+			if err != nil {
+				fmt.Printf("Error retrieving file hash for key %s: %s\n", hashedKey, err)
+			} else {
+				fmt.Printf("Deleting record with hash %s\n", fileHash)
+			}
+
+			pipe.Del(ctx, "hash:"+hashedKey) // 删除与文件哈希值相关的键
+
 			_, err = pipe.Exec(ctx)
 			if err != nil {
 				fmt.Printf("Error deleting keys for outdated record %s: %s\n", hashedKey, err)
 			} else {
-				fmt.Printf("Deleted outdated record: path=%s, size=%d, modTime=%s\n", filePath, fileInfo.Size, fileInfo.ModTime)
+				fmt.Printf("Deleted outdated record: path=%s, size=%d, modTime=%s, hash=%s\n", filePath, fileInfo.Size, fileInfo.ModTime, fileHash)
 			}
 		}
 	}
