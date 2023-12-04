@@ -58,20 +58,25 @@ func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx
 	return nil
 }
 
-func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context) {
+func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context, startTime int64) {
 	// Update progress counter atomically
 	atomic.AddInt32(&progressCounter, 1)
+
 	// 生成文件路径的哈希作为键
 	hashedKey := generateHash(path)
 
 	// 检查Redis中是否已存在该文件的信息
 	exists, err := rdb.Exists(ctx, hashedKey).Result()
 	if err != nil {
-		// 处理错误情况
+		fmt.Printf("Error checking existence in Redis for file %s: %s\n", path, err)
 		return
 	}
 	if exists > 0 {
-		// 文件已存在于Redis中，跳过处理
+		// 文件已存在于Redis中，更新其更新时间戳
+		_, err := rdb.Set(ctx, "updateTime:"+hashedKey, startTime, 0).Result()
+		if err != nil {
+			fmt.Printf("Error updating updateTime for file %s: %s\n", path, err)
+		}
 		return
 	}
 
@@ -88,15 +93,13 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		return
 	}
 
-	// Generate hash for the file path
-	hashedKey = generateHash(path)
-
 	// 使用管道批量处理Redis命令
 	pipe := rdb.Pipeline()
 
 	// 这里我们添加命令到管道，但不立即检查错误
 	pipe.Set(ctx, hashedKey, buf.Bytes(), 0)
 	pipe.Set(ctx, "path:"+hashedKey, path, 0)
+	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
 
 	if _, err = pipe.Exec(ctx); err != nil {
 		fmt.Printf("Error executing pipeline for file: %s: %s\n", path, err)
