@@ -113,7 +113,6 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		fmt.Printf("Error executing pipeline for file: %s: %s\n", path, err)
 		return
 	}
-
 }
 
 func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bool) string {
