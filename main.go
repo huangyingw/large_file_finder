@@ -10,8 +10,6 @@ import (
 	"github.com/karrick/godirwalk"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -35,27 +33,24 @@ func main() {
 	minSize := 200 // Default size is 200MB
 	minSizeBytes := int64(minSize * 1024 * 1024)
 
-	excludePatterns, err := loadExcludePatterns(filepath.Join(rootDir, "exclude_patterns.txt"))
+	excludeRegexps, err := compileExcludePatterns(filepath.Join(rootDir, "exclude_patterns.txt"))
 	if err != nil {
-		fmt.Println("Warning: Could not read exclude patterns:", err)
+		fmt.Println(err)
+		return
 	}
 
-	excludeRegexps := make([]*regexp.Regexp, len(excludePatterns))
-	for i, pattern := range excludePatterns {
-		// 将通配符模式转换为正则表达式
-		regexPattern := strings.Replace(pattern, "*", ".*", -1)
-		excludeRegexps[i], err = regexp.Compile(regexPattern)
-		if err != nil {
-			fmt.Printf("Invalid regex pattern '%s': %s\n", regexPattern, err)
-			return
-		}
-	}
+	// 创建一个可以取消的context
+	progressCtx, cancel := context.WithCancel(ctx)
+	defer cancel() // 确保在main函数结束时调用cancel
 
-	// Start a goroutine to periodically print progress
 	go func() {
 		for {
-			time.Sleep(1 * time.Second)
-			fmt.Printf("Progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
+			select {
+			case <-progressCtx.Done(): // 检查context是否被取消
+				return
+			case <-time.After(1 * time.Second):
+				fmt.Printf("Progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
+			}
 		}
 	}()
 
@@ -109,17 +104,8 @@ func main() {
 	fmt.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
 
 	// 文件处理完成后的保存操作
-	if err := saveToFile(rootDir, "fav.log", false, rdb, ctx); err != nil {
-		fmt.Printf("Error saving to fav.log: %s\n", err)
-	} else {
-		fmt.Printf("Saved data to %s\n", filepath.Join(rootDir, "fav.log"))
-	}
-
-	if err := saveToFile(rootDir, "fav.log.sort", true, rdb, ctx); err != nil {
-		fmt.Printf("Error saving to fav.log.sort: %s\n", err)
-	} else {
-		fmt.Printf("Saved sorted data to %s\n", filepath.Join(rootDir, "fav.log.sort"))
-	}
+	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
+	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
 }
 
 // 初始化Redis客户端
