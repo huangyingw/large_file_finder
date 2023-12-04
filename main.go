@@ -17,6 +17,7 @@ import (
 var progressCounter int32 // Progress counter
 
 func main() {
+	startTime := time.Now().Unix() // 记录当前时间的Unix时间戳
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: ./find_large_files_with_cache <directory>")
 		return
@@ -85,7 +86,7 @@ func main() {
 				if fileInfo.Mode().IsDir() {
 					processDirectory(osPathname)
 				} else if fileInfo.Mode().IsRegular() {
-					processFile(osPathname, fileInfo.Mode(), rdb, ctx)
+					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime)
 				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
 					processSymlink(osPathname)
 				} else {
@@ -102,6 +103,11 @@ func main() {
 	close(taskQueue)
 	poolWg.Wait()
 	fmt.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
+
+	err = cleanUpOldRecords(rdb, ctx, startTime)
+	if err != nil {
+		fmt.Println("Error cleaning up old records:", err)
+	}
 
 	// 文件处理完成后的保存操作
 	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
