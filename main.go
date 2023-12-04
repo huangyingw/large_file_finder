@@ -17,14 +17,16 @@ import (
 )
 
 var progressCounter int32 // Progress counter
-var rdb *redis.Client     // Redis client
-var ctx = context.Background()
 
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: ./find_large_files_with_cache <directory>")
 		return
 	}
+
+	// 将context和redis客户端设置为局部变量
+	ctx := context.Background()
+	rdb := newRedisClient(ctx)
 
 	// Root directory to start the search
 	rootDir := os.Args[1]
@@ -88,7 +90,7 @@ func main() {
 				if fileInfo.Mode().IsDir() {
 					processDirectory(osPathname)
 				} else if fileInfo.Mode().IsRegular() {
-					processFile(osPathname, fileInfo.Mode(), rdb)
+					processFile(osPathname, fileInfo.Mode(), rdb, ctx)
 				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
 					processSymlink(osPathname)
 				} else {
@@ -107,27 +109,28 @@ func main() {
 	fmt.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
 
 	// 文件处理完成后的保存操作
-	if err := saveToFile(rootDir, "fav.log", false); err != nil {
+	if err := saveToFile(rootDir, "fav.log", false, rdb, ctx); err != nil {
 		fmt.Printf("Error saving to fav.log: %s\n", err)
 	} else {
 		fmt.Printf("Saved data to %s\n", filepath.Join(rootDir, "fav.log"))
 	}
 
-	if err := saveToFile(rootDir, "fav.log.sort", true); err != nil {
+	if err := saveToFile(rootDir, "fav.log.sort", true, rdb, ctx); err != nil {
 		fmt.Printf("Error saving to fav.log.sort: %s\n", err)
 	} else {
 		fmt.Printf("Saved sorted data to %s\n", filepath.Join(rootDir, "fav.log.sort"))
 	}
 }
 
-// Initialize Redis client
-func init() {
-	rdb = redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
+// 初始化Redis客户端
+func newRedisClient(ctx context.Context) *redis.Client {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379", // 该地址应从配置中获取
 	})
 	_, err := rdb.Ping(ctx).Result()
 	if err != nil {
 		fmt.Println("Error connecting to Redis:", err)
 		os.Exit(1)
 	}
+	return rdb
 }
