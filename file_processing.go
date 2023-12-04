@@ -58,6 +58,8 @@ func saveToFile(dir, filename string, sortByModTime bool) error {
 }
 
 func processFile(path string, typ os.FileMode, rdb *redis.Client) {
+	// Update progress counter atomically
+	atomic.AddInt32(&progressCounter, 1)
 	// 生成文件路径的哈希作为键
 	hashedKey := generateHash(path)
 
@@ -100,8 +102,6 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client) {
 		return
 	}
 
-	// Update progress counter atomically
-	atomic.AddInt32(&progressCounter, 1)
 }
 
 func processDirectory(path string) {
