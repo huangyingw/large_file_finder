@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -124,17 +125,22 @@ func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bo
 }
 
 // calculateFileHash 计算文件的SHA-256哈希值
-func calculateFileHash(filePath string) (string, error) {
-	file, err := os.Open(filePath)
+func calculateFileHash(path string) (string, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 
+	const readLimit = 4 * 1024 // 限制读取的数据量为 4 KB
+	reader := bufio.NewReaderSize(file, readLimit)
+	limitedReader := io.LimitReader(reader, readLimit)
+
 	hasher := sha256.New()
-	if _, err := io.Copy(hasher, file); err != nil {
+	if _, err := io.Copy(hasher, limitedReader); err != nil {
 		return "", err
 	}
+
 	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
 }
 
