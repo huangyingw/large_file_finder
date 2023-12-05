@@ -30,7 +30,7 @@ func main() {
 
 	go monitorProgress(ctx, &progressCounter)
 
-	workerCount := 20
+	workerCount := 500
 	taskQueue, poolWg := NewWorkerPool(workerCount)
 
 	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
