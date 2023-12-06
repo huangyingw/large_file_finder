@@ -9,12 +9,16 @@ def query_redis(path, redis_host="localhost", redis_port=6379, redis_db=0):
 
     # 生成哈希键
     hashed_key = generate_hash(path)  # 替换为您的哈希函数
-    print(f"Querying Redis for key: {hashed_key}")
+    file_info = r.get(hashed_key)
+    if file_info:
+        print(f"Data found for {path}: {file_info}")
 
-    # 查询数据
-    data = r.get(hashed_key)
-    if data:
-        print(f"Data found for {path}: {data}")
+        # 获取并打印文件哈希值
+        file_hash = r.get("hash:" + hashed_key)
+        if file_hash:
+            print(f"File hash for {path}: {file_hash.decode('utf-8')}")
+        else:
+            print(f"No file hash found for {path}")
     else:
         print(f"No data found for {path}")
 
@@ -28,5 +32,12 @@ def generate_hash(s):
 
 
 if __name__ == "__main__":
-    path = "/media/mirror2/music/经典老歌/华语群星/郑秀文/郑秀文/【车载CD定制、自选歌曲、自排曲目】郑秀文《2002 我左眼见到鬼电影原声碟》[WAV 分轨]/郑秀文 - 我左眼见到鬼电影原声CD.wav"
-    query_redis(path)
+    query_redis(
+        "/media/mirror2/music/经典老歌/华语群星/郑秀文/郑秀文/【车载CD定制、自选歌曲、自排曲目】郑秀文《2002 我左眼见到鬼电影原声碟》[WAV 分轨]/郑秀文 - 我左眼见到鬼电影原声CD.wav"
+    )
+    query_redis(
+        "/media/av91/av/旬果/Pizzaboy and Hubby Creampied Me Successively.vd.1080.mp4.bak"
+    )
+    query_redis(
+        "/media/av91/av/旬果/Pizzaboy and Hubby Creampied Me Successively.vd.1080.mp4"
+    )
