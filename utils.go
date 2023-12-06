@@ -96,10 +96,16 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	}
 
 	var lines []string
-	for hash, paths := range hashes {
+	for _, paths := range hashes {
 		if len(paths) > 1 {
-			lines = append(lines, fmt.Sprintf("Duplicate files for hash %s:", hash))
-			lines = append(lines, paths...)
+			for _, path := range paths {
+				relPath, err := filepath.Rel(rootDir, path)
+				if err != nil {
+					fmt.Printf("Error converting to relative path: %s\n", err)
+					continue
+				}
+				lines = append(lines, fmt.Sprintf("\"./%s\"", relPath))
+			}
 		}
 	}
 
