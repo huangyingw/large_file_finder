@@ -97,13 +97,10 @@ func getAllFileHashes(rdb *redis.Client, ctx context.Context) (map[string][]stri
 		// 获取与hashedKey相关的文件路径
 		filePath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
 		if err != nil {
-			// 处理错误
 			continue
 		}
 
-		// 提取哈希值
-		hashValue := strings.TrimPrefix(hashKey, "hash:")
-		fileHashes[hashValue] = append(fileHashes[hashValue], filePath)
+		fileHashes[hashedKey] = append(fileHashes[hashedKey], filePath)
 	}
 	if err := iter.Err(); err != nil {
 		return nil, err
