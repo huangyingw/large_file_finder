@@ -151,3 +151,7 @@ func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, hashedKey stri
 
 	return fileInfo.Size, nil
 }
+
+func getHashedKeyFromPath(rdb *redis.Client, ctx context.Context, path string) (string, error) {
+	return rdb.Get(ctx, "pathToHash:"+path).Result()
+}
