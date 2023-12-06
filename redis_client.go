@@ -91,20 +91,32 @@ func getAllFileHashes(rdb *redis.Client, ctx context.Context) (map[string][]stri
 	iter := rdb.Scan(ctx, 0, "hash:*", 0).Iterator()
 	for iter.Next(ctx) {
 		hashKey := iter.Val()
-		// 获取原始的hashedKey
+		fmt.Println("Scanning key:", hashKey) // 打印正在扫描的键
+
+		// 获取文件内容的哈希值
+		fileContentHash, err := rdb.Get(ctx, hashKey).Result()
+		if err != nil {
+			fmt.Println("Error getting file content hash:", err)
+			continue
+		}
+
 		hashedKey := strings.TrimPrefix(hashKey, "hash:")
 
 		// 获取与hashedKey相关的文件路径
 		filePath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
 		if err != nil {
+			fmt.Println("Error getting file path:", err)
 			continue
 		}
 
-		fileHashes[hashedKey] = append(fileHashes[hashedKey], filePath)
+		fileHashes[fileContentHash] = append(fileHashes[fileContentHash], filePath)
+		fmt.Printf("Added path '%s' under hash '%s'\n", filePath, fileContentHash) // 打印添加的路径和哈希
 	}
 	if err := iter.Err(); err != nil {
+		fmt.Println("Iterator error:", err)
 		return nil, err
 	}
 
+	fmt.Println("Completed scanning. Total hashes found:", len(fileHashes)) // 打印找到的总哈希数
 	return fileHashes, nil
 }
