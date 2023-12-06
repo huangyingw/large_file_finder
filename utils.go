@@ -109,14 +109,13 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	}
 
 	outputFile = filepath.Join(rootDir, outputFile)
-	fmt.Printf("Writing duplicates to file '%s'...\n", outputFile)
 	err = writeLinesToFile(outputFile, lines)
 	if err != nil {
-		fmt.Printf("Error writing to file '%s': %s\n", outputFile, err)
+		fmt.Printf("Error writing to file %s: %s\n", outputFile, err)
 		return err
 	}
 
-	fmt.Printf("Duplicates written to '%s'\n", outputFile)
+	fmt.Printf("Duplicates written to %s\n", outputFile)
 	return nil
 }
 
