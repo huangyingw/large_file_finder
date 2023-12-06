@@ -66,6 +66,9 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 	// 生成文件路径的哈希作为键
 	hashedKey := generateHash(path)
 
+	// 打印路径和哈希值
+	fmt.Printf("Processing file: %s, Hashed Key: %s\n", path, hashedKey)
+
 	// 检查Redis中是否已存在该文件的信息
 	exists, err := rdb.Exists(ctx, hashedKey).Result()
 	if err != nil {
