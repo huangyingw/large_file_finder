@@ -85,19 +85,36 @@ func writeLinesToFile(filename string, lines []string) error {
 }
 
 func findAndLogDuplicates(rdb *redis.Client, ctx context.Context) error {
+	fmt.Println("Starting to find duplicates...")
+
 	hashes, err := getAllFileHashes(rdb, ctx)
 	if err != nil {
+		fmt.Printf("Error getting file hashes: %s\n", err)
 		return err
 	}
 
 	var lines []string
 	for hash, paths := range hashes {
 		if len(paths) > 1 {
+			fmt.Printf("Found duplicate: Hash %s with %d occurrences\n", hash, len(paths))
 			lines = append(lines, fmt.Sprintf("Duplicate files for hash %s:", hash))
 			lines = append(lines, paths...) // 将所有重复文件的路径添加到列表中
 		}
 	}
 
+	if len(lines) == 0 {
+		fmt.Println("No duplicates found.")
+		return nil
+	}
+
 	// 使用 writeLinesToFile 来写入文件
-	return writeLinesToFile("fav.log.dup", lines)
+	fmt.Printf("Writing duplicates to file 'fav.log.dup'...\n")
+	err = writeLinesToFile("fav.log.dup", lines)
+	if err != nil {
+		fmt.Printf("Error writing to file: %s\n", err)
+		return err
+	}
+
+	fmt.Println("Duplicates written to 'fav.log.dup'")
+	return nil
 }
