@@ -121,8 +121,7 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 
 func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bool) string {
 	if sortByModTime {
-		utcTimestamp := fileInfo.ModTime.UTC().Unix()
-		return fmt.Sprintf("%d,\"./%s\"", utcTimestamp, relativePath)
+		return fmt.Sprintf("\"./%s\"", relativePath)
 	}
 	return fmt.Sprintf("%d,\"./%s\"", fileInfo.Size, relativePath)
 }
