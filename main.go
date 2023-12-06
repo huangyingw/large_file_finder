@@ -76,10 +76,7 @@ func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Clien
 	minSize := 200 // Default size is 200MB
 	minSizeBytes := int64(minSize * 1024 * 1024)
 
-	excludeRegexps, err := compileExcludePatterns(filepath.Join(rootDir, "exclude_patterns.txt"))
-	if err != nil {
-		return "", 0, nil, nil, nil, err
-	}
+	excludeRegexps, _ := compileExcludePatterns(filepath.Join(rootDir, "exclude_patterns.txt"))
 
 	// 创建 Redis 客户端
 	ctx := context.Background()
