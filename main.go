@@ -47,7 +47,7 @@ func main() {
 	// 文件处理完成后的保存操作
 	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
 	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
-	findAndLogDuplicates(rdb, ctx)
+	findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
 }
 
 // 初始化Redis客户端
