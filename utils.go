@@ -5,8 +5,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/gob"
 	"fmt"
 	"github.com/go-redis/redis/v8"
 	"os"
@@ -102,8 +103,20 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	var hashSizes []hashSize
 	for hash, paths := range hashes {
 		if len(paths) > 1 {
-			// 假设每个哈希下的第一个路径代表整个组
-			size, _ := getFileSizeFromRedis(rdb, ctx, generateHash(paths[0])) // 直接使用第一个路径
+			// 直接从 Redis 查询第一个路径的 hashedKey
+			hashedKey, err := getHashedKeyFromPath(rdb, ctx, paths[0])
+			if err != nil {
+				fmt.Printf("Error getting hashedKey for path %s: %s\n", paths[0], err)
+				continue
+			}
+			fmt.Printf("Found hashedKey %s for path %s\n", hashedKey, paths[0])
+
+			size, err := getFileSizeFromRedis(rdb, ctx, hashedKey)
+			if err != nil {
+				fmt.Printf("Error getting file size for hashedKey %s: %s\n", hashedKey, err)
+				continue
+			}
+			fmt.Printf("Found file size %d for hashedKey %s\n", size, hashedKey)
 			hashSizes = append(hashSizes, hashSize{hash: hash, size: size})
 		}
 	}
@@ -144,8 +157,9 @@ func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, hashedKey stri
 	}
 
 	var fileInfo FileInfo
-	err = json.Unmarshal(fileInfoData, &fileInfo)
-	if err != nil {
+	buf := bytes.NewBuffer(fileInfoData)
+	dec := gob.NewDecoder(buf)
+	if err := dec.Decode(&fileInfo); err != nil {
 		return 0, err
 	}
 
