@@ -84,7 +84,7 @@ func writeLinesToFile(filename string, lines []string) error {
 	return nil
 }
 
-func findAndLogDuplicates(rdb *redis.Client, ctx context.Context) error {
+func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
 	fmt.Println("Starting to find duplicates...")
 
 	hashes, err := getAllFileHashes(rdb, ctx)
@@ -107,14 +107,14 @@ func findAndLogDuplicates(rdb *redis.Client, ctx context.Context) error {
 		return nil
 	}
 
-	// 使用 writeLinesToFile 来写入文件
-	fmt.Printf("Writing duplicates to file 'fav.log.dup'...\n")
-	err = writeLinesToFile("fav.log.dup", lines)
+	outputFile = filepath.Join(rootDir, outputFile)
+	fmt.Printf("Writing duplicates to file '%s'...\n", outputFile)
+	err = writeLinesToFile(outputFile, lines)
 	if err != nil {
-		fmt.Printf("Error writing to file: %s\n", err)
+		fmt.Printf("Error writing to file '%s': %s\n", outputFile, err)
 		return err
 	}
 
-	fmt.Println("Duplicates written to 'fav.log.dup'")
+	fmt.Printf("Duplicates written to '%s'\n", outputFile)
 	return nil
 }
