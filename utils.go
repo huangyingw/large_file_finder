@@ -95,42 +95,12 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		return err
 	}
 
-	// 创建一个切片来存储哈希和对应的文件大小
-	type hashSize struct {
-		hash string
-		size int64
-	}
-	var hashSizes []hashSize
+	var lines []string
 	for hash, paths := range hashes {
 		if len(paths) > 1 {
-			// 直接从 Redis 查询第一个路径的 hashedKey
-			hashedKey, err := getHashedKeyFromPath(rdb, ctx, paths[0])
-			if err != nil {
-				fmt.Printf("Error getting hashedKey for path %s: %s\n", paths[0], err)
-				continue
-			}
-			fmt.Printf("Found hashedKey %s for path %s\n", hashedKey, paths[0])
-
-			size, err := getFileSizeFromRedis(rdb, ctx, hashedKey)
-			if err != nil {
-				fmt.Printf("Error getting file size for hashedKey %s: %s\n", hashedKey, err)
-				continue
-			}
-			fmt.Printf("Found file size %d for hashedKey %s\n", size, hashedKey)
-			hashSizes = append(hashSizes, hashSize{hash: hash, size: size})
+			lines = append(lines, fmt.Sprintf("Duplicate files for hash %s:", hash))
+			lines = append(lines, paths...)
 		}
-	}
-
-	// 根据文件大小排序哈希
-	sort.Slice(hashSizes, func(i, j int) bool {
-		return hashSizes[i].size < hashSizes[j].size
-	})
-
-	var lines []string
-	for _, hs := range hashSizes {
-		paths := hashes[hs.hash]
-		lines = append(lines, fmt.Sprintf("Duplicate files for hash %s:", hs.hash))
-		lines = append(lines, paths...)
 	}
 
 	if len(lines) == 0 {
