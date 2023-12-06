@@ -72,6 +72,9 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 
 			pipe.Del(ctx, "hash:"+hashedKey) // 删除与文件哈希值相关的键
 
+			// 新增：删除从路径到hashedKey的映射
+			pipe.Del(ctx, "pathToHash:"+filePath) // 删除与pathToHash:filePath相关的键
+
 			_, err = pipe.Exec(ctx)
 			if err != nil {
 				fmt.Printf("Error deleting keys for outdated record %s: %s\n", hashedKey, err)
