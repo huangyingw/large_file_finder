@@ -112,6 +112,8 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 	pipe.Set(ctx, "path:"+hashedKey, path, 0)
 	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
 	pipe.Set(ctx, "hash:"+hashedKey, fileHash, 0) // 存储文件哈希值
+    // 存储从路径到hashedKey的映射
+    pipe.Set(ctx, "pathToHash:"+path, hashedKey, 0)
 
 	if _, err = pipe.Exec(ctx); err != nil {
 		fmt.Printf("Error executing pipeline for file: %s: %s\n", path, err)
