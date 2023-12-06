@@ -4,7 +4,6 @@
 "./docker-compose.yml"
 "./file_processing.go"
 "./findAndLogDuplicates.gdio.diff"
-"./find_large_files_with_cache.go.sh"
 "./go.mod"
 "./go.sum"
 "./includefile.conf"
