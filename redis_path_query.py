@@ -41,3 +41,6 @@ if __name__ == "__main__":
     query_redis(
         "/media/av91/av/旬果/Pizzaboy and Hubby Creampied Me Successively.vd.1080.mp4"
     )
+    query_redis(
+        "/media/secure_bcache/av/onlyfans/OnlyFans.2022.Musclebarbie.Primal.Instincts.Anal.XXX.1080p.HEVC.x265.PRT[XvX]/OnlyFans.2022.Musclebarbie.Primal.Instincts.Anal.XXX.1080p.HEVC.x265.PRT.mkv"
+    )
