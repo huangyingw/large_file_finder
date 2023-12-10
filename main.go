@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"github.com/go-redis/redis/v8"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"sync/atomic"
 	"time"
 )
@@ -48,6 +50,44 @@ func main() {
 	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
 	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
 	findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
+
+	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
+	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
+	processFavLog(favLogPath, rdb, ctx)
+}
+
+func processFavLog(filePath string, rdb *redis.Client, ctx context.Context) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Println("Error opening file:", err)
+		return
+	}
+	defer file.Close()
+
+	var fileNames, filePaths []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		line = regexp.MustCompile(`^\d+,`).ReplaceAllString(line, "")
+		filePaths = append(filePaths, line)
+		fileNames = append(fileNames, extractFileName(line))
+	}
+
+	keywords := extractKeywords(fileNames)
+	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
+
+	sort.Slice(keywords, func(i, j int) bool {
+		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
+	})
+
+	totalKeywords := len(keywords)
+	for i, keyword := range keywords {
+		keywordFiles := closeFiles[keyword]
+		if len(keywordFiles) >= 2 {
+			fmt.Printf("Processing keyword %d of %d: %s\n", i+1, totalKeywords, keyword)
+			processKeyword(keyword, keywordFiles, rdb, ctx)
+		}
+	}
 }
 
 // 初始化Redis客户端
