@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync/atomic"
 )
 
@@ -109,8 +111,8 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 	pipe.Set(ctx, "path:"+hashedKey, path, 0)
 	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
 	pipe.Set(ctx, "hash:"+hashedKey, fileHash, 0) // 存储文件哈希值
-    // 存储从路径到hashedKey的映射
-    pipe.Set(ctx, "pathToHash:"+path, hashedKey, 0)
+	// 存储从路径到hashedKey的映射
+	pipe.Set(ctx, "pathToHash:"+path, hashedKey, 0)
 
 	if _, err = pipe.Exec(ctx); err != nil {
 		fmt.Printf("Error executing pipeline for file: %s: %s\n", path, err)
@@ -150,8 +152,39 @@ func processDirectory(path string) {
 	fmt.Printf("Processing directory: %s\n", path)
 	// 可能的操作：遍历目录下的文件等
 }
+
 func processSymlink(path string) {
 	// 处理软链接的逻辑
 	fmt.Printf("Processing symlink: %s\n", path)
 	// 可能的操作：解析软链接，获取实际文件等
+}
+
+func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context) {
+	// 对 keywordFiles 进行排序
+	sort.Slice(keywordFiles, func(i, j int) bool {
+		sizeI, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[i])
+		sizeJ, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[j])
+		return sizeI > sizeJ
+	})
+
+	// 准备要写入的数据
+	var outputData strings.Builder
+	outputData.WriteString(keyword + "\n")
+	for _, filePath := range keywordFiles {
+		fileSize, _ := getFileSizeFromRedis(rdb, ctx, filePath)
+		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
+	}
+
+	// 创建并写入文件
+	outputFile, err := os.Create(keyword + ".txt")
+	if err != nil {
+		fmt.Println("Error creating file:", err)
+		return
+	}
+	defer outputFile.Close() // 确保文件会被关闭
+
+	_, err = outputFile.WriteString(outputData.String())
+	if err != nil {
+		fmt.Println("Error writing to file:", err)
+	}
 }
