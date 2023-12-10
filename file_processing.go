@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync/atomic"
 )
 
@@ -150,8 +152,39 @@ func processDirectory(path string) {
 	fmt.Printf("Processing directory: %s\n", path)
 	// 可能的操作：遍历目录下的文件等
 }
+
 func processSymlink(path string) {
 	// 处理软链接的逻辑
 	fmt.Printf("Processing symlink: %s\n", path)
 	// 可能的操作：解析软链接，获取实际文件等
+}
+
+func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context) {
+	// 对 keywordFiles 进行排序
+	sort.Slice(keywordFiles, func(i, j int) bool {
+		sizeI, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[i])
+		sizeJ, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[j])
+		return sizeI > sizeJ
+	})
+
+	// 准备要写入的数据
+	var outputData strings.Builder
+	outputData.WriteString(keyword + "\n")
+	for _, filePath := range keywordFiles {
+		fileSize, _ := getFileSizeFromRedis(rdb, ctx, filePath)
+		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
+	}
+
+	// 创建并写入文件
+	outputFile, err := os.Create(keyword + ".txt")
+	if err != nil {
+		fmt.Println("Error creating file:", err)
+		return
+	}
+	defer outputFile.Close() // 确保文件会被关闭
+
+	_, err = outputFile.WriteString(outputData.String())
+	if err != nil {
+		fmt.Println("Error writing to file:", err)
+	}
 }
