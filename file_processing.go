@@ -159,7 +159,7 @@ func processSymlink(path string) {
 	// 可能的操作：解析软链接，获取实际文件等
 }
 
-func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context) {
+func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context, rootDir string) {
 	// 对 keywordFiles 进行排序
 	sort.Slice(keywordFiles, func(i, j int) bool {
 		sizeI, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[i])
@@ -176,7 +176,8 @@ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ct
 	}
 
 	// 创建并写入文件
-	outputFile, err := os.Create(keyword + ".txt")
+	outputFilePath := filepath.Join(rootDir, keyword+".txt")
+	outputFile, err := os.Create(outputFilePath)
 	if err != nil {
 		fmt.Println("Error creating file:", err)
 		return
