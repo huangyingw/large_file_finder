@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
+	"github.com/go-redis/redis/v8"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,31 +14,6 @@ import (
 )
 
 var fileSizeCache = sync.Map{}
-
-func getFileSize(filePath string, defaultSize int64) int64 {
-	// 去掉路径中的引号
-	filePath = strings.ReplaceAll(filePath, "\"", "")
-
-	currentDir, _ := os.Getwd()                         // 获取当前工作目录
-	absolutePath := filepath.Join(currentDir, filePath) // 拼接绝对路径
-
-	cleanPath := filepath.Clean(absolutePath) // 清理路径
-
-	if size, exists := fileSizeCache.Load(cleanPath); exists {
-		return size.(int64)
-	}
-
-	fileInfo, err := os.Stat(cleanPath) // 使用清理后的绝对路径
-	if err != nil {
-		fmt.Printf("Error getting file size for '%s': %v. Current directory: '%s'\n", cleanPath, err, currentDir)
-		fileSizeCache.Store(cleanPath, defaultSize)
-		return defaultSize
-	}
-
-	size := fileInfo.Size()
-	fileSizeCache.Store(cleanPath, size)
-	return size
-}
 
 func extractFileName(filePath string) string {
 	return strings.ToLower(filepath.Base(filePath))
@@ -76,17 +53,19 @@ func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string
 	return closeFiles
 }
 
-func processKeyword(keyword string, keywordFiles []string) {
+func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context) {
 	// 对 keywordFiles 进行排序
 	sort.Slice(keywordFiles, func(i, j int) bool {
-		return getFileSize(keywordFiles[i], 0) > getFileSize(keywordFiles[j], 0)
+		sizeI, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[i])
+		sizeJ, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[j])
+		return sizeI > sizeJ
 	})
 
 	// 准备要写入的数据
 	var outputData strings.Builder
 	outputData.WriteString(keyword + "\n")
 	for _, filePath := range keywordFiles {
-		fileSize := getFileSize(filePath, 0)
+		fileSize, _ := getFileSizeFromRedis(rdb, ctx, filePath)
 		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
 	}
 
@@ -104,7 +83,7 @@ func processKeyword(keyword string, keywordFiles []string) {
 	}
 }
 
-func main() {
+func find_sort_similar_filenames() {
 	args := os.Args[1:]
 	if len(args) != 1 {
 		fmt.Println("Usage: go run main.go --file=<file_path>")
