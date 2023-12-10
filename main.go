@@ -53,10 +53,10 @@ func main() {
 
 	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
 	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
-	processFavLog(favLogPath, rdb, ctx)
+	processFavLog(favLogPath, rootDir, rdb, ctx)
 }
 
-func processFavLog(filePath string, rdb *redis.Client, ctx context.Context) {
+func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		fmt.Println("Error opening file:", err)
@@ -85,7 +85,7 @@ func processFavLog(filePath string, rdb *redis.Client, ctx context.Context) {
 		keywordFiles := closeFiles[keyword]
 		if len(keywordFiles) >= 2 {
 			fmt.Printf("Processing keyword %d of %d: %s\n", i+1, totalKeywords, keyword)
-			processKeyword(keyword, keywordFiles, rdb, ctx)
+			processKeyword(keyword, keywordFiles, rdb, ctx, rootDir)
 		}
 	}
 }
