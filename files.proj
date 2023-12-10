@@ -3,7 +3,7 @@
 "./data_serialization.go"
 "./docker-compose.yml"
 "./file_processing.go"
-"./findAndLogDuplicates.gdio.diff"
+"./find_sort_similar_filenames.gdio.diff"
 "./go.mod"
 "./go.sum"
 "./includefile.conf"
