@@ -28,7 +28,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,190 @@
 +// file_processing.go
 +package main
 +
@@ -43,6 +43,8 @@ new file mode 100644
 +	"io"
 +	"os"
 +	"path/filepath"
++	"sort"
++	"strings"
 +	"sync/atomic"
 +)
 +
@@ -140,8 +142,8 @@ new file mode 100644
 +	pipe.Set(ctx, "path:"+hashedKey, path, 0)
 +	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
 +	pipe.Set(ctx, "hash:"+hashedKey, fileHash, 0) // 存储文件哈希值
-+    // 存储从路径到hashedKey的映射
-+    pipe.Set(ctx, "pathToHash:"+path, hashedKey, 0)
++	// 存储从路径到hashedKey的映射
++	pipe.Set(ctx, "pathToHash:"+path, hashedKey, 0)
 +
 +	if _, err = pipe.Exec(ctx); err != nil {
 +		fmt.Printf("Error executing pipeline for file: %s: %s\n", path, err)
@@ -164,7 +166,7 @@ new file mode 100644
 +	}
 +	defer file.Close()
 +
-+	const readLimit = 4 * 1024 // 限制读取的数据量为 4 KB
++	const readLimit = 8 * 1024 // 限制读取的数据量为 4 KB
 +	reader := bufio.NewReaderSize(file, readLimit)
 +	limitedReader := io.LimitReader(reader, readLimit)
 +
@@ -181,10 +183,41 @@ new file mode 100644
 +	fmt.Printf("Processing directory: %s\n", path)
 +	// 可能的操作：遍历目录下的文件等
 +}
++
 +func processSymlink(path string) {
 +	// 处理软链接的逻辑
 +	fmt.Printf("Processing symlink: %s\n", path)
 +	// 可能的操作：解析软链接，获取实际文件等
++}
++
++func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context) {
++	// 对 keywordFiles 进行排序
++	sort.Slice(keywordFiles, func(i, j int) bool {
++		sizeI, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[i])
++		sizeJ, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[j])
++		return sizeI > sizeJ
++	})
++
++	// 准备要写入的数据
++	var outputData strings.Builder
++	outputData.WriteString(keyword + "\n")
++	for _, filePath := range keywordFiles {
++		fileSize, _ := getFileSizeFromRedis(rdb, ctx, filePath)
++		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
++	}
++
++	// 创建并写入文件
++	outputFile, err := os.Create(keyword + ".txt")
++	if err != nil {
++		fmt.Println("Error creating file:", err)
++		return
++	}
++	defer outputFile.Close() // 确保文件会被关闭
++
++	_, err = outputFile.WriteString(outputData.String())
++	if err != nil {
++		fmt.Println("Error writing to file:", err)
++	}
 +}
 diff --git a/find_large_files_with_cache.go b/find_large_files_with_cache.go
 deleted file mode 100644
@@ -489,11 +522,14 @@ deleted file mode 100644
 -		fmt.Printf("Saved sorted data to %s\n", filepath.Join(rootDir, "fav.log.sort"))
 -	}
 -}
-diff --git a/find_sort_similar_filenames.go b/find_sort_similar_filenames.go
+diff --git a/main.go b/main.go
 new file mode 100644
 --- /dev/null
-+++ ./find_sort_similar_filenames.go
-@@ -0,0 +1,128 @@
++++ ./main.go
+@@ -0,0 +1,182 @@
++// main.go
++// 此文件是Go程序的主要入口点，包含了文件处理程序的核心逻辑和初始化代码。
++
 +package main
 +
 +import (
@@ -501,145 +537,11 @@ new file mode 100644
 +	"context"
 +	"fmt"
 +	"github.com/go-redis/redis/v8"
-+	"os"
-+	"path/filepath"
-+	"regexp"
-+	"sort"
-+	"strings"
-+	"sync"
-+)
-+
-+var fileSizeCache = sync.Map{}
-+
-+func extractFileName(filePath string) string {
-+	return strings.ToLower(filepath.Base(filePath))
-+}
-+
-+func extractKeywords(fileNames []string) []string {
-+	keywords := make(map[string]struct{})
-+	pattern := regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
-+
-+	for _, fileName := range fileNames {
-+		nameWithoutExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
-+		matches := pattern.FindAllString(nameWithoutExt, -1)
-+		for _, match := range matches {
-+			keywords[match] = struct{}{}
-+		}
-+	}
-+
-+	var keywordList []string
-+	for keyword := range keywords {
-+		keywordList = append(keywordList, keyword)
-+	}
-+
-+	return keywordList
-+}
-+
-+func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string {
-+	closeFiles := make(map[string][]string)
-+
-+	for _, kw := range keywords {
-+		for i, fileName := range fileNames {
-+			if strings.Contains(strings.ToLower(fileName), strings.ToLower(kw)) {
-+				closeFiles[kw] = append(closeFiles[kw], filePaths[i])
-+			}
-+		}
-+	}
-+
-+	return closeFiles
-+}
-+
-+func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context) {
-+	// 对 keywordFiles 进行排序
-+	sort.Slice(keywordFiles, func(i, j int) bool {
-+		sizeI, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[i])
-+		sizeJ, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[j])
-+		return sizeI > sizeJ
-+	})
-+
-+	// 准备要写入的数据
-+	var outputData strings.Builder
-+	outputData.WriteString(keyword + "\n")
-+	for _, filePath := range keywordFiles {
-+		fileSize, _ := getFileSizeFromRedis(rdb, ctx, filePath)
-+		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
-+	}
-+
-+	// 创建并写入文件
-+	outputFile, err := os.Create(keyword + ".txt")
-+	if err != nil {
-+		fmt.Println("Error creating file:", err)
-+		return
-+	}
-+	defer outputFile.Close() // 确保文件会被关闭
-+
-+	_, err = outputFile.WriteString(outputData.String())
-+	if err != nil {
-+		fmt.Println("Error writing to file:", err)
-+	}
-+}
-+
-+func find_sort_similar_filenames() {
-+	args := os.Args[1:]
-+	if len(args) != 1 {
-+		fmt.Println("Usage: go run main.go --file=<file_path>")
-+		return
-+	}
-+
-+	fileArg := args[0]
-+	filePath := strings.Split(fileArg, "=")[1]
-+
-+	file, err := os.Open(filePath)
-+	if err != nil {
-+		fmt.Println("Error opening file:", err)
-+		return
-+	}
-+	defer file.Close()
-+
-+	var fileNames, filePaths []string
-+	scanner := bufio.NewScanner(file)
-+	for scanner.Scan() {
-+		line := scanner.Text()
-+		line = regexp.MustCompile(`^\d+,`).ReplaceAllString(line, "")
-+		filePaths = append(filePaths, line)
-+		fileNames = append(fileNames, extractFileName(line))
-+	}
-+
-+	keywords := extractKeywords(fileNames)
-+	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
-+
-+	sort.Slice(keywords, func(i, j int) bool {
-+		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
-+	})
-+
-+	totalKeywords := len(keywords)     // 定义 totalKeywords
-+	for i, keyword := range keywords { // 定义 i
-+		keywordFiles := closeFiles[keyword]
-+		if len(keywordFiles) >= 2 { // 添加这个条件
-+			// 显示进度
-+			fmt.Printf("Processing keyword %d of %d: %s\n", i+1, totalKeywords, keyword)
-+			processKeyword(keyword, keywordFiles) // 调用新的 processKeyword 函数
-+		}
-+	}
-+}
-diff --git a/main.go b/main.go
-new file mode 100644
---- /dev/null
-+++ ./main.go
-@@ -0,0 +1,142 @@
-+// main.go
-+// 此文件是Go程序的主要入口点，包含了文件处理程序的核心逻辑和初始化代码。
-+
-+package main
-+
-+import (
-+	"context"
-+	"fmt"
-+	"github.com/go-redis/redis/v8"
 +	"github.com/karrick/godirwalk"
 +	"os"
 +	"path/filepath"
 +	"regexp"
++	"sort"
 +	"sync/atomic"
 +	"time"
 +)
@@ -677,6 +579,44 @@ new file mode 100644
 +	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
 +	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
 +	findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
++
++	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
++	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
++	processFavLog(favLogPath, rdb, ctx)
++}
++
++func processFavLog(filePath string, rdb *redis.Client, ctx context.Context) {
++	file, err := os.Open(filePath)
++	if err != nil {
++		fmt.Println("Error opening file:", err)
++		return
++	}
++	defer file.Close()
++
++	var fileNames, filePaths []string
++	scanner := bufio.NewScanner(file)
++	for scanner.Scan() {
++		line := scanner.Text()
++		line = regexp.MustCompile(`^\d+,`).ReplaceAllString(line, "")
++		filePaths = append(filePaths, line)
++		fileNames = append(fileNames, extractFileName(line))
++	}
++
++	keywords := extractKeywords(fileNames)
++	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
++
++	sort.Slice(keywords, func(i, j int) bool {
++		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
++	})
++
++	totalKeywords := len(keywords)
++	for i, keyword := range keywords {
++		keywordFiles := closeFiles[keyword]
++		if len(keywordFiles) >= 2 {
++			fmt.Printf("Processing keyword %d of %d: %s\n", i+1, totalKeywords, keyword)
++			processKeyword(keyword, keywordFiles, rdb, ctx)
++		}
++	}
 +}
 +
 +// 初始化Redis客户端
@@ -972,7 +912,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,186 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -1118,6 +1058,46 @@ new file mode 100644
 +
 +func getHashedKeyFromPath(rdb *redis.Client, ctx context.Context, path string) (string, error) {
 +	return rdb.Get(ctx, "pathToHash:"+path).Result()
++}
++
++// extractFileName extracts the file name from a given file path.
++func extractFileName(filePath string) string {
++	return strings.ToLower(filepath.Base(filePath))
++}
++
++// extractKeywords extracts keywords from a slice of file names.
++func extractKeywords(fileNames []string) []string {
++	keywords := make(map[string]struct{})
++	pattern := regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
++
++	for _, fileName := range fileNames {
++		nameWithoutExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
++		matches := pattern.FindAllString(nameWithoutExt, -1)
++		for _, match := range matches {
++			keywords[match] = struct{}{}
++		}
++	}
++
++	var keywordList []string
++	for keyword := range keywords {
++		keywordList = append(keywordList, keyword)
++	}
++
++	return keywordList
++}
++
++func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string {
++	closeFiles := make(map[string][]string)
++
++	for _, kw := range keywords {
++		for i, fileName := range fileNames {
++			if strings.Contains(strings.ToLower(fileName), strings.ToLower(kw)) {
++				closeFiles[kw] = append(closeFiles[kw], filePaths[i])
++			}
++		}
++	}
++
++	return closeFiles
 +}
 diff --git a/worker_pool.go b/worker_pool.go
 new file mode 100644
