@@ -144,3 +144,43 @@ func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, hashedKey stri
 func getHashedKeyFromPath(rdb *redis.Client, ctx context.Context, path string) (string, error) {
 	return rdb.Get(ctx, "pathToHash:"+path).Result()
 }
+
+// extractFileName extracts the file name from a given file path.
+func extractFileName(filePath string) string {
+	return strings.ToLower(filepath.Base(filePath))
+}
+
+// extractKeywords extracts keywords from a slice of file names.
+func extractKeywords(fileNames []string) []string {
+	keywords := make(map[string]struct{})
+	pattern := regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
+
+	for _, fileName := range fileNames {
+		nameWithoutExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+		matches := pattern.FindAllString(nameWithoutExt, -1)
+		for _, match := range matches {
+			keywords[match] = struct{}{}
+		}
+	}
+
+	var keywordList []string
+	for keyword := range keywords {
+		keywordList = append(keywordList, keyword)
+	}
+
+	return keywordList
+}
+
+func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string {
+	closeFiles := make(map[string][]string)
+
+	for _, kw := range keywords {
+		for i, fileName := range fileNames {
+			if strings.Contains(strings.ToLower(fileName), strings.ToLower(kw)) {
+				closeFiles[kw] = append(closeFiles[kw], filePaths[i])
+			}
+		}
+	}
+
+	return closeFiles
+}
