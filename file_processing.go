@@ -162,8 +162,16 @@ func processSymlink(path string) {
 func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context, rootDir string) {
 	// 对 keywordFiles 进行排序
 	sort.Slice(keywordFiles, func(i, j int) bool {
-		sizeI, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[i])
-		sizeJ, _ := getFileSizeFromRedis(rdb, ctx, keywordFiles[j])
+		fullPath := filepath.Join(rootDir, cleanPath(keywordFiles[i]))
+		sizeI, errI := getFileSizeFromRedis(rdb, ctx, fullPath)
+		if errI != nil {
+			fmt.Printf("Error getting size for %s: %v\n", fullPath, errI)
+		}
+		fullPath = filepath.Join(rootDir, cleanPath(keywordFiles[j]))
+		sizeJ, errJ := getFileSizeFromRedis(rdb, ctx, fullPath)
+		if errJ != nil {
+			fmt.Printf("Error getting size for %s: %v\n", fullPath, errJ)
+		}
 		return sizeI > sizeJ
 	})
 
@@ -171,7 +179,11 @@ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ct
 	var outputData strings.Builder
 	outputData.WriteString(keyword + "\n")
 	for _, filePath := range keywordFiles {
-		fileSize, _ := getFileSizeFromRedis(rdb, ctx, filePath)
+		fullPath := filepath.Join(rootDir, cleanPath(filePath))
+		fileSize, err := getFileSizeFromRedis(rdb, ctx, fullPath)
+		if err != nil {
+			fmt.Printf("Error getting size for %s : %v\n", fullPath, err)
+		}
 		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
 	}
 
@@ -188,4 +200,30 @@ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ct
 	if err != nil {
 		fmt.Println("Error writing to file:", err)
 	}
+}
+
+// cleanPath 用于清理和标准化路径
+func cleanPath(path string) string {
+	fmt.Println("Original path:", path) // 打印原始路径
+
+	// 先去除路径开头的引号（如果存在）
+	if strings.HasPrefix(path, `"`) {
+		path = strings.TrimPrefix(path, `"`)
+		fmt.Println("Removed opening '\"':", path) // 打印移除开头引号后的路径
+	}
+
+	// 再去除 "./"（如果路径以 "./" 开头）
+	if strings.HasPrefix(path, "./") {
+		path = strings.TrimPrefix(path, "./")
+		fmt.Println("Removed './' prefix:", path) // 打印移除 "./" 后的路径
+	}
+
+	// 最后去除路径末尾的引号（如果存在）
+	if strings.HasSuffix(path, `"`) {
+		path = strings.TrimSuffix(path, `"`)
+		fmt.Println("Removed closing '\"' suffix:", path) // 打印移除末尾引号后的路径
+	}
+
+	fmt.Println("Cleaned path:", path) // 打印清理后的路径
+	return path
 }
