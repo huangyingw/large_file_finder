@@ -125,17 +125,24 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	return nil
 }
 
-func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, hashedKey string) (int64, error) {
+func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, fullPath string) (int64, error) {
+	// 首先从 fullPath 获取 hashedKey
+	hashedKey, err := getHashedKeyFromPath(rdb, ctx, fullPath)
+	if err != nil {
+		return 0, fmt.Errorf("error getting hashed key for %s: %w", fullPath, err)
+	}
+
+	// 然后使用 hashedKey 从 Redis 获取文件信息
 	fileInfoData, err := rdb.Get(ctx, hashedKey).Bytes()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("error getting file info for hashed key %s: %w", hashedKey, err)
 	}
 
 	var fileInfo FileInfo
 	buf := bytes.NewBuffer(fileInfoData)
 	dec := gob.NewDecoder(buf)
 	if err := dec.Decode(&fileInfo); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("error decoding file info for hashed key %s: %w", hashedKey, err)
 	}
 
 	return fileInfo.Size, nil
