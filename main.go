@@ -86,11 +86,11 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 		keywordFiles := closeFiles[keyword]
 		if len(keywordFiles) >= 2 {
 			poolWg.Add(1) // 在提交任务之前增加等待组的计数
-			go func(kw string, kf []string) {
+			go func(kw string, kf []string, idx int) {
 				defer poolWg.Done() // 任务完成后调用 Done
-				fmt.Printf("Processing keyword %d of %d: %s\n", i+1, totalKeywords, kw)
+				fmt.Printf("Processing keyword %d of %d: %s\n", idx+1, totalKeywords, kw)
 				processKeyword(kw, kf, rdb, ctx, rootDir)
-			}(keyword, keywordFiles)
+			}(keyword, keywordFiles, i) // 将 i 作为参数传递给闭包
 		}
 	}
 }
