@@ -204,26 +204,20 @@ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ct
 
 // cleanPath 用于清理和标准化路径
 func cleanPath(path string) string {
-	fmt.Println("Original path:", path) // 打印原始路径
-
 	// 先去除路径开头的引号（如果存在）
 	if strings.HasPrefix(path, `"`) {
 		path = strings.TrimPrefix(path, `"`)
-		fmt.Println("Removed opening '\"':", path) // 打印移除开头引号后的路径
 	}
 
 	// 再去除 "./"（如果路径以 "./" 开头）
 	if strings.HasPrefix(path, "./") {
 		path = strings.TrimPrefix(path, "./")
-		fmt.Println("Removed './' prefix:", path) // 打印移除 "./" 后的路径
 	}
 
 	// 最后去除路径末尾的引号（如果存在）
 	if strings.HasSuffix(path, `"`) {
 		path = strings.TrimSuffix(path, `"`)
-		fmt.Println("Removed closing '\"' suffix:", path) // 打印移除末尾引号后的路径
 	}
 
-	fmt.Println("Cleaned path:", path) // 打印清理后的路径
 	return path
 }
