@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -53,10 +54,10 @@ func main() {
 
 	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
 	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
-	processFavLog(favLogPath, rootDir, rdb, ctx)
+	processFavLog(favLogPath, rootDir, rdb, ctx, taskQueue, poolWg)
 }
 
-func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context) {
+func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context, taskQueue chan<- Task, poolWg *sync.WaitGroup) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		fmt.Println("Error opening file:", err)
@@ -84,8 +85,12 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	for i, keyword := range keywords {
 		keywordFiles := closeFiles[keyword]
 		if len(keywordFiles) >= 2 {
-			fmt.Printf("Processing keyword %d of %d: %s\n", i+1, totalKeywords, keyword)
-			processKeyword(keyword, keywordFiles, rdb, ctx, rootDir)
+			poolWg.Add(1) // 在提交任务之前增加等待组的计数
+			go func(kw string, kf []string) {
+				defer poolWg.Done() // 任务完成后调用 Done
+				fmt.Printf("Processing keyword %d of %d: %s\n", i+1, totalKeywords, kw)
+				processKeyword(kw, kf, rdb, ctx, rootDir)
+			}(keyword, keywordFiles)
 		}
 	}
 }
