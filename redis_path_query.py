@@ -44,3 +44,6 @@ if __name__ == "__main__":
     query_redis(
         "/media/secure_bcache/av/onlyfans/OnlyFans.2022.Musclebarbie.Primal.Instincts.Anal.XXX.1080p.HEVC.x265.PRT[XvX]/OnlyFans.2022.Musclebarbie.Primal.Instincts.Anal.XXX.1080p.HEVC.x265.PRT.mkv"
     )
+    query_redis(
+        "/media/secure_bcache/av/onlyfans/OnlyFans.22.11.10.Lani.Rails.Aka.HotSouthernFreedom.A27hopsonxxx.XXX.720p.HEVC.x265.PRT[XvX]/OnlyFans.22.11.10.Lani.Rails.Aka.HotSouthernFreedom.A27hopsonxxx.XXX.720p.HEVC.x265.PRT.mkv"
+    )
