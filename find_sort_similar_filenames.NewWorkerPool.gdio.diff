@@ -567,7 +567,7 @@ diff --git a/main.go b/main.go
 new file mode 100644
 --- /dev/null
 +++ ./main.go
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,192 @@
 +// main.go
 +// 此文件是Go程序的主要入口点，包含了文件处理程序的核心逻辑和初始化代码。
 +
@@ -624,7 +624,11 @@ new file mode 100644
 +
 +	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
 +	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
++	// 重新初始化工作池和等待组，用于第二批任务
++	taskQueue, poolWg = NewWorkerPool(workerCount)
 +	processFavLog(favLogPath, rootDir, rdb, ctx, taskQueue, poolWg)
++	close(taskQueue)
++	poolWg.Wait()
 +}
 +
 +func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context, taskQueue chan<- Task, poolWg *sync.WaitGroup) {
@@ -655,12 +659,13 @@ new file mode 100644
 +	for i, keyword := range keywords {
 +		keywordFiles := closeFiles[keyword]
 +		if len(keywordFiles) >= 2 {
-+			poolWg.Add(1) // 在提交任务之前增加等待组的计数
-+			go func(kw string, kf []string, idx int) {
-+				defer poolWg.Done() // 任务完成后调用 Done
-+				fmt.Printf("Processing keyword %d of %d: %s\n", idx+1, totalKeywords, kw)
-+				processKeyword(kw, kf, rdb, ctx, rootDir)
-+			}(keyword, keywordFiles, i) // 将 i 作为参数传递给闭包
++			// 直接定义并执行一个匿名函数
++			taskQueue <- func(kw string, kf []string, idx int) Task {
++				return func() {
++					fmt.Printf("Processing keyword %d of %d: %s\n", idx+1, totalKeywords, kw)
++					processKeyword(kw, kf, rdb, ctx, rootDir)
++				}
++			}(keyword, keywordFiles, i) // 立即传递当前迭代的变量
 +		}
 +	}
 +}
@@ -773,10 +778,10 @@ rename to main.go.sh
  
 -go build find_large_files_with_cache.go && \
 -    sudo ./find_large_files_with_cache /media
-+rm -v /media/secure_bcache/av/onlyfans/*.txt
-+go run . /media/secure_bcache/av/onlyfans
-+ls -al /media/secure_bcache/av/onlyfans/*.txt
++rm /media/secure_bcache/av/onlyfans/*.txt
++go run . /media/secure_bcache/av/onlyfans/
 +#go run . /media
++ls -al /media/secure_bcache/av/onlyfans/*.txt
 diff --git a/redis_client.go b/redis_client.go
 new file mode 100644
 --- /dev/null
