@@ -34,12 +34,12 @@ func main() {
 	go monitorProgress(ctx, &progressCounter)
 
 	workerCount := 500
-	taskQueue1, poolWg1 := NewWorkerPool(workerCount)
+	taskQueue, poolWg := NewWorkerPool(workerCount)
 
-	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue1, rdb, ctx, startTime)
+	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
 
-	close(taskQueue1)
-	poolWg1.Wait()
+	close(taskQueue)
+	poolWg.Wait()
 	fmt.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
 
 	err = cleanUpOldRecords(rdb, ctx, startTime)
@@ -54,11 +54,11 @@ func main() {
 
 	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
 	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
-	// 初始化第二个工作池并处理 fav.log
-	taskQueue2, poolWg2 := NewWorkerPool(workerCount)
-	processFavLog(favLogPath, rootDir, rdb, ctx, taskQueue2, poolWg2)
-	close(taskQueue2)
-	poolWg2.Wait()
+	// 重新初始化工作池和等待组，用于第二批任务
+	taskQueue, poolWg = NewWorkerPool(workerCount)
+	processFavLog(favLogPath, rootDir, rdb, ctx, taskQueue, poolWg)
+	close(taskQueue)
+	poolWg.Wait()
 }
 
 func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context, taskQueue chan<- Task, poolWg *sync.WaitGroup) {
