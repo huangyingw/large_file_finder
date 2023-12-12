@@ -14,5 +14,7 @@ go get -u github.com/karrick/godirwalk
 #docker-compose restart
 docker-compose up -d
 
-#go run . /media/secure_bcache/av/onlyfans/
-go run . /media
+rm /media/secure_bcache/av/onlyfans/*.txt
+go run . /media/secure_bcache/av/onlyfans/
+#go run . /media
+ls -al /media/secure_bcache/av/onlyfans/*.txt
