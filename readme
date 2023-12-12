@@ -1,0 +1,5 @@
+main.go:58 	taskQueue, poolWg = NewWorkerPool(workerCount)
+main.go:59 	processFavLog(favLogPath, rootDir, rdb, ctx, taskQueue, poolWg)
+main.go:64 func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context, taskQueue chan<- Task, poolWg *sync.WaitGroup) {
+main.go:92 			poolWg.Add(1) // 在提交任务之前增加等待组的计数
+main.go:96 				processKeyword(kw, kf, rdb, ctx, rootDir)
