@@ -187,6 +187,12 @@ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ct
 		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
 	}
 
+	// 检查是否有数据要写入
+	if outputData.Len() == 0 {
+		fmt.Printf("No data to write for keyword: %s\n", keyword)
+		return
+	}
+
 	// 创建并写入文件
 	outputFilePath := filepath.Join(rootDir, keyword+".txt")
 	outputFile, err := os.Create(outputFilePath)
