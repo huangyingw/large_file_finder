@@ -21,6 +21,7 @@ func getFileInfoFromRedis(rdb *redis.Client, ctx context.Context, hashedKey stri
 	var fileInfo FileInfo
 	value, err := rdb.Get(ctx, hashedKey).Bytes()
 	if err != nil {
+		fmt.Printf("从Redis获取文件信息失败，Key: %s, Error: %s\n", hashedKey, err)
 		return fileInfo, err
 	}
 
@@ -160,6 +161,7 @@ func processSymlink(path string) {
 }
 
 func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context, rootDir string) {
+	fmt.Printf("开始处理关键词: %s\n", keyword)
 	// 对 keywordFiles 进行排序
 	sort.Slice(keywordFiles, func(i, j int) bool {
 		fullPath := filepath.Join(rootDir, cleanPath(keywordFiles[i]))
