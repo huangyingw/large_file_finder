@@ -164,7 +164,7 @@ func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, fullPath strin
 	}
 
 	// 然后使用 hashedKey 从 Redis 获取文件信息
-	fileInfoData, err := rdb.Get(ctx, hashedKey).Bytes()
+	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey)
 	if err != nil {
 		return 0, fmt.Errorf("error getting file info for hashed key %s: %w", hashedKey, err)
 	}
