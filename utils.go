@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -92,35 +93,25 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	// Scan用于查找所有fileHashSize键
 	iter := rdb.Scan(ctx, 0, "fileHashSize:*", 0).Iterator()
 	type hashSize struct {
-		hash string
+		key  string
 		size int64
 	}
 	var hashSizes []hashSize
 
 	for iter.Next(ctx) {
 		fileHashSizeKey := iter.Val()
-		parts := strings.SplitN(fileHashSizeKey, ":", 2)
+		parts := strings.Split(fileHashSizeKey, "_")
 		if len(parts) != 2 {
 			fmt.Printf("Invalid key format: %s\n", fileHashSizeKey)
 			continue
 		}
-		fileHash := parts[1]
-		sizeString := strings.Split(fileHash, "_")[1]
-		size, err := strconv.ParseInt(sizeString, 10, 64)
+		size, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
 			fmt.Printf("Error parsing size from key %s: %s\n", fileHashSizeKey, err)
 			continue
 		}
 
-		filePaths, err := rdb.SMembers(ctx, fileHashSizeKey).Result()
-		if err != nil {
-			fmt.Println("Error getting file paths:", err)
-			continue
-		}
-
-		if len(filePaths) > 1 {
-			hashSizes = append(hashSizes, hashSize{hash: fileHash, size: size})
-		}
+		hashSizes = append(hashSizes, hashSize{key: fileHashSizeKey, size: size})
 	}
 
 	if err := iter.Err(); err != nil {
@@ -135,21 +126,23 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 
 	var lines []string
 	for _, hs := range hashSizes {
-		filePaths, err := rdb.SMembers(ctx, "fileHashSize:"+hs.hash+"_"+strconv.FormatInt(hs.size, 10)).Result()
+		filePaths, err := rdb.SMembers(ctx, hs.key).Result()
 		if err != nil {
-			fmt.Printf("Error getting file paths for hash %s: %s\n", hs.hash, err)
+			fmt.Printf("Error getting file paths for key %s: %s\n", hs.key, err)
 			continue
 		}
 
-		line := fmt.Sprintf("Duplicate files for hash %s:", hs.hash)
-		lines = append(lines, line)
-		for _, fullPath := range filePaths {
-			relativePath, err := filepath.Rel(rootDir, fullPath)
-			if err != nil {
-				fmt.Printf("Error converting to relative path: %s\n", err)
-				continue
+		if len(filePaths) > 1 {
+			line := fmt.Sprintf("Duplicate files for hash size %d:", hs.size)
+			lines = append(lines, line)
+			for _, fullPath := range filePaths {
+				relativePath, err := filepath.Rel(rootDir, fullPath)
+				if err != nil {
+					fmt.Printf("Error converting to relative path: %s\n", err)
+					continue
+				}
+				lines = append(lines, fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath))
 			}
-			lines = append(lines, fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath))
 		}
 	}
 
@@ -159,7 +152,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	}
 
 	outputFile = filepath.Join(rootDir, outputFile)
-	err = writeLinesToFile(outputFile, lines)
+	err := writeLinesToFile(outputFile, lines)
 	if err != nil {
 		fmt.Printf("Error writing to file %s: %s\n", outputFile, err)
 		return err
