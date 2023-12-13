@@ -80,39 +80,3 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 	}
 	return nil
 }
-
-// getAllFileHashes 从Redis中检索所有文件的哈希值及其对应的路径。
-func getAllFileHashes(rdb *redis.Client, ctx context.Context) (map[string][]string, error) {
-	fileHashes := make(map[string][]string)
-
-	// Scan用于查找所有哈希键
-	iter := rdb.Scan(ctx, 0, "hash:*", 0).Iterator()
-	for iter.Next(ctx) {
-		hashKey := iter.Val()
-
-		// 获取文件内容的哈希值
-		fileContentHash, err := rdb.Get(ctx, hashKey).Result()
-		if err != nil {
-			fmt.Println("Error getting file content hash:", err)
-			continue
-		}
-
-		hashedKey := strings.TrimPrefix(hashKey, "hash:")
-
-		// 获取与hashedKey相关的文件路径
-		filePath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
-		if err != nil {
-			fmt.Println("Error getting file path:", err)
-			continue
-		}
-
-		fileHashes[fileContentHash] = append(fileHashes[fileContentHash], filePath)
-	}
-
-	if err := iter.Err(); err != nil {
-		fmt.Println("Iterator error:", err)
-		return nil, err
-	}
-
-	return fileHashes, nil
-}
