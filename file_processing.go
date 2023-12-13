@@ -103,6 +103,9 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		return
 	}
 
+	// 构造包含前缀的hashSizeKey
+	hashSizeKey := "fileHashSize:" + fileHash + "_" + strconv.FormatInt(info.Size(), 10)
+
 	// 使用管道批量处理Redis命令
 	pipe := rdb.Pipeline()
 
@@ -113,6 +116,8 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 	pipe.Set(ctx, "hash:"+hashedKey, fileHash, 0) // 存储文件哈希值
 	// 存储从路径到hashedKey的映射
 	pipe.Set(ctx, "pathToHash:"+path, hashedKey, 0)
+	// 存储具有相同哈希和大小的文件路径
+	pipe.Set(ctx, hashSizeKey, path, 0)
 
 	if _, err = pipe.Exec(ctx); err != nil {
 		fmt.Printf("Error executing pipeline for file: %s: %s\n", path, err)
