@@ -31,7 +31,7 @@ func getFileInfoFromRedis(rdb *redis.Client, ctx context.Context, hashedKey stri
 }
 
 func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
-    iter := rdb.Scan(ctx, 0, "*", 0).Iterator()
+	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
     var data = make(map[string]FileInfo)
     for iter.Next(ctx) {
         hashedKey := iter.Val()
