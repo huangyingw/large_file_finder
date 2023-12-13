@@ -34,7 +34,7 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 			hashedKey := strings.TrimPrefix(updateTimeKey, "updateTime:")
 
 			// 获取与文件相关的数据
-			fileInfoData, err := rdb.Get(ctx, hashedKey).Bytes()
+			fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
 			if err != nil {
 				fmt.Printf("Error retrieving fileInfo for key %s: %s\n", hashedKey, err)
 				continue
