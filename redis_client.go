@@ -33,7 +33,15 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 			// 解析出原始的hashedKey
 			hashedKey := strings.TrimPrefix(updateTimeKey, "updateTime:")
 
-			// 获取与文件相关的数据
+			// 获取文件路径和文件哈希值
+			filePath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
+			fileHash, errHash := rdb.Get(ctx, "hash:"+hashedKey).Result()
+			if err != nil || errHash != nil {
+				fmt.Printf("Error retrieving filePath or file hash for key %s: %s, %s\n", hashedKey, err, errHash)
+				continue
+			}
+
+			// 获取文件信息
 			fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
 			if err != nil {
 				fmt.Printf("Error retrieving fileInfo for key %s: %s\n", hashedKey, err)
@@ -49,37 +57,23 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 				continue
 			}
 
-			// 获取文件路径
-			filePath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
-			if err != nil {
-				fmt.Printf("Error retrieving filePath for key %s: %s\n", hashedKey, err)
-				continue
-			}
+			// 构造hashSizeKey
+			hashSizeKey := "fileHashSize:" + fileHash + "_" + strconv.FormatInt(fileInfo.Size, 10)
 
 			// 删除记录
 			pipe := rdb.Pipeline()
-			pipe.Del(ctx, updateTimeKey)     // 删除updateTime键
-			pipe.Del(ctx, hashedKey)         // 删除与hashedKey相关的数据
-			pipe.Del(ctx, "path:"+hashedKey) // 删除与path:hashedKey相关的数据
-
-			// 获取文件哈希值
-			fileHash, err := rdb.Get(ctx, "hash:"+hashedKey).Result()
-			if err != nil {
-				fmt.Printf("Error retrieving file hash for key %s: %s\n", hashedKey, err)
-			} else {
-				fmt.Printf("Deleting record with hash %s\n", fileHash)
-			}
-
-			pipe.Del(ctx, "hash:"+hashedKey) // 删除与文件哈希值相关的键
-
-			// 新增：删除从路径到hashedKey的映射
-			pipe.Del(ctx, "pathToHash:"+filePath) // 删除与pathToHash:filePath相关的键
+			pipe.Del(ctx, updateTimeKey)          // 删除updateTime键
+			pipe.Del(ctx, "fileInfo:"+hashedKey)  // 删除fileInfo相关数据
+			pipe.Del(ctx, "path:"+hashedKey)      // 删除path相关数据
+			pipe.Del(ctx, "hash:"+hashedKey)      // 删除hash相关数据
+			pipe.Del(ctx, "pathToHash:"+filePath) // 删除从路径到hashedKey的映射
+			pipe.SRem(ctx, hashSizeKey, filePath) // 从fileHashSize集合中移除路径
 
 			_, err = pipe.Exec(ctx)
 			if err != nil {
 				fmt.Printf("Error deleting keys for outdated record %s: %s\n", hashedKey, err)
 			} else {
-				fmt.Printf("Deleted outdated record: path=%s, size=%d, modTime=%s, hash=%s\n", filePath, fileInfo.Size, fileInfo.ModTime, fileHash)
+				fmt.Printf("Deleted outdated record: path=%s, hash=%s, size=%d\n", filePath, fileHash, fileInfo.Size)
 			}
 		}
 	}
