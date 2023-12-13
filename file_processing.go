@@ -70,7 +70,7 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 	hashedKey := generateHash(path)
 
 	// 检查Redis中是否已存在该文件的信息
-	exists, err := rdb.Exists(ctx, hashedKey).Result()
+	exists, err := rdb.Exists(ctx, "fileInfo:"+hashedKey).Result()
 	if err != nil {
 		fmt.Printf("Error checking existence in Redis for file %s: %s\n", path, err)
 		return
