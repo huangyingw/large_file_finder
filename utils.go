@@ -95,17 +95,48 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		return err
 	}
 
-	var lines []string
-	for _, paths := range hashes {
+	// 创建一个切片来存储哈希和对应的文件大小
+	type hashSize struct {
+		hash string
+		size int64
+	}
+	var hashSizes []hashSize
+	for hash, paths := range hashes {
 		if len(paths) > 1 {
-			for _, path := range paths {
-				relPath, err := filepath.Rel(rootDir, path)
-				if err != nil {
-					fmt.Printf("Error converting to relative path: %s\n", err)
-					continue
-				}
-				lines = append(lines, fmt.Sprintf("\"./%s\"", relPath))
+			// 直接从 Redis 查询第一个路径的 size
+			size, err := getFileSizeFromRedis(rdb, ctx, paths[0])
+			if err != nil {
+				fmt.Printf("Error getting file size for fullPath %s: %s\n", paths[0], err)
+				continue
 			}
+			fmt.Printf("Found file size %d for fullPath %s\n", size, paths[0])
+			hashSizes = append(hashSizes, hashSize{hash: hash, size: size})
+		}
+	}
+
+	// 根据文件大小排序哈希
+	sort.Slice(hashSizes, func(i, j int) bool {
+		return hashSizes[i].size > hashSizes[j].size
+	})
+
+	var lines []string
+	for _, hs := range hashSizes {
+		paths := hashes[hs.hash]
+		line := fmt.Sprintf("Duplicate files for hash %s:", hs.hash)
+		lines = append(lines, line)
+		for _, fullPath := range paths {
+			fileSize, err := getFileSizeFromRedis(rdb, ctx, fullPath)
+
+			if err != nil {
+				fmt.Printf("Error getting size for %s : %v\n", fullPath, err)
+			}
+
+			relativePath, err := filepath.Rel(rootDir, fullPath)
+			if err != nil {
+				fmt.Printf("Error converting to relative path: %s\n", err)
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("%d,\"./%s\"", fileSize, relativePath))
 		}
 	}
 
