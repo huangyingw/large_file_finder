@@ -55,13 +55,10 @@ func main() {
 	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
 	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
 	// 重新初始化工作池和等待组，用于第二批任务
-	taskQueue, poolWg = NewWorkerPool(workerCount)
 	processFavLog(favLogPath, rootDir, rdb, ctx, taskQueue, poolWg)
-	close(taskQueue)
-	poolWg.Wait()
 }
 
-func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context, taskQueue chan<- Task, poolWg *sync.WaitGroup) {
+func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		fmt.Println("Error opening file:", err)
@@ -78,18 +75,8 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 		fileNames = append(fileNames, extractFileName(line))
 	}
 
-	// 调用修改过的 extractKeywords 函数
-	keywordsCh := extractKeywords(fileNames, taskQueue, poolWg)
-
-	// 收集异步返回的关键词
-	keywordsMap := make(map[string]struct{})
-	for keyword := range keywordsCh {
-		keywordsMap[keyword] = struct{}{}
-	}
-	var keywords []string
-	for keyword := range keywordsMap {
-		keywords = append(keywords, keyword)
-	}
+	// 确定工作池的大小并调用 extractKeywords
+	keywords := extractKeywords(fileNames)
 
 	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
 
@@ -99,6 +86,8 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	})
 
 	totalKeywords := len(keywords)
+	workerCount := 100
+	taskQueue, poolWg = NewWorkerPool(workerCount)
 	for i, keyword := range keywords {
 		keywordFiles := closeFiles[keyword]
 		if len(keywordFiles) >= 2 {
@@ -111,6 +100,8 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 			}(keyword, keywordFiles, i) // 立即传递当前迭代的变量
 		}
 	}
+	close(taskQueue)
+	poolWg.Wait()
 }
 
 // 初始化Redis客户端
