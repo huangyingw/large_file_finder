@@ -197,9 +197,14 @@ func extractFileName(filePath string) string {
 
 var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
 
-// extractKeywords 使用工作池从文件名中提取关键词
-func extractKeywords(fileNames []string, taskQueue chan<- Task, poolWg *sync.WaitGroup) <-chan string {
+func extractKeywords(fileNames []string) []string {
+	workerCount := 100
+	// 创建自己的工作池
+	taskQueue, poolWg := NewWorkerPool(workerCount)
+	defer close(taskQueue)
+
 	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
+
 	for _, fileName := range fileNames {
 		taskQueue <- func(name string) Task {
 			return func() {
@@ -212,25 +217,23 @@ func extractKeywords(fileNames []string, taskQueue chan<- Task, poolWg *sync.Wai
 		}(fileName)
 	}
 
-	// 一个新的 Goroutine 等待所有任务完成后关闭关键词通道
+	// 关闭通道的逻辑保持不变
 	go func() {
 		poolWg.Wait()
 		close(keywordsCh)
 	}()
 
-	return keywordsCh
-}
-
-func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string {
-	closeFiles := make(map[string][]string)
-
-	for _, kw := range keywords {
-		for i, fileName := range fileNames {
-			if strings.Contains(strings.ToLower(fileName), strings.ToLower(kw)) {
-				closeFiles[kw] = append(closeFiles[kw], filePaths[i])
-			}
-		}
+	// 收集关键词
+	keywordsMap := make(map[string]struct{})
+	for keyword := range keywordsCh {
+		keywordsMap[keyword] = struct{}{}
 	}
 
-	return closeFiles
+	// 将map转换为slice
+	var keywords []string
+	for keyword := range keywordsMap {
+		keywords = append(keywords, keyword)
+	}
+
+	return keywords
 }
