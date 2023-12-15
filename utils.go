@@ -194,10 +194,11 @@ func extractFileName(filePath string) string {
 	return strings.ToLower(filepath.Base(filePath))
 }
 
+var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
+
 // extractKeywords extracts keywords from a slice of file names.
 func extractKeywords(fileNames []string) []string {
-	keywords := make(map[string]struct{})
-	pattern := regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
+	keywords := make(map[string]struct{}, len(fileNames))
 
 	for _, fileName := range fileNames {
 		nameWithoutExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
@@ -207,7 +208,7 @@ func extractKeywords(fileNames []string) []string {
 		}
 	}
 
-	var keywordList []string
+	keywordList := make([]string, 0, len(keywords))
 	for keyword := range keywords {
 		keywordList = append(keywordList, keyword)
 	}
