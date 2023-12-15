@@ -191,16 +191,8 @@ func processSymlink(path string) {
 func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context, rootDir string) {
 	// 对 keywordFiles 进行排序
 	sort.Slice(keywordFiles, func(i, j int) bool {
-		fullPath := filepath.Join(rootDir, cleanPath(keywordFiles[i]))
-		sizeI, errI := getFileSizeFromRedis(rdb, ctx, fullPath)
-		if errI != nil {
-			fmt.Printf("Error getting size for %s: %v\n", fullPath, errI)
-		}
-		fullPath = filepath.Join(rootDir, cleanPath(keywordFiles[j]))
-		sizeJ, errJ := getFileSizeFromRedis(rdb, ctx, fullPath)
-		if errJ != nil {
-			fmt.Printf("Error getting size for %s: %v\n", fullPath, errJ)
-		}
+		sizeI, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(keywordFiles[i])))
+		sizeJ, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(keywordFiles[j])))
 		return sizeI > sizeJ
 	})
 
@@ -208,11 +200,7 @@ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ct
 	var outputData strings.Builder
 	outputData.WriteString(keyword + "\n")
 	for _, filePath := range keywordFiles {
-		fullPath := filepath.Join(rootDir, cleanPath(filePath))
-		fileSize, err := getFileSizeFromRedis(rdb, ctx, fullPath)
-		if err != nil {
-			fmt.Printf("Error getting size for %s : %v\n", fullPath, err)
-		}
+		fileSize, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(filePath)))
 		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
 	}
 
@@ -249,4 +237,13 @@ func cleanPath(path string) string {
 	}
 
 	return path
+}
+
+func getFileSize(rdb *redis.Client, ctx context.Context, fullPath string) (int64, error) {
+	size, err := getFileSizeFromRedis(rdb, ctx, fullPath)
+	if err != nil {
+		fmt.Printf("Error getting size for %s: %v\n", fullPath, err)
+		return 0, err
+	}
+	return size, nil
 }
