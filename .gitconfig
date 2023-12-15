@@ -4,5 +4,5 @@
 [push]
     remote = origin
 [gsync]
-    remote = origin
-    target = origin/dev
+    remote = BareReps
+    target = BareReps/extractKeywords
