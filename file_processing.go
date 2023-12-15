@@ -39,6 +39,8 @@ func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx
 
 	for iter.Next(ctx) {
 		hashedKey := iter.Val()
+		hashedKey = strings.TrimPrefix(hashedKey, "fileInfo:")
+
 		originalPath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
 		if err != nil {
 			continue
@@ -46,7 +48,7 @@ func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx
 
 		fileInfo, err := getFileInfoFromRedis(rdb, ctx, hashedKey)
 		if err != nil {
-			fmt.Printf("Error getting file info from Redis for %s: %s\n", hashedKey, err)
+			fmt.Printf("Error getting file info from Redis for key %s: %s\n", hashedKey, err)
 			continue
 		}
 
