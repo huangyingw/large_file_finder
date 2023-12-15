@@ -81,8 +81,11 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		if err != nil {
 			fmt.Printf("Error updating updateTime for file %s: %s\n", path, err)
 		}
+		// fmt.Printf("File %s already exists in Redis, skipping processing.\n", path) // 添加打印信息
 		return
 	}
+
+	// fmt.Printf("File %s not found in Redis, processing.\n", path) // 添加打印信息
 
 	info, err := os.Stat(path)
 	if err != nil {
