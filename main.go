@@ -27,10 +27,12 @@ func main() {
 		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// 创建一个新的上下文和取消函数
+	progressCtx, progressCancel := context.WithCancel(ctx)
+	defer progressCancel()
 
-	go monitorProgress(ctx, &progressCounter)
+	// 启动进度监控 Goroutine
+	go monitorProgress(progressCtx, &progressCounter)
 
 	workerCount := 500
 	taskQueue, poolWg := NewWorkerPool(workerCount)
@@ -39,6 +41,10 @@ func main() {
 
 	close(taskQueue)
 	poolWg.Wait()
+
+	// 此时所有任务已经完成，取消进度监控上下文
+	progressCancel()
+
 	fmt.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
 
 	err = cleanUpOldRecords(rdb, ctx, startTime)
@@ -86,7 +92,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 
 	totalKeywords := len(keywords)
 	workerCount := 100
-	taskQueue, poolWg = NewWorkerPool(workerCount)
+	taskQueue, poolWg := NewWorkerPool(workerCount)
 	for i, keyword := range keywords {
 		keywordFiles := closeFiles[keyword]
 		if len(keywordFiles) >= 2 {
