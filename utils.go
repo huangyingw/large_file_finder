@@ -237,3 +237,17 @@ func extractKeywords(fileNames []string) []string {
 
 	return keywords
 }
+
+func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string {
+	closeFiles := make(map[string][]string)
+
+	for _, kw := range keywords {
+		for i, fileName := range fileNames {
+			if strings.Contains(strings.ToLower(fileName), strings.ToLower(kw)) {
+				closeFiles[kw] = append(closeFiles[kw], filePaths[i])
+			}
+		}
+	}
+
+	return closeFiles
+}
