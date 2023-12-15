@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 func loadExcludePatterns(filename string) ([]string, error) {
@@ -196,24 +197,28 @@ func extractFileName(filePath string) string {
 
 var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
 
-// extractKeywords extracts keywords from a slice of file names.
-func extractKeywords(fileNames []string) []string {
-	keywords := make(map[string]struct{}, len(fileNames))
-
+// extractKeywords 使用工作池从文件名中提取关键词
+func extractKeywords(fileNames []string, taskQueue chan<- Task, poolWg *sync.WaitGroup) <-chan string {
+	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
 	for _, fileName := range fileNames {
-		nameWithoutExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
-		matches := pattern.FindAllString(nameWithoutExt, -1)
-		for _, match := range matches {
-			keywords[match] = struct{}{}
-		}
+		taskQueue <- func(name string) Task {
+			return func() {
+				nameWithoutExt := strings.TrimSuffix(name, filepath.Ext(name))
+				matches := pattern.FindAllString(nameWithoutExt, -1)
+				for _, match := range matches {
+					keywordsCh <- match
+				}
+			}
+		}(fileName)
 	}
 
-	keywordList := make([]string, 0, len(keywords))
-	for keyword := range keywords {
-		keywordList = append(keywordList, keyword)
-	}
+	// 一个新的 Goroutine 等待所有任务完成后关闭关键词通道
+	go func() {
+		poolWg.Wait()
+		close(keywordsCh)
+	}()
 
-	return keywordList
+	return keywordsCh
 }
 
 func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string {
