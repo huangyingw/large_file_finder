@@ -12,7 +12,22 @@ diff --git a/.gitconfig b/.gitconfig
 diff --git a/main.go b/main.go
 --- ./main.go
 +++ ./main.go
-@@ -74,13 +74,26 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
+@@ -55,13 +55,10 @@ func main() {
+ 	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
+ 	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
+ 	// 重新初始化工作池和等待组，用于第二批任务
+-	taskQueue, poolWg = NewWorkerPool(workerCount)
+ 	processFavLog(favLogPath, rootDir, rdb, ctx, taskQueue, poolWg)
+-	close(taskQueue)
+-	poolWg.Wait()
+ }
+ 
+-func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context, taskQueue chan<- Task, poolWg *sync.WaitGroup) {
++func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context) {
+ 	file, err := os.Open(filePath)
+ 	if err != nil {
+ 		fmt.Println("Error opening file:", err)
+@@ -74,18 +71,23 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
  	for scanner.Scan() {
  		line := scanner.Text()
  		line = regexp.MustCompile(`^\d+,`).ReplaceAllString(line, "")
@@ -21,19 +36,8 @@ diff --git a/main.go b/main.go
  		fileNames = append(fileNames, extractFileName(line))
  	}
  
--	keywords := extractKeywords(fileNames)
-+	// 调用修改过的 extractKeywords 函数
-+	keywordsCh := extractKeywords(fileNames, taskQueue, poolWg)
-+
-+	// 收集异步返回的关键词
-+	keywordsMap := make(map[string]struct{})
-+	for keyword := range keywordsCh {
-+		keywordsMap[keyword] = struct{}{}
-+	}
-+	var keywords []string
-+	for keyword := range keywordsMap {
-+		keywords = append(keywords, keyword)
-+	}
++	// 确定工作池的大小并调用 extractKeywords
+ 	keywords := extractKeywords(fileNames)
 +
  	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
  
@@ -41,6 +45,22 @@ diff --git a/main.go b/main.go
  	sort.Slice(keywords, func(i, j int) bool {
  		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
  	})
+ 
+ 	totalKeywords := len(keywords)
++	workerCount := 100
++	taskQueue, poolWg = NewWorkerPool(workerCount)
+ 	for i, keyword := range keywords {
+ 		keywordFiles := closeFiles[keyword]
+ 		if len(keywordFiles) >= 2 {
+@@ -98,6 +100,8 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
+ 			}(keyword, keywordFiles, i) // 立即传递当前迭代的变量
+ 		}
+ 	}
++	close(taskQueue)
++	poolWg.Wait()
+ }
+ 
+ // 初始化Redis客户端
 diff --git a/utils.go b/utils.go
 --- ./utils.go
 +++ ./utils.go
@@ -52,19 +72,23 @@ diff --git a/utils.go b/utils.go
  )
  
  func loadExcludePatterns(filename string) ([]string, error) {
-@@ -194,25 +195,30 @@ func extractFileName(filePath string) string {
+@@ -194,37 +195,45 @@ func extractFileName(filePath string) string {
  	return strings.ToLower(filepath.Base(filePath))
  }
  
 -// extractKeywords extracts keywords from a slice of file names.
--func extractKeywords(fileNames []string) []string {
++var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
++
+ func extractKeywords(fileNames []string) []string {
 -	keywords := make(map[string]struct{})
 -	pattern := regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
-+var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
- 
-+// extractKeywords 使用工作池从文件名中提取关键词
-+func extractKeywords(fileNames []string, taskQueue chan<- Task, poolWg *sync.WaitGroup) <-chan string {
++	workerCount := 100
++	// 创建自己的工作池
++	taskQueue, poolWg := NewWorkerPool(workerCount)
++	defer close(taskQueue)
++
 +	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
+ 
  	for _, fileName := range fileNames {
 -		nameWithoutExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
 +		taskQueue <- func(name string) Task {
@@ -84,13 +108,33 @@ diff --git a/utils.go b/utils.go
  	}
  
 -	return keywordList
-+	// 一个新的 Goroutine 等待所有任务完成后关闭关键词通道
+-}
++	// 关闭通道的逻辑保持不变
 +	go func() {
 +		poolWg.Wait()
 +		close(keywordsCh)
 +	}()
-+
-+	return keywordsCh
- }
  
- func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string {
+-func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string {
+-	closeFiles := make(map[string][]string)
+-
+-	for _, kw := range keywords {
+-		for i, fileName := range fileNames {
+-			if strings.Contains(strings.ToLower(fileName), strings.ToLower(kw)) {
+-				closeFiles[kw] = append(closeFiles[kw], filePaths[i])
+-			}
++	// 收集关键词
++	keywordsMap := make(map[string]struct{})
++	for keyword := range keywordsCh {
++		keywordsMap[keyword] = struct{}{}
+ 	}
++
++	// 将map转换为slice
++	var keywords []string
++	for keyword := range keywordsMap {
++		keywords = append(keywords, keyword)
+ 	}
+ 
+-	return closeFiles
++	return keywords
+ }
