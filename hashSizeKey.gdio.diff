@@ -28,7 +28,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,232 @@
 +// file_processing.go
 +package main
 +
@@ -112,8 +112,11 @@ new file mode 100644
 +		if err != nil {
 +			fmt.Printf("Error updating updateTime for file %s: %s\n", path, err)
 +		}
++		// fmt.Printf("File %s already exists in Redis, skipping processing.\n", path) // 添加打印信息
 +		return
 +	}
++
++	// fmt.Printf("File %s not found in Redis, processing.\n", path) // 添加打印信息
 +
 +	info, err := os.Stat(path)
 +	if err != nil {
@@ -620,13 +623,13 @@ new file mode 100644
 +	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
 +	findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
 +
-+	//// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
-+	//favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
-+	//// 重新初始化工作池和等待组，用于第二批任务
-+	//taskQueue, poolWg = NewWorkerPool(workerCount)
-+	//processFavLog(favLogPath, rootDir, rdb, ctx, taskQueue, poolWg)
-+	//close(taskQueue)
-+	//poolWg.Wait()
++	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
++	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
++	// 重新初始化工作池和等待组，用于第二批任务
++	taskQueue, poolWg = NewWorkerPool(workerCount)
++	processFavLog(favLogPath, rootDir, rdb, ctx, taskQueue, poolWg)
++	close(taskQueue)
++	poolWg.Wait()
 +}
 +
 +func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context, taskQueue chan<- Task, poolWg *sync.WaitGroup) {
