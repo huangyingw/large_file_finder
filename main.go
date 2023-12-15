@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -55,7 +54,7 @@ func main() {
 	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
 	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
 	// 重新初始化工作池和等待组，用于第二批任务
-	processFavLog(favLogPath, rootDir, rdb, ctx, taskQueue, poolWg)
+	processFavLog(favLogPath, rootDir, rdb, ctx)
 }
 
 func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context) {
