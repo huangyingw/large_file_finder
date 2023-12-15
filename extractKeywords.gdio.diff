@@ -588,7 +588,7 @@ diff --git a/main.go b/main.go
 new file mode 100644
 --- /dev/null
 +++ ./main.go
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,205 @@
 +// main.go
 +// 此文件是Go程序的主要入口点，包含了文件处理程序的核心逻辑和初始化代码。
 +
@@ -665,13 +665,26 @@ new file mode 100644
 +	for scanner.Scan() {
 +		line := scanner.Text()
 +		line = regexp.MustCompile(`^\d+,`).ReplaceAllString(line, "")
-+		filePaths = append(filePaths, line)
++		filePaths = append(filePaths, line) // 添加文件路径
 +		fileNames = append(fileNames, extractFileName(line))
 +	}
 +
-+	keywords := extractKeywords(fileNames)
++	// 调用修改过的 extractKeywords 函数
++	keywordsCh := extractKeywords(fileNames, taskQueue, poolWg)
++
++	// 收集异步返回的关键词
++	keywordsMap := make(map[string]struct{})
++	for keyword := range keywordsCh {
++		keywordsMap[keyword] = struct{}{}
++	}
++	var keywords []string
++	for keyword := range keywordsMap {
++		keywords = append(keywords, keyword)
++	}
++
 +	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
 +
++	// 排序关键词
 +	sort.Slice(keywords, func(i, j int) bool {
 +		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
 +	})
@@ -799,8 +812,8 @@ rename to main.go.sh
  
 -go build find_large_files_with_cache.go && \
 -    sudo ./find_large_files_with_cache /media
-+#go run . /media/secure_bcache/av/onlyfans/
-+go run . /media
++go run . /media/secure_bcache/av/onlyfans/
++#go run . /media
 diff --git a/redis_client.go b/redis_client.go
 new file mode 100644
 --- /dev/null
@@ -946,7 +959,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,236 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -965,6 +978,7 @@ new file mode 100644
 +	"sort"
 +	"strconv"
 +	"strings"
++	"sync"
 +)
 +
 +func loadExcludePatterns(filename string) ([]string, error) {
@@ -1145,24 +1159,28 @@ new file mode 100644
 +
 +var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
 +
-+// extractKeywords extracts keywords from a slice of file names.
-+func extractKeywords(fileNames []string) []string {
-+	keywords := make(map[string]struct{}, len(fileNames))
-+
++// extractKeywords 使用工作池从文件名中提取关键词
++func extractKeywords(fileNames []string, taskQueue chan<- Task, poolWg *sync.WaitGroup) <-chan string {
++	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
 +	for _, fileName := range fileNames {
-+		nameWithoutExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
-+		matches := pattern.FindAllString(nameWithoutExt, -1)
-+		for _, match := range matches {
-+			keywords[match] = struct{}{}
-+		}
++		taskQueue <- func(name string) Task {
++			return func() {
++				nameWithoutExt := strings.TrimSuffix(name, filepath.Ext(name))
++				matches := pattern.FindAllString(nameWithoutExt, -1)
++				for _, match := range matches {
++					keywordsCh <- match
++				}
++			}
++		}(fileName)
 +	}
 +
-+	keywordList := make([]string, 0, len(keywords))
-+	for keyword := range keywords {
-+		keywordList = append(keywordList, keyword)
-+	}
++	// 一个新的 Goroutine 等待所有任务完成后关闭关键词通道
++	go func() {
++		poolWg.Wait()
++		close(keywordsCh)
++	}()
 +
-+	return keywordList
++	return keywordsCh
 +}
 +
 +func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string {
