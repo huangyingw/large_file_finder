@@ -74,13 +74,26 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	for scanner.Scan() {
 		line := scanner.Text()
 		line = regexp.MustCompile(`^\d+,`).ReplaceAllString(line, "")
-		filePaths = append(filePaths, line)
+		filePaths = append(filePaths, line) // 添加文件路径
 		fileNames = append(fileNames, extractFileName(line))
 	}
 
-	keywords := extractKeywords(fileNames)
+	// 调用修改过的 extractKeywords 函数
+	keywordsCh := extractKeywords(fileNames, taskQueue, poolWg)
+
+	// 收集异步返回的关键词
+	keywordsMap := make(map[string]struct{})
+	for keyword := range keywordsCh {
+		keywordsMap[keyword] = struct{}{}
+	}
+	var keywords []string
+	for keyword := range keywordsMap {
+		keywords = append(keywords, keyword)
+	}
+
 	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
 
+	// 排序关键词
 	sort.Slice(keywords, func(i, j int) bool {
 		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
 	})
