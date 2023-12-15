@@ -34,6 +34,9 @@ func getFileInfoFromRedis(rdb *redis.Client, ctx context.Context, hashedKey stri
 func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
 	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
 	var data = make(map[string]FileInfo)
+
+	foundData := false
+
 	for iter.Next(ctx) {
 		hashedKey := iter.Val()
 		originalPath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
@@ -42,9 +45,18 @@ func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx
 		}
 
 		fileInfo, err := getFileInfoFromRedis(rdb, ctx, hashedKey)
-		if err == nil {
-			data[originalPath] = fileInfo
+		if err != nil {
+			fmt.Printf("Error getting file info from Redis for %s: %s\n", hashedKey, err)
+			continue
 		}
+
+		data[originalPath] = fileInfo
+		foundData = true
+	}
+
+	if !foundData {
+		fmt.Println("No data found in Redis.")
+		return nil
 	}
 
 	var lines []string
@@ -59,6 +71,12 @@ func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx
 		lines = append(lines, line)
 	}
 
+	if len(lines) == 0 {
+		fmt.Println("No lines to write to file.")
+		return nil
+	}
+
+	fmt.Printf("Writing %d lines to file %s\n", len(lines), filepath.Join(dir, filename))
 	return writeLinesToFile(filepath.Join(dir, filename), lines)
 }
 
