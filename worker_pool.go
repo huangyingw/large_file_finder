@@ -7,8 +7,7 @@ import (
 // Task 定义了工作池中的任务类型
 type Task func()
 
-// NewWorkerPool 创建并返回一个工作池
-func NewWorkerPool(workerCount int) (chan<- Task, *sync.WaitGroup) {
+func NewWorkerPool(workerCount int) (chan<- Task, *sync.WaitGroup, func()) {
 	var wg sync.WaitGroup
 	taskQueue := make(chan Task)
 
@@ -22,5 +21,9 @@ func NewWorkerPool(workerCount int) (chan<- Task, *sync.WaitGroup) {
 		}()
 	}
 
-	return taskQueue, &wg
+	stopFunc := func() {
+		close(taskQueue) // 关闭包装后的任务队列
+	}
+
+	return taskQueue, &wg, stopFunc
 }
