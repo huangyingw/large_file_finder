@@ -199,7 +199,7 @@ var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a
 func extractKeywords(fileNames []string) []string {
 	workerCount := 100
 	// 创建自己的工作池
-	taskQueue, poolWg := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
 
 	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
 
@@ -220,7 +220,8 @@ func extractKeywords(fileNames []string) []string {
 		}(fileName)
 	}
 	fmt.Println("All tasks submitted to the worker pool.")
-	close(taskQueue) // 关闭任务队列
+
+	stopPool() // 使用停止函数来关闭任务队列
 
 	// 关闭通道的逻辑保持不变
 	go func() {
