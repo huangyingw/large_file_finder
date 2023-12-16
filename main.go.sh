@@ -15,7 +15,12 @@ go get -u github.com/karrick/godirwalk
 docker-compose up -d
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+rm /media/av162/cartoon/dragonball/test/*.txt
+>>>>>>> 80d9d45 (n)
 go run . /media/av162/cartoon/dragonball/test/
+ls -al /media/av162/cartoon/dragonball/test/*.txt
 #go run . /media
 =======
 #go run . /media/secure_bcache/av/onlyfans/
