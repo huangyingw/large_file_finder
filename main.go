@@ -68,7 +68,6 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 		fmt.Println("Error opening file:", err)
 		return
 	}
-	fmt.Println("File opened successfully.")
 	defer file.Close()
 
 	var fileNames, filePaths []string
@@ -76,7 +75,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	for scanner.Scan() {
 		line := scanner.Text()
 		line = regexp.MustCompile(`^\d+,`).ReplaceAllString(line, "")
-		filePaths = append(filePaths, line) // 添加文件路径
+		filePaths = append(filePaths, line)
 		fileNames = append(fileNames, extractFileName(line))
 	}
 
@@ -84,19 +83,16 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	keywords := extractKeywords(fileNames)
 
 	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
-	fmt.Println("Close files mapping created.")
 
 	// 排序关键词
 	sort.Slice(keywords, func(i, j int) bool {
 		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
 	})
-	fmt.Println("Keywords sorted.")
 
 	totalKeywords := len(keywords)
 
 	workerCount := 10
 	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount) // 修改此处
-	fmt.Println("Worker pool created.")
 
 	for i, keyword := range keywords {
 		keywordFiles := closeFiles[keyword]
@@ -111,13 +107,10 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 			}(keyword, keywordFiles, i)
 		}
 	}
-	fmt.Println("All tasks added to queue.")
 
 	stopPool() // 使用停止函数来关闭任务队列
-	fmt.Println("Task queue closed.")
 
 	poolWg.Wait()
-	fmt.Println("Worker pool has completed all tasks.")
 }
 
 // 初始化Redis客户端
@@ -143,7 +136,7 @@ func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Clien
 	rootDir := args[1]
 
 	// Minimum file size in bytes
-	minSize := 2 // Default size is 200MB
+	minSize := 200 // Default size is 200MB
 	minSizeBytes := int64(minSize * 1024 * 1024)
 
 	excludeRegexps, _ := compileExcludePatterns(filepath.Join(rootDir, "exclude_patterns.txt"))
