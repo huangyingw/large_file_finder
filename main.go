@@ -68,6 +68,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 		fmt.Println("Error opening file:", err)
 		return
 	}
+	fmt.Println("File opened successfully.")
 	defer file.Close()
 
 	var fileNames, filePaths []string
@@ -78,20 +79,28 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 		filePaths = append(filePaths, line) // 添加文件路径
 		fileNames = append(fileNames, extractFileName(line))
 	}
+	fmt.Printf("Scanned %d lines from file.\n", len(fileNames))
 
 	// 确定工作池的大小并调用 extractKeywords
 	keywords := extractKeywords(fileNames)
+	fmt.Printf("Extracted %d keywords.\n", len(keywords))
 
 	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
+	fmt.Println("Close files mapping created.")
 
 	// 排序关键词
 	sort.Slice(keywords, func(i, j int) bool {
 		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
 	})
+	fmt.Println("Keywords sorted.")
 
 	totalKeywords := len(keywords)
+	fmt.Printf("Total keywords: %d\n", totalKeywords)
+
 	workerCount := 10
 	taskQueue, poolWg := NewWorkerPool(workerCount)
+	fmt.Println("Worker pool created.")
+
 	for i, keyword := range keywords {
 		keywordFiles := closeFiles[keyword]
 		if len(keywordFiles) >= 2 {
@@ -102,11 +111,17 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 					fmt.Printf("Processing keyword %d of %d: %s\n", idx+1, totalKeywords, kw)
 					processKeyword(kw, kf, rdb, ctx, rootDir)
 				}
-			}(keyword, keywordFiles, i) // 立即传递当前迭代的变量
+			}(keyword, keywordFiles, i)
+			fmt.Printf("Task for keyword '%s' added to queue.\n", keyword)
 		}
 	}
+	fmt.Println("All tasks added to queue.")
+
 	close(taskQueue)
+	fmt.Println("Task queue closed.")
+
 	poolWg.Wait()
+	fmt.Println("Worker pool has completed all tasks.")
 }
 
 // 初始化Redis客户端
@@ -132,7 +147,7 @@ func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Clien
 	rootDir := args[1]
 
 	// Minimum file size in bytes
-	minSize := 200 // Default size is 200MB
+	minSize := 2 // Default size is 200MB
 	minSizeBytes := int64(minSize * 1024 * 1024)
 
 	excludeRegexps, _ := compileExcludePatterns(filepath.Join(rootDir, "exclude_patterns.txt"))
