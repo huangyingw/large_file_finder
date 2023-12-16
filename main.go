@@ -79,11 +79,9 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 		filePaths = append(filePaths, line) // 添加文件路径
 		fileNames = append(fileNames, extractFileName(line))
 	}
-	fmt.Printf("Scanned %d lines from file.\n", len(fileNames))
 
 	// 确定工作池的大小并调用 extractKeywords
 	keywords := extractKeywords(fileNames)
-	fmt.Printf("Extracted %d keywords.\n", len(keywords))
 
 	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
 	fmt.Println("Close files mapping created.")
@@ -95,7 +93,6 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	fmt.Println("Keywords sorted.")
 
 	totalKeywords := len(keywords)
-	fmt.Printf("Total keywords: %d\n", totalKeywords)
 
 	workerCount := 10
 	taskQueue, poolWg := NewWorkerPool(workerCount)
@@ -112,7 +109,6 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 					processKeyword(kw, kf, rdb, ctx, rootDir)
 				}
 			}(keyword, keywordFiles, i)
-			fmt.Printf("Task for keyword '%s' added to queue.\n", keyword)
 		}
 	}
 	fmt.Println("All tasks added to queue.")
