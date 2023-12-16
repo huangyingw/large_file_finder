@@ -198,27 +198,40 @@ var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a
 
 func extractKeywords(fileNames []string) []string {
 	workerCount := 100
+	fmt.Printf("Creating worker pool with %d workers.\n", workerCount)
 	// 创建自己的工作池
 	taskQueue, poolWg := NewWorkerPool(workerCount)
 	defer close(taskQueue)
 
 	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
+	fmt.Printf("Starting keyword extraction for %d files.\n", len(fileNames))
 
 	for _, fileName := range fileNames {
+		poolWg.Add(1) // 确保在任务开始前递增计数
 		taskQueue <- func(name string) Task {
 			return func() {
+				fmt.Printf("Starting processing of file: %s\n", name)
+				defer func() {
+					fmt.Printf("Finished processing of file: %s\n", name)
+					poolWg.Done() // 任务结束时递减计数
+				}()
+
 				nameWithoutExt := strings.TrimSuffix(name, filepath.Ext(name))
 				matches := pattern.FindAllString(nameWithoutExt, -1)
 				for _, match := range matches {
 					keywordsCh <- match
 				}
+				fmt.Printf("Completed task for %s\n", name)
 			}
 		}(fileName)
 	}
+	fmt.Println("All tasks submitted to the worker pool.")
+	close(taskQueue) // 关闭任务队列
 
 	// 关闭通道的逻辑保持不变
 	go func() {
 		poolWg.Wait()
+		fmt.Println("All tasks have been processed. Closing the keywords channel.")
 		close(keywordsCh)
 	}()
 
@@ -227,6 +240,7 @@ func extractKeywords(fileNames []string) []string {
 	for keyword := range keywordsCh {
 		keywordsMap[keyword] = struct{}{}
 	}
+	fmt.Printf("Collected %d unique keywords.\n", len(keywordsMap))
 
 	// 将map转换为slice
 	var keywords []string
