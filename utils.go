@@ -201,7 +201,6 @@ func extractKeywords(fileNames []string) []string {
 	fmt.Printf("Creating worker pool with %d workers.\n", workerCount)
 	// 创建自己的工作池
 	taskQueue, poolWg := NewWorkerPool(workerCount)
-	defer close(taskQueue)
 
 	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
 	fmt.Printf("Starting keyword extraction for %d files.\n", len(fileNames))
