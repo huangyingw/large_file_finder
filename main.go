@@ -35,11 +35,11 @@ func main() {
 	go monitorProgress(progressCtx, &progressCounter)
 
 	workerCount := 500
-	taskQueue, poolWg := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount) // 修改此处
 
 	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
 
-	close(taskQueue)
+	stopPool() // 使用停止函数来关闭任务队列
 	poolWg.Wait()
 
 	// 此时所有任务已经完成，取消进度监控上下文
@@ -95,7 +95,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	totalKeywords := len(keywords)
 
 	workerCount := 10
-	taskQueue, poolWg := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount) // 修改此处
 	fmt.Println("Worker pool created.")
 
 	for i, keyword := range keywords {
@@ -113,7 +113,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	}
 	fmt.Println("All tasks added to queue.")
 
-	close(taskQueue)
+	stopPool() // 使用停止函数来关闭任务队列
 	fmt.Println("Task queue closed.")
 
 	poolWg.Wait()
