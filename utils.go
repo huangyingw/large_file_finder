@@ -219,14 +219,12 @@ func extractKeywords(fileNames []string) []string {
 			}
 		}(fileName)
 	}
-	fmt.Println("All tasks submitted to the worker pool.")
 
 	stopPool() // 使用停止函数来关闭任务队列
 
 	// 关闭通道的逻辑保持不变
 	go func() {
 		poolWg.Wait()
-		fmt.Println("All tasks have been processed. Closing the keywords channel.")
 		close(keywordsCh)
 	}()
 
