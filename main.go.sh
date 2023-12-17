@@ -16,6 +16,7 @@ docker-compose up -d
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 rm /media/av162/cartoon/dragonball/test/*.txt
 >>>>>>> 80d9d45 (n)
@@ -26,3 +27,9 @@ ls -al /media/av162/cartoon/dragonball/test/*.txt
 #go run . /media/secure_bcache/av/onlyfans/
 go run . /media
 >>>>>>> a2c1f16 (n)
+=======
+#rm /media/av162/cartoon/dragonball/test/*.txt
+#go run . /media/av162/cartoon/dragonball/test/
+#ls -al /media/av162/cartoon/dragonball/test/*.txt
+go run . /media
+>>>>>>> 11de013 (n)
