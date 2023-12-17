@@ -58,7 +58,7 @@ func main() {
 	findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
 
 	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
-	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
+	// favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
 	// processFavLog(favLogPath, rootDir, rdb, ctx)
 }
 
