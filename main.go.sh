@@ -14,7 +14,7 @@ go get -u github.com/karrick/godirwalk
 #docker-compose restart
 docker-compose up -d
 
-rm /media/av162/cartoon/dragonball/test/*.txt
-go run . /media/av162/cartoon/dragonball/test/
-ls -al /media/av162/cartoon/dragonball/test/*.txt
-#go run . /media
+#rm /media/av162/cartoon/dragonball/test/*.txt
+#go run . /media/av162/cartoon/dragonball/test/
+#ls -al /media/av162/cartoon/dragonball/test/*.txt
+go run . /media
