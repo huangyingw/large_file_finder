@@ -105,7 +105,7 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		return
 	}
 
-	// fmt.Printf("File %s not found in Redis, processing.\n", path) // 添加打印信息
+	fmt.Printf("File %s not found in Redis, processing.\n", path) // 添加打印信息
 
 	info, err := os.Stat(path)
 	if err != nil {
