@@ -133,7 +133,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		}
 
 		if len(filePaths) > 1 {
-			line := fmt.Sprintf("Duplicate files for hash size %d:", hs.size)
+			line := fmt.Sprintf("Duplicate files for fileHashSizeKey %s:", hs.key)
 			lines = append(lines, line)
 			for _, fullPath := range filePaths {
 				relativePath, err := filepath.Rel(rootDir, fullPath)
