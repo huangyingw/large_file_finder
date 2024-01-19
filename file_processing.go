@@ -164,7 +164,7 @@ func calculateFileHash(path string) (string, error) {
 	}
 	defer file.Close()
 
-	const readLimit = 4 * 1024 // 限制读取的数据量为 4 KB
+	const readLimit = 512 * 1024 // 限制读取的数据量为 4 KB
 	reader := bufio.NewReaderSize(file, readLimit)
 	limitedReader := io.LimitReader(reader, readLimit)
 
