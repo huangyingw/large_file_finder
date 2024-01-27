@@ -4,5 +4,6 @@
 [push]
     remote = origin
 [gsync]
-    remote = BareReps
-    target = BareReps/hashSizeKey
+    remote = origin
+    target = origin/hashSizeKey
+
