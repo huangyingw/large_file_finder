@@ -138,6 +138,9 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	var duplicateGroups [][]fileInfo
 	fileCount := 0
 
+	// 用于存储已处理的文件哈希
+	processedFullHashes := make(map[string]bool)
+
 	for _, hs := range hashSizes {
 		filePaths, err := rdb.SMembers(ctx, hs.key).Result()
 		if err != nil {
@@ -201,14 +204,20 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 				hashes[fullHash] = append(hashes[fullHash], infoStruct)
 				fileCount++
 			}
-			for _, infos := range hashes {
+			for fullHash, infos := range hashes {
 				if len(infos) > 1 {
-					group = append(group, infos...)
+					// 检查fullHash是否已处理过
+					if !processedFullHashes[fullHash] {
+						// 只添加一次组标题
+						group = append(group, fileInfo{line: header})
+						group = append(group, infos...)
+						processedFullHashes[fullHash] = true
+					}
 				}
 			}
-			if len(group) > 0 {
-				// 在分组前添加组标题
-				duplicateGroups = append(duplicateGroups, append([]fileInfo{{line: header}}, group...))
+			if len(group) > 1 {
+				// 确保组中至少有一个文件才添加到重复组
+				duplicateGroups = append(duplicateGroups, group)
 			}
 		}
 	}
