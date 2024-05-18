@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func loadExcludePatterns(filename string) ([]string, error) {
@@ -150,16 +151,42 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 					continue
 				}
 				fileName := filepath.Base(relativePath)
-				fullHash, err := calculateFileHash(fullPath, true) // 使用完整文件的哈希值
+
+				// 计算完整文件的SHA-256哈希值
+				fullHash, err := calculateFileHash(fullPath, true)
 				if err != nil {
 					fmt.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
 					continue
 				}
-				info := fileInfo{
+
+				// 获取文件信息并编码
+				info, err := os.Stat(fullPath)
+				if err != nil {
+					fmt.Printf("Error stating file: %s, Error: %s\n", fullPath, err)
+					continue
+				}
+
+				var buf bytes.Buffer
+				enc := gob.NewEncoder(&buf)
+				if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
+					fmt.Printf("Error encoding: %s, File: %s\n", err, fullPath)
+					continue
+				}
+
+				// 构造包含前缀的hashSizeKey
+				hashSizeKey := "fileHashSize:" + fullHash + "_" + strconv.FormatInt(info.Size(), 10)
+
+				// 调用saveFileInfoToRedis函数来保存文件信息到Redis
+				if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, time.Now().Unix(), fullHash, hashSizeKey); err != nil {
+					fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
+					continue
+				}
+
+				infoStruct := fileInfo{
 					name: fileName,
 					line: fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath),
 				}
-				hashes[fullHash] = append(hashes[fullHash], info)
+				hashes[fullHash] = append(hashes[fullHash], infoStruct)
 			}
 			for _, infos := range hashes {
 				if len(infos) > 1 {
