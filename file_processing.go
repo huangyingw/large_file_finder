@@ -81,26 +81,6 @@ func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx
 	return writeLinesToFile(filepath.Join(dir, filename), lines)
 }
 
-func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, startTime int64, fileHash string, hashSizeKey string) error {
-	// 使用管道批量处理Redis命令
-	pipe := rdb.Pipeline()
-
-	// 这里我们添加命令到管道，但不立即检查错误
-	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
-	pipe.Set(ctx, "path:"+hashedKey, path, 0)
-	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
-	pipe.Set(ctx, "hash:"+hashedKey, fileHash, 0) // 存储文件哈希值
-	// 存储从路径到hashedKey的映射
-	pipe.Set(ctx, "pathToHash:"+path, hashedKey, 0)
-	// 使用SAdd而不是Set，将路径添加到集合中
-	pipe.SAdd(ctx, hashSizeKey, path)
-
-	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
-	}
-	return nil
-}
-
 func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context, startTime int64) {
 	// Update progress counter atomically
 	atomic.AddInt32(&progressCounter, 1)
