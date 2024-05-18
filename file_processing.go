@@ -154,6 +154,9 @@ func calculateFileHash(path string, fullRead bool) (string, error) {
 
 	hasher := sha256.New()
 	if fullRead {
+		// 打印正在计算完整哈希的文件路径
+		fmt.Printf("Calculating full hash for file: %s\n", path)
+
 		// 读取整个文件
 		if _, err := io.Copy(hasher, file); err != nil {
 			return "", err
