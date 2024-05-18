@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -255,15 +256,27 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	// 用于存储已处理的文件哈希
 	processedFullHashes := make(map[string]bool)
 
+	var wg sync.WaitGroup // 等待 goroutine 完成
+	var mu sync.Mutex     // 用于保护对 duplicateGroups 和 fileCount 的并发访问
+
 	for _, hs := range hashSizes {
-		groups, count, err := processFileHashSizeKey(rootDir, hs, rdb, ctx, processedFullHashes)
-		if err != nil {
-			fmt.Printf("Error processing fileHashSize key %s: %s\n", hs.key, err)
-			continue
-		}
-		duplicateGroups = append(duplicateGroups, groups...)
-		fileCount += count
+		wg.Add(1)
+		go func(hs hashSize) {
+			defer wg.Done()
+
+			groups, count, err := processFileHashSizeKey(rootDir, hs, rdb, ctx, processedFullHashes)
+			if err != nil {
+				fmt.Printf("Error processing fileHashSize key %s: %s\n", hs.key, err)
+				return
+			}
+			mu.Lock()
+			duplicateGroups = append(duplicateGroups, groups...)
+			fileCount += count
+			mu.Unlock()
+		}(hs)
 	}
+
+	wg.Wait()
 
 	fmt.Printf("Processed %d files\n", fileCount)
 
