@@ -97,8 +97,9 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		size int64
 	}
 	type fileInfo struct {
-		name string
-		line string
+		name   string
+		line   string
+		header string
 	}
 
 	var hashSizes []hashSize
@@ -129,7 +130,6 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		return hashSizes[i].size > hashSizes[j].size
 	})
 
-	var lines []string
 	var fileInfos []fileInfo
 
 	for _, hs := range hashSizes {
@@ -141,7 +141,6 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 
 		if len(filePaths) > 1 {
 			header := fmt.Sprintf("Duplicate files for fileHashSizeKey %s:", hs.key)
-			lines = append(lines, header)
 			for _, fullPath := range filePaths {
 				relativePath, err := filepath.Rel(rootDir, fullPath)
 				if err != nil {
@@ -150,8 +149,9 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 				}
 				fileName := filepath.Base(relativePath)
 				fileInfos = append(fileInfos, fileInfo{
-					name: fileName,
-					line: fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath),
+					name:   fileName,
+					line:   fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath),
+					header: header,
 				})
 			}
 		}
@@ -167,12 +167,18 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		return len(fileInfos[i].name) > len(fileInfos[j].name)
 	})
 
+	var sortedLines []string
+	var currentHeader string
 	for _, fi := range fileInfos {
-		lines = append(lines, fi.line)
+		if fi.header != currentHeader {
+			sortedLines = append(sortedLines, fi.header)
+			currentHeader = fi.header
+		}
+		sortedLines = append(sortedLines, fi.line)
 	}
 
 	outputFile = filepath.Join(rootDir, outputFile)
-	err := writeLinesToFile(outputFile, lines)
+	err := writeLinesToFile(outputFile, sortedLines)
 	if err != nil {
 		fmt.Printf("Error writing to file %s: %s\n", outputFile, err)
 		return err
