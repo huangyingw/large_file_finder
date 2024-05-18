@@ -91,6 +91,7 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 			pipe.Del(ctx, "path:"+hashedKey)      // 删除path相关数据
 			pipe.Del(ctx, "hash:"+hashedKey)      // 删除hash相关数据
 			pipe.Del(ctx, "pathToHash:"+filePath) // 删除从路径到hashedKey的映射
+            pipe.Del(ctx, "fullHash:"+hashedKey)  // 删除完整文件哈希相关数据
 			pipe.SRem(ctx, hashSizeKey, filePath) // 从fileHashSize集合中移除路径
 
 			_, err = pipe.Exec(ctx)
