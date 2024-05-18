@@ -152,33 +152,40 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 				}
 				fileName := filepath.Base(relativePath)
 
-				// 计算完整文件的SHA-256哈希值
-				fullHash, err := calculateFileHash(fullPath, true)
-				if err != nil {
-					fmt.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
-					continue
-				}
+				// 获取或计算完整文件的SHA-256哈希值
+				hashedKey := generateHash(fullPath)
+				fullHash, err := rdb.Get(ctx, "fullHash:"+hashedKey).Result()
+				if err == redis.Nil {
+					fullHash, err = calculateFileHash(fullPath, true)
+					if err != nil {
+						fmt.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
+						continue
+					}
 
-				// 获取文件信息并编码
-				info, err := os.Stat(fullPath)
-				if err != nil {
-					fmt.Printf("Error stating file: %s, Error: %s\n", fullPath, err)
-					continue
-				}
+					// 获取文件信息并编码
+					info, err := os.Stat(fullPath)
+					if err != nil {
+						fmt.Printf("Error stating file: %s, Error: %s\n", fullPath, err)
+						continue
+					}
 
-				var buf bytes.Buffer
-				enc := gob.NewEncoder(&buf)
-				if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-					fmt.Printf("Error encoding: %s, File: %s\n", err, fullPath)
-					continue
-				}
+					var buf bytes.Buffer
+					enc := gob.NewEncoder(&buf)
+					if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
+						fmt.Printf("Error encoding: %s, File: %s\n", err, fullPath)
+						continue
+					}
 
-				// 构造包含前缀的hashSizeKey
-				hashSizeKey := "fileHashSize:" + fullHash + "_" + strconv.FormatInt(info.Size(), 10)
+					// 构造包含前缀的hashSizeKey
+					hashSizeKey := "fileHashSize:" + fullHash + "_" + strconv.FormatInt(info.Size(), 10)
 
-				// 调用saveFileInfoToRedis函数来保存文件信息到Redis
-				if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, time.Now().Unix(), fullHash, hashSizeKey); err != nil {
-					fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
+					// 调用saveFileInfoToRedis函数来保存文件信息到Redis
+					if err := saveFileInfoToRedis(rdb, ctx, hashedKey, fullPath, buf, time.Now().Unix(), fullHash, hashSizeKey, fullHash); err != nil {
+						fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
+						continue
+					}
+				} else if err != nil {
+					fmt.Printf("Error getting full hash for file %s from Redis: %s\n", fullPath, err)
 					continue
 				}
 
