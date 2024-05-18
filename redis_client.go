@@ -39,6 +39,7 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey strin
 	}
 	return nil
 }
+
 func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) error {
 	iter := rdb.Scan(ctx, 0, "updateTime:*", 0).Iterator()
 	for iter.Next(ctx) {
