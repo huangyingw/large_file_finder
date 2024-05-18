@@ -130,7 +130,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		return hashSizes[i].size > hashSizes[j].size
 	})
 
-	var fileInfos []fileInfo
+	var duplicateGroups [][]fileInfo
 
 	for _, hs := range hashSizes {
 		filePaths, err := rdb.SMembers(ctx, hs.key).Result()
@@ -141,6 +141,8 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 
 		if len(filePaths) > 1 {
 			header := fmt.Sprintf("Duplicate files for fileHashSizeKey %s:", hs.key)
+			group := []fileInfo{}
+			hashes := make(map[string][]fileInfo)
 			for _, fullPath := range filePaths {
 				relativePath, err := filepath.Rel(rootDir, fullPath)
 				if err != nil {
@@ -148,33 +150,46 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 					continue
 				}
 				fileName := filepath.Base(relativePath)
-				fileInfos = append(fileInfos, fileInfo{
-					name:   fileName,
-					line:   fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath),
-					header: header,
-				})
+				fullHash, err := calculateFileHash(fullPath, true) // 使用完整文件的哈希值
+				if err != nil {
+					fmt.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
+					continue
+				}
+				info := fileInfo{
+					name: fileName,
+					line: fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath),
+				}
+				hashes[fullHash] = append(hashes[fullHash], info)
+			}
+			for _, infos := range hashes {
+				if len(infos) > 1 {
+					group = append(group, infos...)
+				}
+			}
+			if len(group) > 0 {
+				// 在分组前添加组标题
+				duplicateGroups = append(duplicateGroups, append([]fileInfo{{line: header}}, group...))
 			}
 		}
 	}
 
-	if len(fileInfos) == 0 {
+	if len(duplicateGroups) == 0 {
 		fmt.Println("No duplicates found.")
 		return nil
 	}
 
-	// 按文件名长度排序
-	sort.Slice(fileInfos, func(i, j int) bool {
-		return len(fileInfos[i].name) > len(fileInfos[j].name)
-	})
+	// 按文件名长度排序每个组内的文件，并将标题放在前面
+	for _, group := range duplicateGroups {
+		sort.Slice(group[1:], func(i, j int) bool {
+			return len(group[i+1].name) > len(group[j+1].name)
+		})
+	}
 
 	var sortedLines []string
-	var currentHeader string
-	for _, fi := range fileInfos {
-		if fi.header != currentHeader {
-			sortedLines = append(sortedLines, fi.header)
-			currentHeader = fi.header
+	for _, group := range duplicateGroups {
+		for _, fi := range group {
+			sortedLines = append(sortedLines, fi.line)
 		}
-		sortedLines = append(sortedLines, fi.line)
 	}
 
 	outputFile = filepath.Join(rootDir, outputFile)
