@@ -119,8 +119,8 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		return
 	}
 
-	// 计算文件的SHA-256哈希值
-	fileHash, err := CalculateFileHash(path)
+    // 计算文件的SHA-256哈希值（只读取前4KB）
+    fileHash, err := calculateFileHash(path, false)
 	if err != nil {
 		fmt.Printf("Error calculating hash for file %s: %s\n", path, err)
 		return
@@ -180,11 +180,6 @@ func calculateFileHash(path string, fullRead bool) (string, error) {
 	}
 
 	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
-}
-
-// CalculateFileHash 包装函数，默认不读取完整文件内容
-func CalculateFileHash(path string) (string, error) {
-	return calculateFileHash(path, false)
 }
 
 func processDirectory(path string) {
