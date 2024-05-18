@@ -96,6 +96,11 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		key  string
 		size int64
 	}
+	type fileInfo struct {
+		name string
+		line string
+	}
+
 	var hashSizes []hashSize
 
 	for iter.Next(ctx) {
@@ -125,6 +130,8 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	})
 
 	var lines []string
+	var fileInfos []fileInfo
+
 	for _, hs := range hashSizes {
 		filePaths, err := rdb.SMembers(ctx, hs.key).Result()
 		if err != nil {
@@ -133,22 +140,35 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		}
 
 		if len(filePaths) > 1 {
-			line := fmt.Sprintf("Duplicate files for fileHashSizeKey %s:", hs.key)
-			lines = append(lines, line)
+			header := fmt.Sprintf("Duplicate files for fileHashSizeKey %s:", hs.key)
+			lines = append(lines, header)
 			for _, fullPath := range filePaths {
 				relativePath, err := filepath.Rel(rootDir, fullPath)
 				if err != nil {
 					fmt.Printf("Error converting to relative path: %s\n", err)
 					continue
 				}
-				lines = append(lines, fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath))
+				fileName := filepath.Base(relativePath)
+				fileInfos = append(fileInfos, fileInfo{
+					name: fileName,
+					line: fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath),
+				})
 			}
 		}
 	}
 
-	if len(lines) == 0 {
+	if len(fileInfos) == 0 {
 		fmt.Println("No duplicates found.")
 		return nil
+	}
+
+	// 按文件名长度排序
+	sort.Slice(fileInfos, func(i, j int) bool {
+		return len(fileInfos[i].name) > len(fileInfos[j].name)
+	})
+
+	for _, fi := range fileInfos {
+		lines = append(lines, fi.line)
 	}
 
 	outputFile = filepath.Join(rootDir, outputFile)
