@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -121,7 +120,7 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 	}
 
 	// 计算文件的SHA-256哈希值
-	fileHash, err := calculateFileHash(path)
+	fileHash, err := CalculateFileHash(path)
 	if err != nil {
 		fmt.Printf("Error calculating hash for file %s: %s\n", path, err)
 		return
@@ -157,23 +156,35 @@ func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bo
 }
 
 // calculateFileHash 计算文件的SHA-256哈希值
-func calculateFileHash(path string) (string, error) {
+// 读取前4KB的数据，除非fullRead参数为true
+func calculateFileHash(path string, fullRead bool) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 
-	const readLimit = 4 * 1024 // 限制读取的数据量为 4 KB
-	reader := bufio.NewReaderSize(file, readLimit)
-	limitedReader := io.LimitReader(reader, readLimit)
-
 	hasher := sha256.New()
-	if _, err := io.Copy(hasher, limitedReader); err != nil {
-		return "", err
+	if fullRead {
+		// 读取整个文件
+		if _, err := io.Copy(hasher, file); err != nil {
+			return "", err
+		}
+	} else {
+		// 只读取前4KB的数据
+		const readLimit = 4 * 1024
+		reader := io.LimitReader(file, readLimit)
+		if _, err := io.Copy(hasher, reader); err != nil {
+			return "", err
+		}
 	}
 
 	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
+}
+
+// CalculateFileHash 包装函数，默认不读取完整文件内容
+func CalculateFileHash(path string) (string, error) {
+	return calculateFileHash(path, false)
 }
 
 func processDirectory(path string) {
