@@ -1,0 +1,367 @@
+diff --git a/.gitconfig b/.gitconfig
+--- ./.gitconfig
++++ ./.gitconfig
+@@ -5,4 +5,5 @@
+     remote = origin
+ [gsync]
+     remote = origin
+-    target = origin/dev
++    target = origin/hashSizeKey
++
+diff --git a/file_processing.go b/file_processing.go
+--- ./file_processing.go
++++ ./file_processing.go
+@@ -105,7 +105,7 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
+ 		return
+ 	}
+ 
+-	// fmt.Printf("File %s not found in Redis, processing.\n", path) // 添加打印信息
++	fmt.Printf("File %s not found in Redis, processing.\n", path) // 添加打印信息
+ 
+ 	info, err := os.Stat(path)
+ 	if err != nil {
+@@ -164,7 +164,7 @@ func calculateFileHash(path string) (string, error) {
+ 	}
+ 	defer file.Close()
+ 
+-	const readLimit = 4 * 1024 // 限制读取的数据量为 4 KB
++	const readLimit = 512 * 1024 // 限制读取的数据量为 4 KB
+ 	reader := bufio.NewReaderSize(file, readLimit)
+ 	limitedReader := io.LimitReader(reader, readLimit)
+ 
+@@ -191,16 +191,8 @@ func processSymlink(path string) {
+ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context, rootDir string) {
+ 	// 对 keywordFiles 进行排序
+ 	sort.Slice(keywordFiles, func(i, j int) bool {
+-		fullPath := filepath.Join(rootDir, cleanPath(keywordFiles[i]))
+-		sizeI, errI := getFileSizeFromRedis(rdb, ctx, fullPath)
+-		if errI != nil {
+-			fmt.Printf("Error getting size for %s: %v\n", fullPath, errI)
+-		}
+-		fullPath = filepath.Join(rootDir, cleanPath(keywordFiles[j]))
+-		sizeJ, errJ := getFileSizeFromRedis(rdb, ctx, fullPath)
+-		if errJ != nil {
+-			fmt.Printf("Error getting size for %s: %v\n", fullPath, errJ)
+-		}
++		sizeI, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(keywordFiles[i])))
++		sizeJ, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(keywordFiles[j])))
+ 		return sizeI > sizeJ
+ 	})
+ 
+@@ -208,11 +200,7 @@ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ct
+ 	var outputData strings.Builder
+ 	outputData.WriteString(keyword + "\n")
+ 	for _, filePath := range keywordFiles {
+-		fullPath := filepath.Join(rootDir, cleanPath(filePath))
+-		fileSize, err := getFileSizeFromRedis(rdb, ctx, fullPath)
+-		if err != nil {
+-			fmt.Printf("Error getting size for %s : %v\n", fullPath, err)
+-		}
++		fileSize, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(filePath)))
+ 		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
+ 	}
+ 
+@@ -250,3 +238,12 @@ func cleanPath(path string) string {
+ 
+ 	return path
+ }
++
++func getFileSize(rdb *redis.Client, ctx context.Context, fullPath string) (int64, error) {
++	size, err := getFileSizeFromRedis(rdb, ctx, fullPath)
++	if err != nil {
++		fmt.Printf("Error getting size for %s: %v\n", fullPath, err)
++		return 0, err
++	}
++	return size, nil
++}
+diff --git a/go.mod b/go.mod
+--- ./go.mod
++++ ./go.mod
+@@ -4,7 +4,7 @@ go 1.18
+ 
+ require (
+ 	github.com/allegro/bigcache v1.2.1 // indirect
+-	github.com/cespare/xxhash/v2 v2.2.0 // indirect
++	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+ 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+ 	github.com/go-redis/redis/v8 v8.11.5 // indirect
+ 	github.com/karrick/godirwalk v1.17.0 // indirect
+diff --git a/go.sum b/go.sum
+--- ./go.sum
++++ ./go.sum
+@@ -2,6 +2,8 @@ github.com/allegro/bigcache v1.2.1 h1:hg1sY1raCwic3Vnsvje6TT7/pnZba83LeFck5NrFKS
+ github.com/allegro/bigcache v1.2.1/go.mod h1:Cb/ax3seSYIx7SuZdm2G2xzfwmv3TPSk2ucNfQESPXM=
+ github.com/cespare/xxhash/v2 v2.2.0 h1:DC2CZ1Ep5Y4k3ZQ899DldepgrayRUGE6BBZ/cd9Cj44=
+ github.com/cespare/xxhash/v2 v2.2.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
++github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
++github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
+ github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f h1:lO4WD4F/rVNCu3HqELle0jiPLLBs70cWOduZpkS1E78=
+ github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f/go.mod h1:cuUVRXasLTGF7a8hSLbxyZXjz+1KgoB3wDUb6vlszIc=
+ github.com/go-redis/redis/v8 v8.11.5 h1:AcZZR7igkdvfVmQTPnu9WE37LRrO/YrBH5zWyjDC0oI=
+diff --git a/main.go b/main.go
+--- ./main.go
++++ ./main.go
+@@ -13,7 +13,6 @@ import (
+ 	"path/filepath"
+ 	"regexp"
+ 	"sort"
+-	"sync"
+ 	"sync/atomic"
+ 	"time"
+ )
+@@ -28,18 +27,24 @@ func main() {
+ 		return
+ 	}
+ 
+-	ctx, cancel := context.WithCancel(context.Background())
+-	defer cancel()
++	// 创建一个新的上下文和取消函数
++	progressCtx, progressCancel := context.WithCancel(ctx)
++	defer progressCancel()
+ 
+-	go monitorProgress(ctx, &progressCounter)
++	// 启动进度监控 Goroutine
++	go monitorProgress(progressCtx, &progressCounter)
+ 
+ 	workerCount := 500
+-	taskQueue, poolWg := NewWorkerPool(workerCount)
++	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount) // 修改此处
+ 
+ 	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
+ 
+-	close(taskQueue)
++	stopPool() // 使用停止函数来关闭任务队列
+ 	poolWg.Wait()
++
++	// 此时所有任务已经完成，取消进度监控上下文
++	progressCancel()
++
+ 	fmt.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
+ 
+ 	err = cleanUpOldRecords(rdb, ctx, startTime)
+@@ -53,15 +58,11 @@ func main() {
+ 	findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
+ 
+ 	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
+-	favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
+-	// 重新初始化工作池和等待组，用于第二批任务
+-	taskQueue, poolWg = NewWorkerPool(workerCount)
+-	processFavLog(favLogPath, rootDir, rdb, ctx, taskQueue, poolWg)
+-	close(taskQueue)
+-	poolWg.Wait()
++	// favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
++	// processFavLog(favLogPath, rootDir, rdb, ctx)
+ }
+ 
+-func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context, taskQueue chan<- Task, poolWg *sync.WaitGroup) {
++func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context) {
+ 	file, err := os.Open(filePath)
+ 	if err != nil {
+ 		fmt.Println("Error opening file:", err)
+@@ -78,26 +79,38 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
+ 		fileNames = append(fileNames, extractFileName(line))
+ 	}
+ 
++	// 确定工作池的大小并调用 extractKeywords
+ 	keywords := extractKeywords(fileNames)
++
+ 	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
+ 
++	// 排序关键词
+ 	sort.Slice(keywords, func(i, j int) bool {
+ 		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
+ 	})
+ 
+ 	totalKeywords := len(keywords)
++
++	workerCount := 500
++	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount) // 修改此处
++
+ 	for i, keyword := range keywords {
+ 		keywordFiles := closeFiles[keyword]
+ 		if len(keywordFiles) >= 2 {
+-			// 直接定义并执行一个匿名函数
++			poolWg.Add(1) // 在将任务发送到队列之前增加计数
+ 			taskQueue <- func(kw string, kf []string, idx int) Task {
+ 				return func() {
++					defer poolWg.Done() // 确保在任务结束时减少计数
+ 					fmt.Printf("Processing keyword %d of %d: %s\n", idx+1, totalKeywords, kw)
+ 					processKeyword(kw, kf, rdb, ctx, rootDir)
+ 				}
+-			}(keyword, keywordFiles, i) // 立即传递当前迭代的变量
++			}(keyword, keywordFiles, i)
+ 		}
+ 	}
++
++	stopPool() // 使用停止函数来关闭任务队列
++
++	poolWg.Wait()
+ }
+ 
+ // 初始化Redis客户端
+diff --git a/main.go.sh b/main.go.sh
+--- ./main.go.sh
++++ ./main.go.sh
+@@ -14,5 +14,7 @@ go get -u github.com/karrick/godirwalk
+ #docker-compose restart
+ docker-compose up -d
+ 
+-#go run . /media/secure_bcache/av/onlyfans/
+-go run . /media
++#rm /media/av162/cartoon/dragonball/test/*.txt
++#go run . /media/av162/cartoon/dragonball/test/
++#ls -al /media/av162/cartoon/dragonball/test/*.txt
++go run . /media/av162/test/
+diff --git a/utils.go b/utils.go
+--- ./utils.go
++++ ./utils.go
+@@ -96,6 +96,11 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client,
+ 		key  string
+ 		size int64
+ 	}
++	type fileInfo struct {
++		name string
++		line string
++	}
++
+ 	var hashSizes []hashSize
+ 
+ 	for iter.Next(ctx) {
+@@ -125,6 +130,8 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client,
+ 	})
+ 
+ 	var lines []string
++	var fileInfos []fileInfo
++
+ 	for _, hs := range hashSizes {
+ 		filePaths, err := rdb.SMembers(ctx, hs.key).Result()
+ 		if err != nil {
+@@ -133,24 +140,37 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client,
+ 		}
+ 
+ 		if len(filePaths) > 1 {
+-			line := fmt.Sprintf("Duplicate files for hash size %d:", hs.size)
+-			lines = append(lines, line)
++			header := fmt.Sprintf("Duplicate files for fileHashSizeKey %s:", hs.key)
++			lines = append(lines, header)
+ 			for _, fullPath := range filePaths {
+ 				relativePath, err := filepath.Rel(rootDir, fullPath)
+ 				if err != nil {
+ 					fmt.Printf("Error converting to relative path: %s\n", err)
+ 					continue
+ 				}
+-				lines = append(lines, fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath))
++				fileName := filepath.Base(relativePath)
++				fileInfos = append(fileInfos, fileInfo{
++					name: fileName,
++					line: fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath),
++				})
+ 			}
+ 		}
+ 	}
+ 
+-	if len(lines) == 0 {
++	if len(fileInfos) == 0 {
+ 		fmt.Println("No duplicates found.")
+ 		return nil
+ 	}
+ 
++	// 按文件名长度排序
++	sort.Slice(fileInfos, func(i, j int) bool {
++		return len(fileInfos[i].name) > len(fileInfos[j].name)
++	})
++
++	for _, fi := range fileInfos {
++		lines = append(lines, fi.line)
++	}
++
+ 	outputFile = filepath.Join(rootDir, outputFile)
+ 	err := writeLinesToFile(outputFile, lines)
+ 	if err != nil {
+@@ -194,25 +214,53 @@ func extractFileName(filePath string) string {
+ 	return strings.ToLower(filepath.Base(filePath))
+ }
+ 
+-// extractKeywords extracts keywords from a slice of file names.
++var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
++
+ func extractKeywords(fileNames []string) []string {
+-	keywords := make(map[string]struct{})
+-	pattern := regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
++	workerCount := 100
++	// 创建自己的工作池
++	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
++
++	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
+ 
+ 	for _, fileName := range fileNames {
+-		nameWithoutExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
++		poolWg.Add(1) // 确保在任务开始前递增计数
++		taskQueue <- func(name string) Task {
++			return func() {
++				defer func() {
++					poolWg.Done() // 任务结束时递减计数
++				}()
++
++				nameWithoutExt := strings.TrimSuffix(name, filepath.Ext(name))
+ 				matches := pattern.FindAllString(nameWithoutExt, -1)
+ 				for _, match := range matches {
+-			keywords[match] = struct{}{}
++					keywordsCh <- match
++				}
++			}
++		}(fileName)
+ 	}
++
++	stopPool() // 使用停止函数来关闭任务队列
++
++	// 关闭通道的逻辑保持不变
++	go func() {
++		poolWg.Wait()
++		close(keywordsCh)
++	}()
++
++	// 收集关键词
++	keywordsMap := make(map[string]struct{})
++	for keyword := range keywordsCh {
++		keywordsMap[keyword] = struct{}{}
+ 	}
+ 
+-	var keywordList []string
+-	for keyword := range keywords {
+-		keywordList = append(keywordList, keyword)
++	// 将map转换为slice
++	var keywords []string
++	for keyword := range keywordsMap {
++		keywords = append(keywords, keyword)
+ 	}
+ 
+-	return keywordList
++	return keywords
+ }
+ 
+ func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string {
+diff --git a/worker_pool.go b/worker_pool.go
+--- ./worker_pool.go
++++ ./worker_pool.go
+@@ -7,8 +7,7 @@ import (
+ // Task 定义了工作池中的任务类型
+ type Task func()
+ 
+-// NewWorkerPool 创建并返回一个工作池
+-func NewWorkerPool(workerCount int) (chan<- Task, *sync.WaitGroup) {
++func NewWorkerPool(workerCount int) (chan<- Task, *sync.WaitGroup, func()) {
+ 	var wg sync.WaitGroup
+ 	taskQueue := make(chan Task)
+ 
+@@ -22,5 +21,9 @@ func NewWorkerPool(workerCount int) (chan<- Task, *sync.WaitGroup) {
+ 		}()
+ 	}
+ 
+-	return taskQueue, &wg
++	stopFunc := func() {
++		close(taskQueue) // 关闭包装后的任务队列
++	}
++
++	return taskQueue, &wg, stopFunc
+ }
