@@ -20,7 +20,7 @@ func generateHash(s string) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, startTime int64, fileHash string, hashSizeKey string) error {
+func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, startTime int64, fileHash string, hashSizeKey string, fullHash string) error {
 	// 使用管道批量处理Redis命令
 	pipe := rdb.Pipeline()
 
@@ -29,6 +29,9 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey strin
 	pipe.Set(ctx, "path:"+hashedKey, path, 0)
 	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
 	pipe.Set(ctx, "hash:"+hashedKey, fileHash, 0) // 存储文件哈希值
+	if fullHash != "" {
+		pipe.Set(ctx, "fullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
+	}
 	// 存储从路径到hashedKey的映射
 	pipe.Set(ctx, "pathToHash:"+path, hashedKey, 0)
 	// 使用SAdd而不是Set，将路径添加到集合中
