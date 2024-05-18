@@ -104,6 +104,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	}
 
 	var hashSizes []hashSize
+	keyCount := 0
 
 	for iter.Next(ctx) {
 		fileHashSizeKey := iter.Val()
@@ -119,6 +120,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		}
 
 		hashSizes = append(hashSizes, hashSize{key: fileHashSizeKey, size: size})
+		keyCount++
 	}
 
 	if err := iter.Err(); err != nil {
@@ -126,12 +128,15 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		return err
 	}
 
+	fmt.Printf("Scanned %d keys\n", keyCount)
+
 	// 根据文件大小排序哈希
 	sort.Slice(hashSizes, func(i, j int) bool {
 		return hashSizes[i].size > hashSizes[j].size
 	})
 
 	var duplicateGroups [][]fileInfo
+	fileCount := 0
 
 	for _, hs := range hashSizes {
 		filePaths, err := rdb.SMembers(ctx, hs.key).Result()
@@ -194,6 +199,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 					line: fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath),
 				}
 				hashes[fullHash] = append(hashes[fullHash], infoStruct)
+				fileCount++
 			}
 			for _, infos := range hashes {
 				if len(infos) > 1 {
@@ -206,6 +212,8 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 			}
 		}
 	}
+
+	fmt.Printf("Processed %d files\n", fileCount)
 
 	if len(duplicateGroups) == 0 {
 		fmt.Println("No duplicates found.")
