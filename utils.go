@@ -245,11 +245,6 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		return err
 	}
 
-	// 根据文件大小排序哈希
-	sort.Slice(hashSizes, func(i, j int) bool {
-		return hashSizes[i].size > hashSizes[j].size
-	})
-
 	var duplicateGroups [][]fileInfo
 	fileCount := 0
 
