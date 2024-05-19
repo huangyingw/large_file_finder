@@ -267,6 +267,16 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 			mu.Lock()
 			duplicateGroups = append(duplicateGroups, groups...)
 			fileCount += count
+
+			// 将文件路径添加到对应的 fullHash 集合中
+			for _, group := range groups {
+				for _, file := range group {
+					err := saveFileInfoToRedis(rdb, ctx, file.hashedKey, file.path, file.buf, file.startTime, file.fileHash, file.hashSizeKey, file.fullHash)
+					if err != nil {
+						fmt.Printf("Error saving file info to Redis for hash %s: %s\n", file.fullHash, err)
+					}
+				}
+			}
 			mu.Unlock()
 		}(hs)
 	}
