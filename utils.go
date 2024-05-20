@@ -95,10 +95,23 @@ type hashSize struct {
 	size int64
 }
 
+// FileInfo holds file information
+type FileInfo struct {
+	Size    int64
+	ModTime time.Time
+}
+
 type fileInfo struct {
-	name   string
-	line   string
-	header string
+	name        string
+	path        string
+	buf         bytes.Buffer
+	startTime   int64
+	fileHash    string
+	hashSizeKey string
+	fullHash    string
+	line        string
+	header      string
+	FileInfo    // 嵌入已有的FileInfo结构体
 }
 
 // 扫描Redis中的fileHashSize键
@@ -158,6 +171,7 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 			// 获取或计算完整文件的SHA-256哈希值
 			hashedKey := generateHash(fullPath)
 			fullHash, err := rdb.Get(ctx, "fullHash:"+hashedKey).Result()
+			var buf bytes.Buffer
 			if err == redis.Nil {
 				fullHash, err = calculateFileHash(fullPath, true)
 				if err != nil {
@@ -172,7 +186,6 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 					continue
 				}
 
-				var buf bytes.Buffer
 				enc := gob.NewEncoder(&buf)
 				if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
 					fmt.Printf("Error encoding: %s, File: %s\n", err, fullPath)
@@ -192,9 +205,23 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 				continue
 			}
 
+			info, err := os.Stat(fullPath) // 获取文件信息
+			if err != nil {
+				fmt.Printf("Error stating file %s: %s\n", fullPath, err)
+				continue
+			}
+
 			infoStruct := fileInfo{
-				name: fileName,
-				line: fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath),
+				name:        fileName,
+				path:        fullPath,
+				buf:         buf,
+				startTime:   time.Now().Unix(),
+				fileHash:    hashedKey,
+				hashSizeKey: "fileHashSize:" + fullHash + "_" + strconv.FormatInt(info.Size(), 10),
+				fullHash:    fullHash,
+				line:        fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath),
+				header:      header,
+				FileInfo:    FileInfo{Size: info.Size(), ModTime: info.ModTime()},
 			}
 			hashes[fullHash] = append(hashes[fullHash], infoStruct)
 			fileCount++
@@ -271,7 +298,17 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 			// 将文件路径添加到对应的 fullHash 集合中
 			for _, group := range groups {
 				for _, file := range group {
-					err := saveFileInfoToRedis(rdb, ctx, file.hashedKey, file.path, file.buf, file.startTime, file.fileHash, file.hashSizeKey, file.fullHash)
+					err := saveFileInfoToRedis(
+						rdb,
+						ctx,
+						file.fileHash, // 使用 file.fileHash 代替 file.hashedKey
+						file.path,
+						file.buf,
+						file.startTime,
+						file.fileHash,
+						file.hashSizeKey,
+						file.fullHash,
+					)
 					if err != nil {
 						fmt.Printf("Error saving file info to Redis for hash %s: %s\n", file.fullHash, err)
 					}
