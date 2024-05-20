@@ -163,7 +163,7 @@ func calculateFileHash(path string, fullRead bool) (string, error) {
 		}
 	} else {
 		// 只读取前4KB的数据
-		const readLimit = 4 * 1024
+		const readLimit = 100 * 1024
 		reader := io.LimitReader(file, readLimit)
 		if _, err := io.Copy(hasher, reader); err != nil {
 			return "", err
