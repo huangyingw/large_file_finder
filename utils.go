@@ -338,7 +338,16 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 					continue
 				}
 
-				line := fmt.Sprintf("%d,\"./%s\"\n", fileInfo.Size, duplicateFile)
+				// 获取相对路径
+				relativePath, err := filepath.Rel(rootDir, duplicateFile)
+				if err != nil {
+					fmt.Printf("Error getting relative path for %s: %s\n", duplicateFile, err)
+					continue
+				}
+
+				// 使用 filepath.Clean 来规范化路径
+				cleanPath := filepath.Clean(relativePath)
+				line := fmt.Sprintf("%d,\"./%s\"\n", fileInfo.Size, cleanPath)
 				if _, err := file.WriteString(line); err != nil {
 					fmt.Printf("Error writing file path to file %s: %s\n", outputFile, err)
 					continue
