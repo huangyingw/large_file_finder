@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/go-redis/redis/v8"
+	"path/filepath" // 添加导入
 	"strconv"
 	"strings"
 )
@@ -18,6 +19,24 @@ func generateHash(s string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(s))
 	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+// 将重复文件的信息存储到 Redis
+func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHash string, info fileInfo) error {
+	// 使用管道批量处理 Redis 命令
+	pipe := rdb.Pipeline()
+
+	// 将路径添加到有序集合 duplicateFiles:<fullHash> 中，并使用文件名长度作为分数
+	fileNameLength := len(filepath.Base(info.path))
+	pipe.ZAdd(ctx, "duplicateFiles:"+fullHash, &redis.Z{
+		Score:  float64(fileNameLength),
+		Member: info.path,
+	})
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("error executing pipeline for duplicate file: %s: %w", info.path, err)
+	}
+	return nil
 }
 
 func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, startTime int64, fileHash string, hashSizeKey string, fullHash string) error {
@@ -81,18 +100,20 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 				continue
 			}
 
-			// 构造hashSizeKey
+			// 构造 hashSizeKey 和 duplicateFilesKey
 			hashSizeKey := "fileHashSize:" + fileHash + "_" + strconv.FormatInt(fileInfo.Size, 10)
+			duplicateFilesKey := "duplicateFiles:" + fileHash
 
 			// 删除记录
 			pipe := rdb.Pipeline()
-			pipe.Del(ctx, updateTimeKey)          // 删除updateTime键
-			pipe.Del(ctx, "fileInfo:"+hashedKey)  // 删除fileInfo相关数据
-			pipe.Del(ctx, "path:"+hashedKey)      // 删除path相关数据
-			pipe.Del(ctx, "hash:"+hashedKey)      // 删除hash相关数据
-			pipe.Del(ctx, "pathToHash:"+filePath) // 删除从路径到hashedKey的映射
-            pipe.Del(ctx, "fullHash:"+hashedKey)  // 删除完整文件哈希相关数据
-			pipe.SRem(ctx, hashSizeKey, filePath) // 从fileHashSize集合中移除路径
+			pipe.Del(ctx, updateTimeKey)                // 删除updateTime键
+			pipe.Del(ctx, "fileInfo:"+hashedKey)        // 删除fileInfo相关数据
+			pipe.Del(ctx, "path:"+hashedKey)            // 删除path相关数据
+			pipe.Del(ctx, "hash:"+hashedKey)            // 删除hash相关数据
+			pipe.Del(ctx, "pathToHash:"+filePath)       // 删除从路径到hashedKey的映射
+			pipe.Del(ctx, "fullHash:"+hashedKey)        // 删除完整文件哈希相关数据
+			pipe.SRem(ctx, hashSizeKey, filePath)       // 从fileHashSize集合中移除路径
+			pipe.ZRem(ctx, duplicateFilesKey, filePath) // 从 duplicateFiles 有序集合中移除路径
 
 			_, err = pipe.Exec(ctx)
 			if err != nil {
@@ -102,5 +123,11 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 			}
 		}
 	}
+
+	if err := iter.Err(); err != nil {
+		fmt.Printf("Error during iteration: %s\n", err)
+		return err
+	}
+
 	return nil
 }
