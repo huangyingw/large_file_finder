@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/go-redis/redis/v8"
+	"os"
 	"path/filepath" // 添加导入
 	"strconv"
 	"strings"
@@ -66,24 +67,20 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 	iter := rdb.Scan(ctx, 0, "updateTime:*", 0).Iterator()
 	for iter.Next(ctx) {
 		updateTimeKey := iter.Val()
-		updateTime, err := rdb.Get(ctx, updateTimeKey).Int64()
-		if err != nil {
-			fmt.Printf("Error retrieving updateTime for key %s: %s\n", updateTimeKey, err)
+
+		// 解析出原始的hashedKey
+		hashedKey := strings.TrimPrefix(updateTimeKey, "updateTime:")
+
+		// 获取文件路径和文件哈希值
+		filePath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
+		fileHash, errHash := rdb.Get(ctx, "hash:"+hashedKey).Result()
+		if err != nil || errHash != nil {
+			fmt.Printf("Error retrieving filePath or file hash for key %s: %s, %s\n", hashedKey, err, errHash)
 			continue
 		}
 
-		if updateTime < startTime {
-			// 解析出原始的hashedKey
-			hashedKey := strings.TrimPrefix(updateTimeKey, "updateTime:")
-
-			// 获取文件路径和文件哈希值
-			filePath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
-			fileHash, errHash := rdb.Get(ctx, "hash:"+hashedKey).Result()
-			if err != nil || errHash != nil {
-				fmt.Printf("Error retrieving filePath or file hash for key %s: %s, %s\n", hashedKey, err, errHash)
-				continue
-			}
-
+		// 检查文件是否存在
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			// 获取文件信息
 			fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
 			if err != nil {
