@@ -304,7 +304,7 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
 
 		// 获取重复文件列表，按文件名长度排序
-		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
+		duplicateFiles, err := rdb.ZRevRange(ctx, duplicateFilesKey, 0, -1).Result()
 		if err != nil {
 			fmt.Printf("Error retrieving duplicate files for key %s: %s\n", duplicateFilesKey, err)
 			continue
