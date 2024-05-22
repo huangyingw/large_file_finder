@@ -164,6 +164,12 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 		header := fmt.Sprintf("Duplicate files for fileHashSizeKey %s:", hs.key)
 		hashes := make(map[string][]fileInfo)
 		for _, fullPath := range filePaths {
+			// 确保只处理rootDir下的文件
+			if !strings.HasPrefix(fullPath, rootDir) {
+				fmt.Printf("Skipping file outside root directory: %s\n", fullPath)
+				continue
+			}
+
 			semaphore <- struct{}{} // 获取一个信号量
 			relativePath, err := filepath.Rel(rootDir, fullPath)
 			if err != nil {
@@ -319,8 +325,8 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 		// 获取 fullHash
 		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
 
-		// 获取重复文件列表，按文件名长度排序
-		duplicateFiles, err := rdb.ZRevRange(ctx, duplicateFilesKey, 0, -1).Result()
+		// 获取重复文件列表，按文件名长度（score）排序
+		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
 		if err != nil {
 			fmt.Printf("Error retrieving duplicate files for key %s: %s\n", duplicateFilesKey, err)
 			continue
