@@ -306,9 +306,6 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		fmt.Println("No duplicates found.")
 		return nil
 	}
-
-	// 从 Redis 中读取重复文件信息并输出到文件
-	return writeDuplicateFilesToFile(rootDir, outputFile, rdb, ctx)
 }
 
 func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
@@ -487,51 +484,51 @@ func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string
 }
 
 func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context) error {
-    iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
-    for iter.Next(ctx) {
-        duplicateFilesKey := iter.Val()
+	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
+	for iter.Next(ctx) {
+		duplicateFilesKey := iter.Val()
 
-        // 获取 fullHash
-        fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
+		// 获取 fullHash
+		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
 
-        // 获取重复文件列表
-        duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
-        if err != nil {
-            fmt.Printf("Error retrieving duplicate files for key %s: %s\n", duplicateFilesKey, err)
-            continue
-        }
+		// 获取重复文件列表
+		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
+		if err != nil {
+			fmt.Printf("Error retrieving duplicate files for key %s: %s\n", duplicateFilesKey, err)
+			continue
+		}
 
-        if len(duplicateFiles) > 1 {
-            fmt.Printf("Processing duplicate files for hash %s:\n", fullHash)
-            
-            // 保留第一个文件（你可以根据自己的需求修改保留策略）
-            fileToKeep := duplicateFiles[0]
+		if len(duplicateFiles) > 1 {
+			fmt.Printf("Processing duplicate files for hash %s:\n", fullHash)
 
-            // 检查第一个文件是否存在
-            if _, err := os.Stat(fileToKeep); os.IsNotExist(err) {
-                fmt.Printf("File to keep does not exist: %s\n", fileToKeep)
-                continue
-            }
+			// 保留第一个文件（你可以根据自己的需求修改保留策略）
+			fileToKeep := duplicateFiles[0]
 
-            filesToDelete := duplicateFiles[1:]
+			// 检查第一个文件是否存在
+			if _, err := os.Stat(fileToKeep); os.IsNotExist(err) {
+				fmt.Printf("File to keep does not exist: %s\n", fileToKeep)
+				continue
+			}
 
-            for _, duplicateFile := range filesToDelete {
-                // 删除文件
-                err := os.Remove(duplicateFile)
-                if err != nil {
-                    fmt.Printf("Error deleting file %s: %s\n", duplicateFile, err)
-                    continue
-                }
-                fmt.Printf("Deleted duplicate file: %s\n", duplicateFile)
-            }
-        }
-    }
+			filesToDelete := duplicateFiles[1:]
 
-    if err := iter.Err(); err != nil {
-        fmt.Printf("Error during iteration: %s\n", err)
-        return err
-    }
+			for _, duplicateFile := range filesToDelete {
+				// 删除文件
+				err := os.Remove(duplicateFile)
+				if err != nil {
+					fmt.Printf("Error deleting file %s: %s\n", duplicateFile, err)
+					continue
+				}
+				fmt.Printf("Deleted duplicate file: %s\n", duplicateFile)
+			}
+		}
+	}
 
-    fmt.Println("Duplicate files deleted successfully.")
-    return nil
+	if err := iter.Err(); err != nil {
+		fmt.Printf("Error during iteration: %s\n", err)
+		return err
+	}
+
+	fmt.Println("Duplicate files deleted successfully.")
+	return nil
 }
