@@ -29,12 +29,7 @@ func main() {
 
 	// 根据参数决定是否输出重复文件结果到文件
 	if outputDuplicates {
-		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
-		if err != nil {
-			fmt.Println("Error finding and logging duplicates:", err)
-			return
-		}
-		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup.output", rdb, ctx)
+		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx)
 		if err != nil {
 			fmt.Println("Error writing duplicates to file:", err)
 		}
@@ -43,11 +38,6 @@ func main() {
 
 	// 根据参数决定是否删除重复文件
 	if deleteDuplicates {
-		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
-		if err != nil {
-			fmt.Println("Error finding and logging duplicates:", err)
-			return
-		}
 		err = deleteDuplicateFiles(rootDir, rdb, ctx)
 		if err != nil {
 			fmt.Println("Error deleting duplicate files:", err)
