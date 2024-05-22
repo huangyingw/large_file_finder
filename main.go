@@ -21,7 +21,7 @@ var progressCounter int32 // Progress counter
 
 func main() {
 	startTime := time.Now().Unix()
-	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, err := initializeApp(os.Args)
+	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, err := initializeApp(os.Args)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -56,6 +56,14 @@ func main() {
 	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
 	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
 	findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
+
+	// 根据参数决定是否删除重复文件
+	if deleteDuplicates {
+		err = deleteDuplicateFiles(rootDir, rdb, ctx)
+		if err != nil {
+			fmt.Println("Error deleting duplicate files:", err)
+		}
+	}
 
 	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
 	// favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
@@ -127,13 +135,21 @@ func newRedisClient(ctx context.Context) *redis.Client {
 }
 
 // initializeApp 初始化应用程序设置
-func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Client, context.Context, error) {
+func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Client, context.Context, bool, error) {
 	if len(args) < 2 {
-		return "", 0, nil, nil, nil, fmt.Errorf("usage: ./find_large_files_with_cache <directory>")
+		return "", 0, nil, nil, nil, false, fmt.Errorf("Usage: %s <rootDir> [--delete-duplicates]", args[0])
 	}
 
 	// Root directory to start the search
 	rootDir := args[1]
+	deleteDuplicates := false
+
+	// 解析参数
+	for _, arg := range args {
+		if arg == "--delete-duplicates" {
+			deleteDuplicates = true
+		}
+	}
 
 	// Minimum file size in bytes
 	minSize := 200 // Default size is 200MB
@@ -145,7 +161,7 @@ func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Clien
 	ctx := context.Background()
 	rdb := newRedisClient(ctx)
 
-	return rootDir, minSizeBytes, excludeRegexps, rdb, ctx, nil
+	return rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, nil
 }
 
 // walkFiles 遍历指定目录下的文件，并根据条件进行处理
