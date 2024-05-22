@@ -21,7 +21,7 @@ var progressCounter int32 // Progress counter
 
 func main() {
 	startTime := time.Now().Unix()
-	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, err := initializeApp(os.Args)
+	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, outputDuplicates, err := initializeApp(os.Args)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -55,7 +55,20 @@ func main() {
 	// 文件处理完成后的保存操作
 	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
 	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
-	findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
+
+	// 查找重复文件并记录结果到Redis
+	err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
+	if err != nil {
+		fmt.Println("Error finding and logging duplicates:", err)
+	}
+
+	// 根据参数决定是否输出重复文件结果到文件
+	if outputDuplicates {
+		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup.output", rdb, ctx)
+		if err != nil {
+			fmt.Println("Error writing duplicates to file:", err)
+		}
+	}
 
 	// 根据参数决定是否删除重复文件
 	if deleteDuplicates {
@@ -135,19 +148,22 @@ func newRedisClient(ctx context.Context) *redis.Client {
 }
 
 // initializeApp 初始化应用程序设置
-func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Client, context.Context, bool, error) {
+func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Client, context.Context, bool, bool, error) {
 	if len(args) < 2 {
-		return "", 0, nil, nil, nil, false, fmt.Errorf("Usage: %s <rootDir> [--delete-duplicates]", args[0])
+		return "", 0, nil, nil, nil, false, false, fmt.Errorf("Usage: %s <rootDir> [--delete-duplicates] [--output-duplicates]", args[0])
 	}
 
 	// Root directory to start the search
 	rootDir := args[1]
 	deleteDuplicates := false
+	outputDuplicates := false
 
 	// 解析参数
 	for _, arg := range args {
 		if arg == "--delete-duplicates" {
 			deleteDuplicates = true
+		} else if arg == "--output-duplicates" {
+			outputDuplicates = true
 		}
 	}
 
@@ -161,7 +177,7 @@ func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Clien
 	ctx := context.Background()
 	rdb := newRedisClient(ctx)
 
-	return rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, nil
+	return rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, outputDuplicates, nil
 }
 
 // walkFiles 遍历指定目录下的文件，并根据条件进行处理
