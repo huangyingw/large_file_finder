@@ -146,6 +146,11 @@ func scanFileHashSizeKeys(rdb *redis.Client, ctx context.Context) ([]hashSize, e
 	return hashSizes, nil
 }
 
+var mu sync.Mutex
+
+// 用信号量来限制并发数
+var semaphore = make(chan struct{}, 100) // 同时最多打开100个文件
+
 // 处理每个fileHashSize键并查找重复文件
 func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
 	filePaths, err := rdb.SMembers(ctx, hs.key).Result()
@@ -159,9 +164,11 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 		header := fmt.Sprintf("Duplicate files for fileHashSizeKey %s:", hs.key)
 		hashes := make(map[string][]fileInfo)
 		for _, fullPath := range filePaths {
+			semaphore <- struct{}{} // 获取一个信号量
 			relativePath, err := filepath.Rel(rootDir, fullPath)
 			if err != nil {
 				fmt.Printf("Error converting to relative path: %s\n", err)
+				<-semaphore // 释放信号量
 				continue
 			}
 			fileName := filepath.Base(relativePath)
@@ -174,6 +181,7 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 				fullHash, err = calculateFileHash(fullPath, true)
 				if err != nil {
 					fmt.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
+					<-semaphore // 释放信号量
 					continue
 				}
 
@@ -181,12 +189,14 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 				info, err := os.Stat(fullPath)
 				if err != nil {
 					fmt.Printf("Error stating file: %s, Error: %s\n", fullPath, err)
+					<-semaphore // 释放信号量
 					continue
 				}
 
 				enc := gob.NewEncoder(&buf)
 				if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
 					fmt.Printf("Error encoding: %s, File: %s\n", err, fullPath)
+					<-semaphore // 释放信号量
 					continue
 				}
 
@@ -196,16 +206,19 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 				// 调用saveFileInfoToRedis函数来保存文件信息到Redis
 				if err := saveFileInfoToRedis(rdb, ctx, hashedKey, fullPath, buf, time.Now().Unix(), fullHash, hashSizeKey, fullHash); err != nil {
 					fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
+					<-semaphore // 释放信号量
 					continue
 				}
 			} else if err != nil {
 				fmt.Printf("Error getting full hash for file %s from Redis: %s\n", fullPath, err)
+				<-semaphore // 释放信号量
 				continue
 			}
 
 			info, err := os.Stat(fullPath) // 获取文件信息
 			if err != nil {
 				fmt.Printf("Error stating file %s: %s\n", fullPath, err)
+				<-semaphore // 释放信号量
 				continue
 			}
 
@@ -223,9 +236,11 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 			}
 			hashes[fullHash] = append(hashes[fullHash], infoStruct)
 			fileCount++
+			<-semaphore // 释放信号量
 		}
 		for fullHash, infos := range hashes {
 			if len(infos) > 1 {
+				mu.Lock()
 				// 检查fullHash是否已处理过
 				if !processedFullHashes[fullHash] {
 					// 将重复文件的信息存储到Redis集合
@@ -237,6 +252,7 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 						}
 					}
 				}
+				mu.Unlock()
 			}
 		}
 	}
