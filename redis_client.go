@@ -27,10 +27,10 @@ func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
 	// 使用管道批量处理 Redis 命令
 	pipe := rdb.Pipeline()
 
-	// 将路径添加到有序集合 duplicateFiles:<fullHash> 中，并使用文件名长度作为分数
+	// 将路径添加到有序集合 duplicateFiles:<fullHash> 中，并使用文件名长度的负值作为分数
 	fileNameLength := len(filepath.Base(info.path))
 	pipe.ZAdd(ctx, "duplicateFiles:"+fullHash, &redis.Z{
-		Score:  float64(fileNameLength),
+		Score:  float64(-fileNameLength), // 取负值
 		Member: info.path,
 	})
 
