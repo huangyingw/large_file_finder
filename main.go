@@ -52,7 +52,26 @@ func main() {
 		fmt.Println("Error cleaning up old records:", err)
 	}
 
-	// 文件处理完成后的保存操作
+	// 根据 outputDuplicates 和 deleteDuplicates 参数决定执行的操作
+	if outputDuplicates {
+		// 只输出重复文件结果，不执行其他操作
+		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup.output", rdb, ctx)
+		if err != nil {
+			fmt.Println("Error writing duplicates to file:", err)
+		}
+		return // 结束程序
+	}
+
+	if deleteDuplicates {
+		// 只删除重复文件，不执行其他操作
+		err = deleteDuplicateFiles(rootDir, rdb, ctx)
+		if err != nil {
+			fmt.Println("Error deleting duplicate files:", err)
+		}
+		return // 结束程序
+	}
+
+	// 如果 outputDuplicates 和 deleteDuplicates 都为 false，执行以下操作
 	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
 	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
 
@@ -60,22 +79,6 @@ func main() {
 	err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
 	if err != nil {
 		fmt.Println("Error finding and logging duplicates:", err)
-	}
-
-	// 根据参数决定是否输出重复文件结果到文件
-	if outputDuplicates {
-		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup.output", rdb, ctx)
-		if err != nil {
-			fmt.Println("Error writing duplicates to file:", err)
-		}
-	}
-
-	// 根据参数决定是否删除重复文件
-	if deleteDuplicates {
-		err = deleteDuplicateFiles(rootDir, rdb, ctx)
-		if err != nil {
-			fmt.Println("Error deleting duplicate files:", err)
-		}
 	}
 
 	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
