@@ -31,5 +31,20 @@ go run . /media
 #rm /media/av162/cartoon/dragonball/test/*.txt
 #go run . /media/av162/cartoon/dragonball/test/
 #ls -al /media/av162/cartoon/dragonball/test/*.txt
+<<<<<<< HEAD
 go run . /media
 >>>>>>> 11de013 (n)
+=======
+
+# 定义路径变量，确保处理包含空格和特殊字符的情况
+rootDir="/media/av162/av/旬果/"
+
+# 正常运行
+go run . "$rootDir"
+
+# 输出重复文件结果
+go run . "$rootDir" --output-duplicates
+
+# 删除重复文件（示例，实际运行时取消注释）
+# go run . "$rootDir" --delete-duplicates
+>>>>>>> 1c14d61 (n)
