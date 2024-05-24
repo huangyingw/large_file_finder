@@ -4,7 +4,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/gob"
 	"fmt"
 	"github.com/go-redis/redis/v8"
@@ -139,7 +139,7 @@ func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bo
 	return fmt.Sprintf("%d,\"./%s\"", fileInfo.Size, relativePath)
 }
 
-// calculateFileHash 计算文件的SHA-256哈希值
+// calculateFileHash 计算文件的 SHA-512 哈希值
 // 读取前4KB的数据，除非fullRead参数为true
 func calculateFileHash(path string, fullRead bool) (string, error) {
 	file, err := os.Open(path)
@@ -148,7 +148,7 @@ func calculateFileHash(path string, fullRead bool) (string, error) {
 	}
 	defer file.Close()
 
-	hasher := sha256.New()
+	hasher := sha512.New()
 	if fullRead {
 		// 打印正在计算完整哈希的文件路径
 		fmt.Printf("Calculating full hash for file: %s\n", path)
@@ -158,7 +158,7 @@ func calculateFileHash(path string, fullRead bool) (string, error) {
 			return "", err
 		}
 	} else {
-		// 只读取前4KB的数据
+		// 只读取前100KB的数据
 		const readLimit = 100 * 1024
 		reader := io.LimitReader(file, readLimit)
 		if _, err := io.Copy(hasher, reader); err != nil {
