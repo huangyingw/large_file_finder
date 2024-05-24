@@ -11,7 +11,6 @@ import (
 	"github.com/go-redis/redis/v8"
 	"os"
 	"path/filepath" // 添加导入
-	"strconv"
 	"strings"
 )
 
@@ -40,7 +39,7 @@ func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
 	return nil
 }
 
-func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, startTime int64, fileHash string, hashSizeKey string, fullHash string) error {
+func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, startTime int64, fileHash string, fullHash string) error {
 	// 使用管道批量处理Redis命令
 	pipe := rdb.Pipeline()
 
@@ -48,14 +47,12 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey strin
 	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
 	pipe.Set(ctx, "path:"+hashedKey, path, 0)
 	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
-	pipe.Set(ctx, "hash:"+hashedKey, fileHash, 0) // 存储文件哈希值
+	pipe.SAdd(ctx, "hash:"+fileHash, path) // 将文件路径存储为集合
 	if fullHash != "" {
 		pipe.Set(ctx, "fullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
 	}
 	// 存储从路径到hashedKey的映射
 	pipe.Set(ctx, "pathToHash:"+path, hashedKey, 0)
-	// 使用SAdd而不是Set，将路径添加到集合中
-	pipe.SAdd(ctx, hashSizeKey, path)
 
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
@@ -64,6 +61,7 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey strin
 }
 
 func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) error {
+	fmt.Printf("func cleanUpOldRecords \n")
 	iter := rdb.Scan(ctx, 0, "updateTime:*", 0).Iterator()
 	for iter.Next(ctx) {
 		updateTimeKey := iter.Val()
@@ -73,50 +71,65 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 
 		// 获取文件路径和文件哈希值
 		filePath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
-		fileHash, errHash := rdb.Get(ctx, "hash:"+hashedKey).Result()
-		if err != nil || errHash != nil {
-			fmt.Printf("Error retrieving filePath or file hash for key %s: %s, %s\n", hashedKey, err, errHash)
+		if err != nil && err != redis.Nil {
+			fmt.Printf("Error retrieving filePath for key %s: %s\n", hashedKey, err)
+			continue
+		}
+
+		fileHash, err := calculateFileHash(filePath, false)
+		if err != nil {
+			fmt.Printf("Error calculating hash for file %s: %s\n", filePath, err)
+			continue
+		}
+
+		filePaths, errHash := rdb.SMembers(ctx, "hash:"+fileHash).Result()
+		if errHash != nil && errHash != redis.Nil {
+			fmt.Printf("Error retrieving file paths for key %s: %s\n", hashedKey, errHash)
 			continue
 		}
 
 		// 检查文件是否存在
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			fmt.Printf("File does not exist, cleaning up records: %s\n", filePath)
+
 			// 获取文件信息
 			fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
-			if err != nil {
+			if err != nil && err != redis.Nil {
 				fmt.Printf("Error retrieving fileInfo for key %s: %s\n", hashedKey, err)
 				continue
 			}
 
 			// 解码文件信息
 			var fileInfo FileInfo
-			buf := bytes.NewBuffer(fileInfoData)
-			dec := gob.NewDecoder(buf)
-			if err := dec.Decode(&fileInfo); err != nil {
-				fmt.Printf("Error decoding fileInfo for key %s: %s\n", hashedKey, err)
-				continue
+			if len(fileInfoData) > 0 {
+				buf := bytes.NewBuffer(fileInfoData)
+				dec := gob.NewDecoder(buf)
+				if err := dec.Decode(&fileInfo); err != nil {
+					fmt.Printf("Error decoding fileInfo for key %s: %s\n", hashedKey, err)
+					continue
+				}
 			}
 
-			// 构造 hashSizeKey 和 duplicateFilesKey
-			hashSizeKey := "fileHashSize:" + fileHash + "_" + strconv.FormatInt(fileInfo.Size, 10)
-			duplicateFilesKey := "duplicateFiles:" + fileHash
+			// 构造 duplicateFilesKey
+			for _, fileHash := range filePaths {
+				duplicateFilesKey := "duplicateFiles:" + fileHash
 
-			// 删除记录
-			pipe := rdb.Pipeline()
-			pipe.Del(ctx, updateTimeKey)                // 删除updateTime键
-			pipe.Del(ctx, "fileInfo:"+hashedKey)        // 删除fileInfo相关数据
-			pipe.Del(ctx, "path:"+hashedKey)            // 删除path相关数据
-			pipe.Del(ctx, "hash:"+hashedKey)            // 删除hash相关数据
-			pipe.Del(ctx, "pathToHash:"+filePath)       // 删除从路径到hashedKey的映射
-			pipe.Del(ctx, "fullHash:"+hashedKey)        // 删除完整文件哈希相关数据
-			pipe.SRem(ctx, hashSizeKey, filePath)       // 从fileHashSize集合中移除路径
-			pipe.ZRem(ctx, duplicateFilesKey, filePath) // 从 duplicateFiles 有序集合中移除路径
+				// 删除记录
+				pipe := rdb.TxPipeline()
+				pipe.Del(ctx, updateTimeKey)                // 删除updateTime键
+				pipe.Del(ctx, "fileInfo:"+hashedKey)        // 删除fileInfo相关数据
+				pipe.Del(ctx, "path:"+hashedKey)            // 删除path相关数据
+				pipe.SRem(ctx, "hash:"+hashedKey, filePath) // 从集合中移除文件路径
+				pipe.Del(ctx, "pathToHash:"+filePath)       // 删除从路径到hashedKey的映射
+				pipe.Del(ctx, "fullHash:"+hashedKey)        // 删除完整文件哈希相关数据
+				pipe.ZRem(ctx, duplicateFilesKey, filePath) // 从 duplicateFiles 有序集合中移除路径
 
-			_, err = pipe.Exec(ctx)
-			if err != nil {
-				fmt.Printf("Error deleting keys for outdated record %s: %s\n", hashedKey, err)
-			} else {
-				fmt.Printf("Deleted outdated record: path=%s, hash=%s, size=%d\n", filePath, fileHash, fileInfo.Size)
+				_, err = pipe.Exec(ctx)
+				if err != nil {
+					fmt.Printf("Error deleting keys for outdated record %s: %s\n", hashedKey, err)
+				} else {
+					fmt.Printf("Deleted outdated record: path=%s, size=%d\n", filePath, fileInfo.Size)
+				}
 			}
 		}
 	}
