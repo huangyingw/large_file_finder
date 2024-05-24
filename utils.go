@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -89,12 +88,6 @@ func writeLinesToFile(filename string, lines []string) error {
 	return nil
 }
 
-// hashSize 和 fileInfo 结构体定义
-type hashSize struct {
-	key  string
-	size int64
-}
-
 // FileInfo holds file information
 type FileInfo struct {
 	Size    int64
@@ -102,48 +95,15 @@ type FileInfo struct {
 }
 
 type fileInfo struct {
-	name        string
-	path        string
-	buf         bytes.Buffer
-	startTime   int64
-	fileHash    string
-	hashSizeKey string
-	fullHash    string
-	line        string
-	header      string
-	FileInfo    // 嵌入已有的FileInfo结构体
-}
-
-// 扫描Redis中的fileHashSize键
-func scanFileHashSizeKeys(rdb *redis.Client, ctx context.Context) ([]hashSize, error) {
-	iter := rdb.Scan(ctx, 0, "fileHashSize:*", 0).Iterator()
-	var hashSizes []hashSize
-	keyCount := 0
-
-	for iter.Next(ctx) {
-		fileHashSizeKey := iter.Val()
-		parts := strings.Split(fileHashSizeKey, "_")
-		if len(parts) != 2 {
-			fmt.Printf("Invalid key format: %s\n", fileHashSizeKey)
-			continue
-		}
-		size, err := strconv.ParseInt(parts[1], 10, 64)
-		if err != nil {
-			fmt.Printf("Error parsing size from key %s: %s\n", fileHashSizeKey, err)
-			continue
-		}
-
-		hashSizes = append(hashSizes, hashSize{key: fileHashSizeKey, size: size})
-		keyCount++
-	}
-
-	if err := iter.Err(); err != nil {
-		fmt.Println("Iterator error:", err)
-		return nil, err
-	}
-
-	fmt.Printf("Scanned %d keys\n", keyCount)
-	return hashSizes, nil
+	name      string
+	path      string
+	buf       bytes.Buffer
+	startTime int64
+	fileHash  string
+	fullHash  string
+	line      string
+	header    string
+	FileInfo  // 嵌入已有的FileInfo结构体
 }
 
 var mu sync.Mutex
@@ -151,22 +111,40 @@ var mu sync.Mutex
 // 用信号量来限制并发数
 var semaphore = make(chan struct{}, 100) // 同时最多打开100个文件
 
-// 处理每个fileHashSize键并查找重复文件
-func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
-	filePaths, err := rdb.SMembers(ctx, hs.key).Result()
-	if err != nil {
-		return 0, fmt.Errorf("Error getting file paths for key %s: %s", hs.key, err)
-	}
-
+// 处理每个文件哈希并查找重复文件
+func processFileHash(rootDir string, fullHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
 	fileCount := 0
 
 	if len(filePaths) > 1 {
-		header := fmt.Sprintf("Duplicate files for fileHashSizeKey %s:", hs.key)
+		header := fmt.Sprintf("Duplicate files for hash %s:", fullHash)
 		hashes := make(map[string][]fileInfo)
 		for _, fullPath := range filePaths {
 			// 确保只处理rootDir下的文件
 			if !strings.HasPrefix(fullPath, rootDir) {
 				fmt.Printf("Skipping file outside root directory: %s\n", fullPath)
+				continue
+			}
+
+			// 检查文件是否存在
+			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+				fmt.Printf("File does not exist: %s\n", fullPath)
+				hashedKey := generateHash(fullPath)
+				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+				if err != nil && err != redis.Nil {
+					fmt.Printf("Error retrieving fileInfo for key %s: %s\n", hashedKey, err)
+					continue
+				}
+
+				var fileInfo FileInfo
+				if len(fileInfoData) > 0 {
+					buf := bytes.NewBuffer(fileInfoData)
+					dec := gob.NewDecoder(buf)
+					if err := dec.Decode(&fileInfo); err != nil {
+						fmt.Printf("Error decoding fileInfo for key %s: %s\n", hashedKey, err)
+						continue
+					}
+				}
+
 				continue
 			}
 
@@ -191,6 +169,12 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 					continue
 				}
 
+				fileHash, err := calculateFileHash(fullPath, false)
+				if err != nil {
+					fmt.Printf("Error calculating hash for file %s: %s\n", fullPath, err)
+					continue
+				}
+
 				// 获取文件信息并编码
 				info, err := os.Stat(fullPath)
 				if err != nil {
@@ -206,11 +190,8 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 					continue
 				}
 
-				// 构造包含前缀的hashSizeKey
-				hashSizeKey := "fileHashSize:" + fullHash + "_" + strconv.FormatInt(info.Size(), 10)
-
 				// 调用saveFileInfoToRedis函数来保存文件信息到Redis
-				if err := saveFileInfoToRedis(rdb, ctx, hashedKey, fullPath, buf, time.Now().Unix(), fullHash, hashSizeKey, fullHash); err != nil {
+				if err := saveFileInfoToRedis(rdb, ctx, hashedKey, fullPath, buf, time.Now().Unix(), fileHash, fullHash); err != nil {
 					fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
 					<-semaphore // 释放信号量
 					continue
@@ -229,16 +210,15 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 			}
 
 			infoStruct := fileInfo{
-				name:        fileName,
-				path:        fullPath,
-				buf:         buf,
-				startTime:   time.Now().Unix(),
-				fileHash:    hashedKey,
-				hashSizeKey: "fileHashSize:" + fullHash + "_" + strconv.FormatInt(info.Size(), 10),
-				fullHash:    fullHash,
-				line:        fmt.Sprintf("%d,\"./%s\"", hs.size, relativePath),
-				header:      header,
-				FileInfo:    FileInfo{Size: info.Size(), ModTime: info.ModTime()},
+				name:      fileName,
+				path:      fullPath,
+				buf:       buf,
+				startTime: time.Now().Unix(),
+				fileHash:  hashedKey,
+				fullHash:  fullHash,
+				line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
+				header:    header,
+				FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
 			}
 			hashes[fullHash] = append(hashes[fullHash], infoStruct)
 			fileCount++
@@ -252,7 +232,7 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 					// 将重复文件的信息存储到Redis集合
 					processedFullHashes[fullHash] = true
 					for _, info := range infos {
-						err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
+						err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info) // Pass info directly
 						if err != nil {
 							fmt.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fullHash, err)
 						}
@@ -269,7 +249,7 @@ func processFileHashSizeKey(rootDir string, hs hashSize, rdb *redis.Client, ctx 
 func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
 	fmt.Println("Starting to find duplicates...")
 
-	hashSizes, err := scanFileHashSizeKeys(rdb, ctx)
+	fileHashes, err := scanFileHashes(rdb, ctx)
 	if err != nil {
 		return err
 	}
@@ -282,20 +262,20 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	var wg sync.WaitGroup // 等待 goroutine 完成
 	var mu sync.Mutex     // 用于保护对 fileCount 的并发访问
 
-	for _, hs := range hashSizes {
+	for fullHash, filePaths := range fileHashes {
 		wg.Add(1)
-		go func(hs hashSize) {
+		go func(fullHash string, filePaths []string) {
 			defer wg.Done()
 
-			count, err := processFileHashSizeKey(rootDir, hs, rdb, ctx, processedFullHashes)
+			count, err := processFileHash(rootDir, fullHash, filePaths, rdb, ctx, processedFullHashes)
 			if err != nil {
-				fmt.Printf("Error processing fileHashSize key %s: %s\n", hs.key, err)
+				fmt.Printf("Error processing file hash %s: %s\n", fullHash, err)
 				return
 			}
 			mu.Lock()
 			fileCount += count
 			mu.Unlock()
-		}(hs)
+		}(fullHash, filePaths)
 	}
 
 	wg.Wait()
@@ -306,6 +286,26 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		fmt.Println("No duplicates found.")
 		return nil
 	}
+
+	return nil
+}
+
+func scanFileHashes(rdb *redis.Client, ctx context.Context) (map[string][]string, error) {
+	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
+	fileHashes := make(map[string][]string)
+	for iter.Next(ctx) {
+		duplicateFilesKey := iter.Val()
+		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
+		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
+		if err != nil {
+			return nil, fmt.Errorf("error retrieving duplicate files for key %s: %w", duplicateFilesKey, err)
+		}
+		fileHashes[fullHash] = duplicateFiles
+	}
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("error during iteration: %w", err)
+	}
+	return fileHashes, nil
 }
 
 func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
