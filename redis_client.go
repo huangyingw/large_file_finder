@@ -148,3 +148,60 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 
 	return nil
 }
+
+func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath string) error {
+	// 获取 hashedKey
+	hashedKey, err := rdb.Get(ctx, "pathToHash:"+filePath).Result()
+	if err != nil && err != redis.Nil {
+		return fmt.Errorf("error retrieving hashedKey for path %s: %v", filePath, err)
+	}
+
+	// 获取 fileHash
+	fileHash, err := calculateFileHash(filePath, false)
+	if err != nil {
+		return fmt.Errorf("error calculating hash for file %s: %v", filePath, err)
+	}
+
+	// 获取与 fileHash 相关的所有路径
+	filePaths, err := rdb.SMembers(ctx, "hash:"+fileHash).Result()
+	if err != nil && err != redis.Nil {
+		return fmt.Errorf("error retrieving file paths for hash %s: %v", fileHash, err)
+	}
+
+	// 构造 duplicateFilesKey
+	duplicateFilesKey := "duplicateFiles:" + fileHash
+
+	// 获取文件信息
+	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+	if err != nil && err != redis.Nil {
+		return fmt.Errorf("error retrieving fileInfo for key %s: %v", hashedKey, err)
+	}
+
+	// 解码文件信息
+	var fileInfo FileInfo
+	if len(fileInfoData) > 0 {
+		buf := bytes.NewBuffer(fileInfoData)
+		dec := gob.NewDecoder(buf)
+		if err := dec.Decode(&fileInfo); err != nil {
+			return fmt.Errorf("error decoding fileInfo for key %s: %v", hashedKey, err)
+		}
+	}
+
+	// 删除记录
+	pipe := rdb.TxPipeline()
+	pipe.Del(ctx, "updateTime:"+hashedKey)      // 删除 updateTime 键
+	pipe.Del(ctx, "fileInfo:"+hashedKey)        // 删除 fileInfo 相关数据
+	pipe.Del(ctx, "path:"+hashedKey)            // 删除 path 相关数据
+	pipe.SRem(ctx, "hash:"+fileHash, filePath)  // 从集合中移除文件路径
+	pipe.Del(ctx, "pathToHash:"+filePath)       // 删除从路径到 hashedKey 的映射
+	pipe.Del(ctx, "fullHash:"+hashedKey)        // 删除完整文件哈希相关数据
+	pipe.ZRem(ctx, duplicateFilesKey, filePath) // 从 duplicateFiles 有序集合中移除路径
+
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("error deleting keys for outdated record %s: %v", hashedKey, err)
+	}
+
+	fmt.Printf("Deleted outdated record: path=%s, size=%d\n", filePath, fileInfo.Size)
+	return nil
+}
