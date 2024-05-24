@@ -129,10 +129,13 @@ func processFileHash(rootDir string, fullHash string, filePaths []string, rdb *r
 			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 				fmt.Printf("File does not exist: %s\n", fullPath)
 				hashedKey := generateHash(fullPath)
+				fmt.Printf("Generated hash key for path %s: %s\n", fullPath, hashedKey)
 				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
 				if err != nil && err != redis.Nil {
 					fmt.Printf("Error retrieving fileInfo for key %s: %s\n", hashedKey, err)
 					continue
+				} else {
+					fmt.Printf("Retrieved fileInfo for key %s\n", hashedKey)
 				}
 
 				var fileInfo FileInfo
@@ -173,6 +176,8 @@ func processFileHash(rootDir string, fullHash string, filePaths []string, rdb *r
 				if err != nil {
 					fmt.Printf("Error calculating hash for file %s: %s\n", fullPath, err)
 					continue
+				} else {
+					fmt.Printf("Calculated hash for file %s: %s\n", fullPath, fileHash)
 				}
 
 				// 获取文件信息并编码
