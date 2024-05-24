@@ -112,7 +112,7 @@ var mu sync.Mutex
 var semaphore = make(chan struct{}, 100) // 同时最多打开100个文件
 
 // 处理每个文件哈希并查找重复文件
-func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
+func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool, maxDuplicateFiles int) (int, error) {
 	fileCount := 0
 
 	if len(filePaths) > 1 {
@@ -222,6 +222,18 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 							fmt.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fileHash, err)
 						}
 					}
+					// 检查是否需要停止查找
+					shouldStop, err := shouldStopDuplicateFileSearch(rdb, ctx, maxDuplicateFiles)
+					if err != nil {
+						fmt.Printf("Error checking duplicate files count: %s\n", err)
+						mu.Unlock()
+						return fileCount, err
+					}
+					if shouldStop {
+						fmt.Println("Reached the limit of duplicate files, stopping search.")
+						mu.Unlock()
+						return fileCount, nil
+					}
 				}
 				mu.Unlock()
 			}
@@ -231,7 +243,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 }
 
 // 主函数
-func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
+func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context, maxDuplicateFiles int) error {
 	fmt.Println("Starting to find duplicates...")
 
 	fileHashes, err := scanFileHashes(rdb, ctx)
@@ -250,12 +262,22 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	var mu sync.Mutex     // 用于保护对 fileCount 的并发访问
 
 	for fileHash, filePaths := range fileHashes {
+		shouldStop, err := shouldStopDuplicateFileSearch(rdb, ctx, maxDuplicateFiles)
+		if err != nil {
+			fmt.Printf("Error checking duplicate files count: %s\n", err)
+			return err
+		}
+		if shouldStop {
+			fmt.Println("Reached the limit of duplicate files, stopping search.")
+			break
+		}
+
 		fmt.Printf("Processing fileHash: %s, filePaths: %v\n", fileHash, filePaths)
 		wg.Add(1)
 		go func(fileHash string, filePaths []string) {
 			defer wg.Done()
 
-			count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
+			count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicateFiles)
 			if err != nil {
 				fmt.Printf("Error processing file hash %s: %s\n", fileHash, err)
 				return
@@ -522,19 +544,17 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
 	return nil
 }
 
-func shouldStartDuplicateFileSearch(rdb *redis.Client, ctx context.Context, maxDuplicateFiles int) (bool, error) {
+func shouldStopDuplicateFileSearch(rdb *redis.Client, ctx context.Context, maxDuplicateFiles int) (bool, error) {
 	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
 	count := 0
 	for iter.Next(ctx) {
 		count++
 		if count >= maxDuplicateFiles {
-			fmt.Printf("Duplicate files count %d reached the limit %d\n", count, maxDuplicateFiles)
-			return false, nil
+			return true, nil
 		}
 	}
 	if err := iter.Err(); err != nil {
 		return false, fmt.Errorf("error during iteration: %w", err)
 	}
-	fmt.Printf("Duplicate files count is %d, below the limit %d\n", count, maxDuplicateFiles)
-	return true, nil
+	return false, nil
 }
