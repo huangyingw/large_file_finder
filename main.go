@@ -27,6 +27,18 @@ func main() {
 		return
 	}
 
+	// 检查是否需要开始重复文件查找
+	const maxDuplicateFiles = 50
+	shouldSearch, err := shouldStartDuplicateFileSearch(rdb, ctx, maxDuplicateFiles)
+	if err != nil {
+		fmt.Println("Error checking duplicate files count:", err)
+		return
+	}
+	if !shouldSearch {
+		fmt.Println("Duplicate files limit reached, skipping search.")
+		return
+	}
+
 	// 根据参数决定是否输出重复文件结果到文件
 	if outputDuplicates {
 		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx)
