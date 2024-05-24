@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync/atomic"
 )
@@ -126,11 +125,8 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		return
 	}
 
-	// 构造包含前缀的hashSizeKey
-	hashSizeKey := "fileHashSize:" + fileHash + "_" + strconv.FormatInt(info.Size(), 10)
-
 	// 调用saveFileInfoToRedis函数来保存文件信息到Redis，不需要完整文件的哈希值
-	if err := saveFileInfoToRedis(rdb, ctx, hashedKey, path, buf, startTime, fileHash, hashSizeKey, ""); err != nil {
+	if err := saveFileInfoToRedis(rdb, ctx, hashedKey, path, buf, startTime, fileHash, ""); err != nil {
 		fmt.Printf("Error saving file info to Redis for file %s: %s\n", path, err)
 		return
 	}
