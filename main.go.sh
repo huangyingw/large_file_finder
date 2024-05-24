@@ -10,8 +10,8 @@ go get -u github.com/go-redis/redis/v8
 go get -u github.com/mattn/go-zglob/fastwalk
 go get -u github.com/karrick/godirwalk
 
-#docker-compose down -v
-#docker-compose restart
+docker-compose down -v
+docker-compose restart
 docker-compose up -d
 
 <<<<<<< HEAD
@@ -37,13 +37,13 @@ go run . /media
 =======
 
 # 定义路径变量，确保处理包含空格和特殊字符的情况
-rootDir="/media/av162/av/旬果/"
+rootDir="/media/"
 
 # 正常运行
 go run . "$rootDir"
 
 # 输出重复文件结果
-go run . "$rootDir" --output-duplicates
+go run . "$rootDir" --find-duplicates
 
 # 删除重复文件（示例，实际运行时取消注释）
 # go run . "$rootDir" --delete-duplicates
