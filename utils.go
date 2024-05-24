@@ -112,11 +112,12 @@ var mu sync.Mutex
 var semaphore = make(chan struct{}, 100) // 同时最多打开100个文件
 
 // 处理每个文件哈希并查找重复文件
-func processFileHash(rootDir string, fullHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
+func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
 	fileCount := 0
 
 	if len(filePaths) > 1 {
-		header := fmt.Sprintf("Duplicate files for hash %s:", fullHash)
+		fmt.Printf("Found duplicate files for hash %s: %v\n", fileHash, filePaths)
+		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
 		hashes := make(map[string][]fileInfo)
 		for _, fullPath := range filePaths {
 			// 确保只处理rootDir下的文件
@@ -128,26 +129,6 @@ func processFileHash(rootDir string, fullHash string, filePaths []string, rdb *r
 			// 检查文件是否存在
 			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 				fmt.Printf("File does not exist: %s\n", fullPath)
-				hashedKey := generateHash(fullPath)
-				fmt.Printf("Generated hash key for path %s: %s\n", fullPath, hashedKey)
-				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
-				if err != nil && err != redis.Nil {
-					fmt.Printf("Error retrieving fileInfo for key %s: %s\n", hashedKey, err)
-					continue
-				} else {
-					fmt.Printf("Retrieved fileInfo for key %s\n", hashedKey)
-				}
-
-				var fileInfo FileInfo
-				if len(fileInfoData) > 0 {
-					buf := bytes.NewBuffer(fileInfoData)
-					dec := gob.NewDecoder(buf)
-					if err := dec.Decode(&fileInfo); err != nil {
-						fmt.Printf("Error decoding fileInfo for key %s: %s\n", hashedKey, err)
-						continue
-					}
-				}
-
 				continue
 			}
 
@@ -225,21 +206,20 @@ func processFileHash(rootDir string, fullHash string, filePaths []string, rdb *r
 				header:    header,
 				FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
 			}
-			hashes[fullHash] = append(hashes[fullHash], infoStruct)
+			hashes[fileHash] = append(hashes[fileHash], infoStruct)
 			fileCount++
 			<-semaphore // 释放信号量
 		}
-		for fullHash, infos := range hashes {
+		for fileHash, infos := range hashes {
 			if len(infos) > 1 {
+				fmt.Printf("Writing duplicate files for hash %s: %v\n", fileHash, infos)
 				mu.Lock()
-				// 检查fullHash是否已处理过
-				if !processedFullHashes[fullHash] {
-					// 将重复文件的信息存储到Redis集合
-					processedFullHashes[fullHash] = true
+				if !processedFullHashes[fileHash] {
+					processedFullHashes[fileHash] = true
 					for _, info := range infos {
-						err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info) // Pass info directly
+						err := saveDuplicateFileInfoToRedis(rdb, ctx, fileHash, info)
 						if err != nil {
-							fmt.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fullHash, err)
+							fmt.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fileHash, err)
 						}
 					}
 				}
@@ -259,6 +239,8 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		return err
 	}
 
+	fmt.Printf("Scanned file hashes: %v\n", fileHashes)
+
 	fileCount := 0
 
 	// 用于存储已处理的文件哈希
@@ -267,20 +249,21 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	var wg sync.WaitGroup // 等待 goroutine 完成
 	var mu sync.Mutex     // 用于保护对 fileCount 的并发访问
 
-	for fullHash, filePaths := range fileHashes {
+	for fileHash, filePaths := range fileHashes {
+		fmt.Printf("Processing fileHash: %s, filePaths: %v\n", fileHash, filePaths)
 		wg.Add(1)
-		go func(fullHash string, filePaths []string) {
+		go func(fileHash string, filePaths []string) {
 			defer wg.Done()
 
-			count, err := processFileHash(rootDir, fullHash, filePaths, rdb, ctx, processedFullHashes)
+			count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
 			if err != nil {
-				fmt.Printf("Error processing file hash %s: %s\n", fullHash, err)
+				fmt.Printf("Error processing file hash %s: %s\n", fileHash, err)
 				return
 			}
 			mu.Lock()
 			fileCount += count
 			mu.Unlock()
-		}(fullHash, filePaths)
+		}(fileHash, filePaths)
 	}
 
 	wg.Wait()
@@ -296,16 +279,17 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 }
 
 func scanFileHashes(rdb *redis.Client, ctx context.Context) (map[string][]string, error) {
-	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
+	iter := rdb.Scan(ctx, 0, "hash:*", 0).Iterator()
 	fileHashes := make(map[string][]string)
 	for iter.Next(ctx) {
-		duplicateFilesKey := iter.Val()
-		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
-		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
+		hashKey := iter.Val()
+		fileHash := strings.TrimPrefix(hashKey, "hash:")
+		duplicateFiles, err := rdb.SMembers(ctx, hashKey).Result()
 		if err != nil {
-			return nil, fmt.Errorf("error retrieving duplicate files for key %s: %w", duplicateFilesKey, err)
+			return nil, fmt.Errorf("error retrieving duplicate files for key %s: %w", hashKey, err)
 		}
-		fileHashes[fullHash] = duplicateFiles
+		fmt.Printf("Found hashKey: %s with files: %v\n", hashKey, duplicateFiles)
+		fileHashes[fileHash] = duplicateFiles
 	}
 	if err := iter.Err(); err != nil {
 		return nil, fmt.Errorf("error during iteration: %w", err)
