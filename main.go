@@ -27,18 +27,6 @@ func main() {
 		return
 	}
 
-	// 检查是否需要开始重复文件查找
-	const maxDuplicateFiles = 50
-	shouldSearch, err := shouldStopDuplicateFileSearch(rdb, ctx, maxDuplicateFiles)
-	if err != nil {
-		fmt.Println("Error checking duplicate files count:", err)
-		return
-	}
-	if shouldSearch {
-		fmt.Println("Duplicate files limit reached, skipping search.")
-		return
-	}
-
 	// 根据参数决定是否输出重复文件结果到文件
 	if outputDuplicates {
 		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx)
@@ -55,6 +43,23 @@ func main() {
 			fmt.Println("Error deleting duplicate files:", err)
 		}
 		return // 如果删除重复文件，则结束程序
+	}
+
+	err = cleanUpOldRecords(rdb, ctx, startTime)
+	if err != nil {
+		fmt.Println("Error cleaning up old records:", err)
+	}
+
+	// 检查是否需要开始重复文件查找
+	const maxDuplicateFiles = 50
+	shouldSearch, err := shouldStopDuplicateFileSearch(rdb, ctx, maxDuplicateFiles)
+	if err != nil {
+		fmt.Println("Error checking duplicate files count:", err)
+		return
+	}
+	if shouldSearch {
+		fmt.Println("Duplicate files limit reached, skipping search.")
+		return
 	}
 
 	// 创建一个新的上下文和取消函数
@@ -76,11 +81,6 @@ func main() {
 	progressCancel()
 
 	fmt.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
-
-	err = cleanUpOldRecords(rdb, ctx, startTime)
-	if err != nil {
-		fmt.Println("Error cleaning up old records:", err)
-	}
 
 	// 文件处理完成后的保存操作
 	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
