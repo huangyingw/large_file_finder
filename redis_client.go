@@ -94,19 +94,19 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 	}
 
 	// 获取 fileHash
-	fileHash, err := calculateFileHash(filePath, false)
-	if err != nil {
-		return fmt.Errorf("error calculating hash for file %s: %v", filePath, err)
+	fileHash, err := rdb.Get(ctx, "hash:"+hashedKey).Result()
+	if err != nil && err != redis.Nil {
+		return fmt.Errorf("error retrieving fileHash for key %s: %v", hashedKey, err)
 	}
 
-	// 获取与 fileHash 相关的所有路径
-	filePaths, err := rdb.SMembers(ctx, "hash:"+fileHash).Result()
+	// 获取 fullHash
+	fullHash, err := rdb.Get(ctx, "fullHash:"+hashedKey).Result()
 	if err != nil && err != redis.Nil {
-		return fmt.Errorf("error retrieving file paths for hash %s: %v", fileHash, err)
+		return fmt.Errorf("error retrieving fullHash for key %s: %v", hashedKey, err)
 	}
 
 	// 构造 duplicateFilesKey
-	duplicateFilesKey := "duplicateFiles:" + fileHash
+	duplicateFilesKey := "duplicateFiles:" + fullHash
 
 	// 获取文件信息
 	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
