@@ -111,7 +111,14 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 			}
 
 			// 构造 duplicateFilesKey
-			for _, fileHash := range filePaths {
+			for _, filePath := range filePaths {
+				fmt.Printf("Calculating hash for file: %s\n", filePath)
+				fileHash, err := calculateFileHash(filePath, false)
+				if err != nil {
+					fmt.Printf("Error calculating hash for file %s: %s\n", filePath, err)
+					continue
+				}
+
 				duplicateFilesKey := "duplicateFiles:" + fileHash
 
 				// 删除记录
@@ -119,7 +126,7 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context, startTime int64) 
 				pipe.Del(ctx, updateTimeKey)                // 删除updateTime键
 				pipe.Del(ctx, "fileInfo:"+hashedKey)        // 删除fileInfo相关数据
 				pipe.Del(ctx, "path:"+hashedKey)            // 删除path相关数据
-				pipe.SRem(ctx, "hash:"+hashedKey, filePath) // 从集合中移除文件路径
+				pipe.SRem(ctx, "hash:"+fileHash, filePath)  // 从集合中移除文件路径
 				pipe.Del(ctx, "pathToHash:"+filePath)       // 删除从路径到hashedKey的映射
 				pipe.Del(ctx, "fullHash:"+hashedKey)        // 删除完整文件哈希相关数据
 				pipe.ZRem(ctx, duplicateFilesKey, filePath) // 从 duplicateFiles 有序集合中移除路径
