@@ -521,3 +521,20 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
 	fmt.Println("Duplicate files deleted successfully.")
 	return nil
 }
+
+func shouldStartDuplicateFileSearch(rdb *redis.Client, ctx context.Context, maxDuplicateFiles int) (bool, error) {
+	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
+	count := 0
+	for iter.Next(ctx) {
+		count++
+		if count >= maxDuplicateFiles {
+			fmt.Printf("Duplicate files count %d reached the limit %d\n", count, maxDuplicateFiles)
+			return false, nil
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return false, fmt.Errorf("error during iteration: %w", err)
+	}
+	fmt.Printf("Duplicate files count is %d, below the limit %d\n", count, maxDuplicateFiles)
+	return true, nil
+}
