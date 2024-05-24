@@ -29,12 +29,12 @@ func main() {
 
 	// 检查是否需要开始重复文件查找
 	const maxDuplicateFiles = 50
-	shouldSearch, err := shouldStartDuplicateFileSearch(rdb, ctx, maxDuplicateFiles)
+	shouldSearch, err := shouldStopDuplicateFileSearch(rdb, ctx, maxDuplicateFiles)
 	if err != nil {
 		fmt.Println("Error checking duplicate files count:", err)
 		return
 	}
-	if !shouldSearch {
+	if shouldSearch {
 		fmt.Println("Duplicate files limit reached, skipping search.")
 		return
 	}
@@ -87,7 +87,7 @@ func main() {
 	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
 
 	// 查找重复文件并记录结果到Redis
-	err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx)
+	err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx, maxDuplicateFiles)
 	if err != nil {
 		fmt.Println("Error finding and logging duplicates:", err)
 	}
