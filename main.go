@@ -45,7 +45,7 @@ func main() {
 		return // 如果删除重复文件，则结束程序
 	}
 
-	err = cleanUpOldRecords(rdb, ctx, startTime)
+	err = cleanUpOldRecords(rdb, ctx)
 	if err != nil {
 		fmt.Println("Error cleaning up old records:", err)
 	}
