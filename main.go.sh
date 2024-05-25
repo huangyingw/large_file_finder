@@ -48,7 +48,7 @@ rootDir="/media/"
 # go run . "$rootDir"
 
 # 输出重复文件结果
-go run . "$rootDir" --find-duplicates --max-duplicates=1
+go run . "$rootDir" --find-duplicates --max-duplicates=50
 
 # 删除重复文件（示例，实际运行时取消注释）
 <<<<<<< HEAD
