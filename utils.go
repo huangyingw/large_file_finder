@@ -305,7 +305,7 @@ func scanFileHashes(rdb *redis.Client, ctx context.Context) (map[string][]string
 	fileHashes := make(map[string][]string)
 	for iter.Next(ctx) {
 		hashKey := iter.Val()
-		fileHash := strings.TrimPrefix(hashKey, "hash:")
+		fileHash := strings.TrimPrefix(hashKey, "fileHashToPathset:")
 		duplicateFiles, err := rdb.SMembers(ctx, hashKey).Result()
 		if err != nil {
 			return nil, fmt.Errorf("error retrieving duplicate files for key %s: %w", hashKey, err)
