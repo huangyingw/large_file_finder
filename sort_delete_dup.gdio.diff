@@ -982,7 +982,7 @@ new file mode 100644
 +	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
 +	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
 +	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
-+	pipe.SAdd(ctx, "hash:"+fileHash, path) // 将文件路径存储为集合
++	pipe.SAdd(ctx, "fileHashToPathset:"+fileHash, path) // 将文件路径存储为集合
 +	if fullHash != "" {
 +		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
 +	}
@@ -1029,7 +1029,7 @@ new file mode 100644
 +	}
 +
 +	// 获取 fileHash
-+	fileHash, err := rdb.Get(ctx, "hash:"+hashedKey).Result()
++	fileHash, err := rdb.Get(ctx, "fileHashToPathset:"+hashedKey).Result()
 +	if err != nil && err != redis.Nil {
 +		return fmt.Errorf("error retrieving fileHash for key %s: %v", hashedKey, err)
 +	}
@@ -1051,7 +1051,7 @@ new file mode 100644
 +	pipe.Del(ctx, "pathToHashedKey:"+filePath)       // 删除从路径到 hashedKey 的映射
 +	pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)        // 删除完整文件哈希相关数据
 +	pipe.ZRem(ctx, duplicateFilesKey, filePath) // 从 duplicateFiles 有序集合中移除路径
-+	pipe.SRem(ctx, "hash:"+fileHash, filePath)  // 从 hash 集合中移除文件路径
++	pipe.SRem(ctx, "fileHashToPathset:"+fileHash, filePath)  // 从 hash 集合中移除文件路径
 +
 +	_, err = pipe.Exec(ctx)
 +	if err != nil {
@@ -1082,7 +1082,7 @@ new file mode 100644
 +        print(f"Data found for {path}: {file_info}")
 +
 +        # 获取并打印文件哈希值
-+        file_hash = r.get("hash:" + hashed_key)
++        file_hash = r.get("fileHashToPathset:" + hashed_key)
 +        if file_hash:
 +            print(f"File hash for {path}: {file_hash.decode('utf-8')}")
 +        else:
@@ -1427,7 +1427,7 @@ new file mode 100644
 +	fileHashes := make(map[string][]string)
 +	for iter.Next(ctx) {
 +		hashKey := iter.Val()
-+		fileHash := strings.TrimPrefix(hashKey, "hash:")
++		fileHash := strings.TrimPrefix(hashKey, "fileHashToPathset:")
 +		duplicateFiles, err := rdb.SMembers(ctx, hashKey).Result()
 +		if err != nil {
 +			return nil, fmt.Errorf("error retrieving duplicate files for key %s: %w", hashKey, err)
