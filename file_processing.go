@@ -94,12 +94,8 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		return
 	}
 	if exists > 0 {
-		// 文件已存在于Redis中，更新其更新时间戳
-		_, err := rdb.Set(ctx, "updateTime:"+hashedKey, startTime, 0).Result()
-		if err != nil {
-			fmt.Printf("Error updating updateTime for file %s: %s\n", path, err)
-		}
-		// fmt.Printf("File %s already exists in Redis, skipping processing.\n", path) // 添加打印信息
+		// 文件已存在于Redis中，跳过处理
+		fmt.Printf("File %s already exists in Redis, skipping processing.\n", path)
 		return
 	}
 
@@ -118,7 +114,7 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		return
 	}
 
-	// 计算文件的SHA-256哈希值（只读取前4KB）
+	// 计算文件的SHA-512哈希值（只读取前4KB）
 	fileHash, err := calculateFileHash(path, false)
 	if err != nil {
 		fmt.Printf("Error calculating hash for file %s: %s\n", path, err)
