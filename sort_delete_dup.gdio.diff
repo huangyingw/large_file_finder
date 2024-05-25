@@ -10,7 +10,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,217 @@
 +// file_processing.go
 +package main
 +
@@ -22,6 +22,7 @@ new file mode 100644
 +	"fmt"
 +	"github.com/go-redis/redis/v8"
 +	"io"
++	"log"
 +	"os"
 +	"path/filepath"
 +	"sort"
@@ -59,7 +60,7 @@ new file mode 100644
 +
 +		fileInfo, err := getFileInfoFromRedis(rdb, ctx, hashedKey)
 +		if err != nil {
-+			fmt.Printf("Error getting file info from Redis for key %s: %s\n", hashedKey, err)
++			log.Printf("Error getting file info from Redis for key %s: %s\n", hashedKey, err)
 +			continue
 +		}
 +
@@ -68,7 +69,7 @@ new file mode 100644
 +	}
 +
 +	if !foundData {
-+		fmt.Println("No data found in Redis.")
++		log.Println("No data found in Redis.")
 +		return nil
 +	}
 +
@@ -85,17 +86,16 @@ new file mode 100644
 +	}
 +
 +	if len(lines) == 0 {
-+		fmt.Println("No lines to write to file.")
++		log.Println("No lines to write to file.")
 +		return nil
 +	}
 +
-+	fmt.Printf("Writing %d lines to file %s\n", len(lines), filepath.Join(dir, filename))
++	log.Printf("Writing %d lines to file %s\n", len(lines), filepath.Join(dir, filename))
 +	return writeLinesToFile(filepath.Join(dir, filename), lines)
 +}
 +
 +func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context, startTime int64) {
-+	// Update progress counter atomically
-+	atomic.AddInt32(&progressCounter, 1)
++	defer atomic.AddInt32(&progressCounter, 1)
 +
 +	// 生成文件路径的哈希作为键
 +	hashedKey := generateHash(path)
@@ -103,40 +103,39 @@ new file mode 100644
 +	// 检查Redis中是否已存在该文件的信息
 +	exists, err := rdb.Exists(ctx, "fileInfo:"+hashedKey).Result()
 +	if err != nil {
-+		fmt.Printf("Error checking existence in Redis for file %s: %s\n", path, err)
++		log.Printf("Error checking existence in Redis for file %s: %s\n", path, err)
 +		return
 +	}
 +	if exists > 0 {
-+		// 文件已存在于Redis中，跳过处理
-+		fmt.Printf("File %s already exists in Redis, skipping processing.\n", path)
++		log.Printf("File %s already exists in Redis, skipping processing.\n", path)
 +		return
 +	}
 +
-+	fmt.Printf("File %s not found in Redis, processing.\n", path) // 添加打印信息
++	log.Printf("File %s not found in Redis, processing.\n", path)
 +
 +	info, err := os.Stat(path)
 +	if err != nil {
-+		fmt.Printf("Error stating file: %s, Error: %s\n", path, err)
++		log.Printf("Error stating file: %s, Error: %s\n", path, err)
 +		return
 +	}
 +
 +	var buf bytes.Buffer
 +	enc := gob.NewEncoder(&buf)
 +	if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-+		fmt.Printf("Error encoding: %s, File: %s\n", err, path)
++		log.Printf("Error encoding: %s, File: %s\n", err, path)
 +		return
 +	}
 +
 +	// 计算文件的SHA-512哈希值（只读取前4KB）
 +	fileHash, err := calculateFileHash(path, false)
 +	if err != nil {
-+		fmt.Printf("Error calculating hash for file %s: %s\n", path, err)
++		log.Printf("Error calculating hash for file %s: %s\n", path, err)
 +		return
 +	}
 +
 +	// 调用saveFileInfoToRedis函数来保存文件信息到Redis，不需要完整文件的哈希值
 +	if err := saveFileInfoToRedis(rdb, ctx, hashedKey, path, buf, fileHash, ""); err != nil {
-+		fmt.Printf("Error saving file info to Redis for file %s: %s\n", path, err)
++		log.Printf("Error saving file info to Redis for file %s: %s\n", path, err)
 +		return
 +	}
 +}
@@ -148,8 +147,8 @@ new file mode 100644
 +	return fmt.Sprintf("%d,\"./%s\"", fileInfo.Size, relativePath)
 +}
 +
-+// calculateFileHash 计算文件的 SHA-512 哈希值
-+// 读取前4KB的数据，除非fullRead参数为true
++const readLimit = 100 * 1024 // 100KB
++
 +func calculateFileHash(path string, fullRead bool) (string, error) {
 +	file, err := os.Open(path)
 +	if err != nil {
@@ -159,16 +158,11 @@ new file mode 100644
 +
 +	hasher := sha512.New()
 +	if fullRead {
-+		// 打印正在计算完整哈希的文件路径
-+		fmt.Printf("Calculating full hash for file: %s\n", path)
-+
-+		// 读取整个文件
++		log.Printf("Calculating full hash for file: %s\n", path)
 +		if _, err := io.Copy(hasher, file); err != nil {
 +			return "", err
 +		}
 +	} else {
-+		// 只读取前100KB的数据
-+		const readLimit = 100 * 1024
 +		reader := io.LimitReader(file, readLimit)
 +		if _, err := io.Copy(hasher, reader); err != nil {
 +			return "", err
@@ -179,15 +173,11 @@ new file mode 100644
 +}
 +
 +func processDirectory(path string) {
-+	// 处理目录的逻辑
-+	fmt.Printf("Processing directory: %s\n", path)
-+	// 可能的操作：遍历目录下的文件等
++	log.Printf("Processing directory: %s\n", path)
 +}
 +
 +func processSymlink(path string) {
-+	// 处理软链接的逻辑
-+	fmt.Printf("Processing symlink: %s\n", path)
-+	// 可能的操作：解析软链接，获取实际文件等
++	log.Printf("Processing symlink: %s\n", path)
 +}
 +
 +func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context, rootDir string) {
@@ -210,41 +200,30 @@ new file mode 100644
 +	outputFilePath := filepath.Join(rootDir, keyword+".txt")
 +	outputFile, err := os.Create(outputFilePath)
 +	if err != nil {
-+		fmt.Println("Error creating file:", err)
++		log.Println("Error creating file:", err)
 +		return
 +	}
 +	defer outputFile.Close() // 确保文件会被关闭
 +
 +	_, err = outputFile.WriteString(outputData.String())
 +	if err != nil {
-+		fmt.Println("Error writing to file:", err)
++		log.Println("Error writing to file:", err)
 +	}
 +}
 +
 +// cleanPath 用于清理和标准化路径
 +func cleanPath(path string) string {
-+	// 先去除路径开头的引号（如果存在）
-+	if strings.HasPrefix(path, `"`) {
-+		path = strings.TrimPrefix(path, `"`)
-+	}
-+
-+	// 再去除 "./"（如果路径以 "./" 开头）
++	path = strings.Trim(path, `"`)
 +	if strings.HasPrefix(path, "./") {
 +		path = strings.TrimPrefix(path, "./")
 +	}
-+
-+	// 最后去除路径末尾的引号（如果存在）
-+	if strings.HasSuffix(path, `"`) {
-+		path = strings.TrimSuffix(path, `"`)
-+	}
-+
 +	return path
 +}
 +
 +func getFileSize(rdb *redis.Client, ctx context.Context, fullPath string) (int64, error) {
 +	size, err := getFileSizeFromRedis(rdb, ctx, fullPath)
 +	if err != nil {
-+		fmt.Printf("Error getting size for %s: %v\n", fullPath, err)
++		log.Printf("Error getting size for %s: %v\n", fullPath, err)
 +		return 0, err
 +	}
 +	return size, nil
@@ -253,7 +232,7 @@ diff --git a/main.go b/main.go
 new file mode 100644
 --- /dev/null
 +++ ./main.go
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,243 @@
 +// main.go
 +// 此文件是Go程序的主要入口点，包含了文件处理程序的核心逻辑和初始化代码。
 +
@@ -265,6 +244,7 @@ new file mode 100644
 +	"fmt"
 +	"github.com/go-redis/redis/v8"
 +	"github.com/karrick/godirwalk"
++	"log"
 +	"os"
 +	"path/filepath"
 +	"regexp"
@@ -280,7 +260,7 @@ new file mode 100644
 +	startTime := time.Now().Unix()
 +	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, maxDuplicateFiles, err := initializeApp(os.Args)
 +	if err != nil {
-+		fmt.Println(err)
++		log.Println(err)
 +		return
 +	}
 +
@@ -288,13 +268,13 @@ new file mode 100644
 +	if findDuplicates {
 +		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx, maxDuplicateFiles) // 先查找重复文件
 +		if err != nil {
-+			fmt.Println("Error finding and logging duplicates:", err)
++			log.Println("Error finding and logging duplicates:", err)
 +			return
 +		}
 +
 +		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx) // 再输出结果
 +		if err != nil {
-+			fmt.Println("Error writing duplicates to file:", err)
++			log.Println("Error writing duplicates to file:", err)
 +		}
 +		return // 如果进行重复查找并输出结果，则结束程序
 +	}
@@ -303,14 +283,14 @@ new file mode 100644
 +	if deleteDuplicates {
 +		err = deleteDuplicateFiles(rootDir, rdb, ctx)
 +		if err != nil {
-+			fmt.Println("Error deleting duplicate files:", err)
++			log.Println("Error deleting duplicate files:", err)
 +		}
 +		return // 如果删除重复文件，则结束程序
 +	}
 +
 +	err = cleanUpOldRecords(rdb, ctx)
 +	if err != nil {
-+		fmt.Println("Error cleaning up old records:", err)
++		log.Println("Error cleaning up old records:", err)
 +	}
 +
 +	progressCtx, progressCancel := context.WithCancel(ctx)
@@ -320,7 +300,7 @@ new file mode 100644
 +	go monitorProgress(progressCtx, &progressCounter)
 +
 +	workerCount := 500
-+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount) // 修改此处
++	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
 +
 +	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
 +
@@ -330,7 +310,7 @@ new file mode 100644
 +	// 此时所有任务已经完成，取消进度监控上下文
 +	progressCancel()
 +
-+	fmt.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
++	log.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
 +
 +	// 文件处理完成后的保存操作
 +	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
@@ -344,7 +324,7 @@ new file mode 100644
 +func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context) {
 +	file, err := os.Open(filePath)
 +	if err != nil {
-+		fmt.Println("Error opening file:", err)
++		log.Println("Error opening file:", err)
 +		return
 +	}
 +	defer file.Close()
@@ -371,7 +351,7 @@ new file mode 100644
 +	totalKeywords := len(keywords)
 +
 +	workerCount := 500
-+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount) // 修改此处
++	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
 +
 +	for i, keyword := range keywords {
 +		keywordFiles := closeFiles[keyword]
@@ -379,8 +359,8 @@ new file mode 100644
 +			poolWg.Add(1) // 在将任务发送到队列之前增加计数
 +			taskQueue <- func(kw string, kf []string, idx int) Task {
 +				return func() {
-+					defer poolWg.Done() // 确保在任务结束时减少计数
-+					fmt.Printf("Processing keyword %d of %d: %s\n", idx+1, totalKeywords, kw)
++					defer poolWg.Done()
++					log.Printf("Processing keyword %d of %d: %s\n", idx+1, totalKeywords, kw)
 +					processKeyword(kw, kf, rdb, ctx, rootDir)
 +				}
 +			}(keyword, keywordFiles, i)
@@ -399,7 +379,7 @@ new file mode 100644
 +	})
 +	_, err := rdb.Ping(ctx).Result()
 +	if err != nil {
-+		fmt.Println("Error connecting to Redis:", err)
++		log.Println("Error connecting to Redis:", err)
 +		os.Exit(1)
 +	}
 +	return rdb
@@ -454,7 +434,7 @@ new file mode 100644
 +
 +			fileInfo, err := os.Lstat(osPathname)
 +			if err != nil {
-+				fmt.Printf("Error getting file info: %s\n", err)
++				log.Printf("Error getting file info: %s\n", err)
 +				return err
 +			}
 +
@@ -472,7 +452,7 @@ new file mode 100644
 +				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
 +					processSymlink(osPathname)
 +				} else {
-+					fmt.Printf("Skipping unknown type: %s\n", osPathname)
++					log.Printf("Skipping unknown type: %s\n", osPathname)
 +				}
 +			}
 +			return nil
@@ -492,10 +472,44 @@ new file mode 100644
 +			return
 +		case <-ticker.C: // 每秒触发一次
 +			processed := atomic.LoadInt32(progressCounter)
-+			fmt.Printf("Progress: %d files processed.\n", processed)
++			log.Printf("Progress: %d files processed.\n", processed)
 +		}
 +	}
 +}
+diff --git a/main.go.sh b/main.go.sh
+new file mode 100755
+--- /dev/null
++++ ./main.go.sh
+@@ -0,0 +1,29 @@
++#!/bin/zsh
++SCRIPT=$(realpath "$0")
++SCRIPTPATH=$(dirname "$SCRIPT")
++cd "$SCRIPTPATH"
++
++
++go mod init github.com/huangyingw/FileSorter
++go get -u github.com/allegro/bigcache
++go get -u github.com/go-redis/redis/v8
++go get -u github.com/mattn/go-zglob/fastwalk
++go get -u github.com/karrick/godirwalk
++
++#cp -v /media/secure_bcache/test/test.mp4.bak.bak /media/secure_bcache/test/test.mp4.bak
++#cp -v /media/secure_bcache/test/test.mp4.bak.bak /media/secure_bcache/test/test.mp4
++#docker-compose down -v
++#docker-compose restart
++docker-compose up -d
++
++# 定义路径变量，确保处理包含空格和特殊字符的情况
++rootDir="/media/"
++
++# 正常运行
++# go run . "$rootDir"
++
++# 输出重复文件结果
++go run . "$rootDir" --find-duplicates --max-duplicates=1
++
++# 删除重复文件（示例，实际运行时取消注释）
++# go run . "$rootDir" --delete-duplicates
 diff --git a/redis_client.go b/redis_client.go
 new file mode 100644
 --- /dev/null
