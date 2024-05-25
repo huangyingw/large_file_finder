@@ -12,7 +12,6 @@
 "./prunefix.conf"
 "./readme"
 "./redis_client.go"
-"./redis_path_query.py"
 "./rsync.files"
 "./sort_delete_dup.gdio.diff"
 "./utils.go"
