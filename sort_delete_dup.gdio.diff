@@ -232,7 +232,7 @@ diff --git a/main.go b/main.go
 new file mode 100644
 --- /dev/null
 +++ ./main.go
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,244 @@
 +// main.go
 +// 此文件是Go程序的主要入口点，包含了文件处理程序的核心逻辑和初始化代码。
 +
@@ -264,6 +264,12 @@ new file mode 100644
 +		return
 +	}
 +
++	// 先清理旧记录
++	err = cleanUpOldRecords(rdb, ctx)
++	if err != nil {
++		log.Println("Error cleaning up old records:", err)
++	}
++
 +	// 根据参数决定是否进行重复文件查找并输出结果
 +	if findDuplicates {
 +		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx, maxDuplicateFiles) // 先查找重复文件
@@ -288,11 +294,6 @@ new file mode 100644
 +		return // 如果删除重复文件，则结束程序
 +	}
 +
-+	err = cleanUpOldRecords(rdb, ctx)
-+	if err != nil {
-+		log.Println("Error cleaning up old records:", err)
-+	}
-+
 +	progressCtx, progressCancel := context.WithCancel(ctx)
 +	defer progressCancel()
 +
@@ -300,7 +301,7 @@ new file mode 100644
 +	go monitorProgress(progressCtx, &progressCounter)
 +
 +	workerCount := 500
-+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
++	taskQueue, poolWg, stopPool, _ := NewWorkerPool(workerCount)
 +
 +	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
 +
@@ -351,7 +352,7 @@ new file mode 100644
 +	totalKeywords := len(keywords)
 +
 +	workerCount := 500
-+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
++	taskQueue, poolWg, stopPool, _ := NewWorkerPool(workerCount)
 +
 +	for i, keyword := range keywords {
 +		keywordFiles := closeFiles[keyword]
@@ -506,7 +507,7 @@ new file mode 100755
 +# go run . "$rootDir"
 +
 +# 输出重复文件结果
-+go run . "$rootDir" --find-duplicates --max-duplicates=1
++go run . "$rootDir" --find-duplicates --max-duplicates=50
 +
 +# 删除重复文件（示例，实际运行时取消注释）
 +# go run . "$rootDir" --delete-duplicates
@@ -647,7 +648,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,572 @@
+@@ -0,0 +1,582 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -762,7 +763,7 @@ new file mode 100644
 +var semaphore = make(chan struct{}, 100) // 同时最多打开100个文件
 +
 +// 处理每个文件哈希并查找重复文件
-+func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool, maxDuplicateFiles int) (int, error) {
++func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool, maxDuplicateFiles int, stopProcessing chan struct{}) (int, error) {
 +	fileCount := 0
 +
 +	if len(filePaths) > 1 {
@@ -770,10 +771,16 @@ new file mode 100644
 +		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
 +		hashes := make(map[string][]fileInfo)
 +		for _, fullPath := range filePaths {
++			select {
++			case <-stopProcessing:
++				return fileCount, nil // 返回并终止任务
++			default:
++			}
++
 +			// 检查是否达到最大重复文件数量限制
 +			if fileCount >= maxDuplicateFiles {
 +				fmt.Printf("Reached the limit of duplicate files, stopping processing for hash %s.\n", fileHash)
-+				break
++				return fileCount, nil
 +			}
 +
 +			// 确保只处理rootDir下的文件
@@ -906,10 +913,14 @@ new file mode 100644
 +	var wg sync.WaitGroup // 等待 goroutine 完成
 +	var mu sync.Mutex     // 用于保护对 fileCount 的并发访问
 +
++	// 创建一个停止信号通道
++	stopProcessing := make(chan struct{})
++
 +	for fileHash, filePaths := range fileHashes {
 +		// 如果达到最大重复文件数量限制，停止查找
 +		if duplicateCount >= maxDuplicateFiles {
 +			fmt.Println("Reached the limit of duplicate files, stopping search.")
++			close(stopProcessing) // 发送停止信号
 +			break
 +		}
 +
@@ -918,7 +929,7 @@ new file mode 100644
 +		go func(fileHash string, filePaths []string) {
 +			defer wg.Done()
 +
-+			count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicateFiles)
++			count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicateFiles, stopProcessing)
 +			if err != nil {
 +				fmt.Printf("Error processing file hash %s: %s\n", fileHash, err)
 +				return
@@ -1079,7 +1090,7 @@ new file mode 100644
 +func extractKeywords(fileNames []string) []string {
 +	workerCount := 100
 +	// 创建自己的工作池
-+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
++	taskQueue, poolWg, stopPool, _ := NewWorkerPool(workerCount)
 +
 +	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
 +
@@ -1224,7 +1235,7 @@ diff --git a/worker_pool.go b/worker_pool.go
 new file mode 100644
 --- /dev/null
 +++ ./worker_pool.go
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,40 @@
 +// worker_pool.go
 +package main
 +
@@ -1235,23 +1246,33 @@ new file mode 100644
 +// Task 定义了工作池中的任务类型
 +type Task func()
 +
-+func NewWorkerPool(workerCount int) (chan<- Task, *sync.WaitGroup, func()) {
++func NewWorkerPool(workerCount int) (chan<- Task, *sync.WaitGroup, func(), chan struct{}) {
 +	var wg sync.WaitGroup
 +	taskQueue := make(chan Task)
++	stopProcessing := make(chan struct{})
 +
 +	for i := 0; i < workerCount; i++ {
 +		wg.Add(1)
 +		go func() {
 +			defer wg.Done()
-+			for task := range taskQueue {
-+				task()
++			for {
++				select {
++				case <-stopProcessing:
++					return
++				case task, ok := <-taskQueue:
++					if !ok {
++						return
++					}
++					task()
++				}
 +			}
 +		}()
 +	}
 +
 +	stopFunc := func() {
-+		close(taskQueue) // 关闭包装后的任务队列
++		close(stopProcessing) // 发送停止信号
++		close(taskQueue)      // 关闭任务队列
 +	}
 +
-+	return taskQueue, &wg, stopFunc
++	return taskQueue, &wg, stopFunc, stopProcessing
 +}
