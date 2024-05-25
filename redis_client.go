@@ -105,8 +105,6 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 		return fmt.Errorf("error retrieving fullHash for key %s: %v", hashedKey, err)
 	}
 
-	// 构造 duplicateFilesKey
-	duplicateFilesKey := "duplicateFiles:" + fullHash
 
 	// 删除记录
 	pipe := rdb.TxPipeline()
@@ -116,7 +114,7 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 	pipe.Del(ctx, "hashedKeyToFileHash:"+hashedKey) // 删除 hashedKey 到 fileHash 的映射
 	if fullHash != "" {
 		pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey) // 删除完整文件哈希相关数据
-		pipe.ZRem(ctx, duplicateFilesKey, filePath)     // 从 duplicateFiles 有序集合中移除路径
+		pipe.ZRem(ctx, "duplicateFiles:" + fullHash, filePath)     // 从 duplicateFiles 有序集合中移除路径
 	}
 	pipe.SRem(ctx, "fileHashToPathSet:"+fileHash, filePath) // 从 hash 集合中移除文件路径
 
