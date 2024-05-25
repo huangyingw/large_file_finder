@@ -46,7 +46,7 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey strin
 	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
 	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
 	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
-	pipe.SAdd(ctx, "hash:"+fileHash, path) // 将文件路径存储为集合
+	pipe.SAdd(ctx, "fileHashToPathset:"+fileHash, path) // 将文件路径存储为集合
 	if fullHash != "" {
 		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
 	}
@@ -93,7 +93,7 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 	}
 
 	// 获取 fileHash
-	fileHash, err := rdb.Get(ctx, "hash:"+hashedKey).Result()
+	fileHash, err := rdb.Get(ctx, "fileHashToPathset:"+hashedKey).Result()
 	if err != nil && err != redis.Nil {
 		return fmt.Errorf("error retrieving fileHash for key %s: %v", hashedKey, err)
 	}
@@ -115,7 +115,7 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 	pipe.Del(ctx, "pathToHashedKey:"+filePath)       // 删除从路径到 hashedKey 的映射
 	pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)        // 删除完整文件哈希相关数据
 	pipe.ZRem(ctx, duplicateFilesKey, filePath) // 从 duplicateFiles 有序集合中移除路径
-	pipe.SRem(ctx, "hash:"+fileHash, filePath)  // 从 hash 集合中移除文件路径
+	pipe.SRem(ctx, "fileHashToPathset:"+fileHash, filePath)  // 从 hash 集合中移除文件路径
 
 	_, err = pipe.Exec(ctx)
 	if err != nil {
