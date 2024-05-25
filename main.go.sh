@@ -20,10 +20,10 @@ docker-compose up -d
 rootDir="/media/"
 
 # 正常运行
-go run . "$rootDir"
+# go run . "$rootDir"
 
 # 输出重复文件结果
-go run . "$rootDir" --find-duplicates
+go run . "$rootDir" --find-duplicates --max-duplicates=1
 
 # 删除重复文件（示例，实际运行时取消注释）
 # go run . "$rootDir" --delete-duplicates
