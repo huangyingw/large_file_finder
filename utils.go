@@ -423,7 +423,7 @@ func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, fullPath strin
 }
 
 func getHashedKeyFromPath(rdb *redis.Client, ctx context.Context, path string) (string, error) {
-	return rdb.Get(ctx, "pathToHash:"+path).Result()
+	return rdb.Get(ctx, "pathToHashedKey:"+path).Result()
 }
 
 // extractFileName extracts the file name from a given file path.
