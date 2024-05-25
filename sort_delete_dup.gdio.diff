@@ -72,7 +72,7 @@ new file mode 100644
 +		hashedKey := iter.Val()
 +		hashedKey = strings.TrimPrefix(hashedKey, "fileInfo:")
 +
-+		originalPath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
++		originalPath, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
 +		if err != nil {
 +			continue
 +		}
@@ -981,7 +981,7 @@ new file mode 100644
 +
 +	// 这里我们添加命令到管道，但不立即检查错误
 +	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
-+	pipe.Set(ctx, "path:"+hashedKey, path, 0)
++	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
 +	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
 +	pipe.SAdd(ctx, "hash:"+fileHash, path) // 将文件路径存储为集合
 +	if fullHash != "" {
@@ -1048,7 +1048,7 @@ new file mode 100644
 +	pipe := rdb.TxPipeline()
 +	pipe.Del(ctx, "updateTime:"+hashedKey)      // 删除 updateTime 键
 +	pipe.Del(ctx, "fileInfo:"+hashedKey)        // 删除 fileInfo 相关数据
-+	pipe.Del(ctx, "path:"+hashedKey)            // 删除 path 相关数据
++	pipe.Del(ctx, "hashedKeyToPath:"+hashedKey)            // 删除 path 相关数据
 +	pipe.Del(ctx, "pathToHash:"+filePath)       // 删除从路径到 hashedKey 的映射
 +	pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)        // 删除完整文件哈希相关数据
 +	pipe.ZRem(ctx, duplicateFilesKey, filePath) // 从 duplicateFiles 有序集合中移除路径
