@@ -512,7 +512,7 @@ diff --git a/redis_client.go b/redis_client.go
 new file mode 100644
 --- /dev/null
 +++ ./redis_client.go
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,128 @@
 +// redis_client.go
 +package main
 +
