@@ -51,6 +51,8 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey strin
 	}
 	// 存储从路径到hashedKey的映射
 	pipe.Set(ctx, "pathToHashedKey:"+path, hashedKey, 0)
+	// 存储hashedKey到fileHash的映射
+	pipe.Set(ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
 
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
@@ -92,8 +94,8 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 	}
 
 	// 获取 fileHash
-	fileHash, err := rdb.Get(ctx, "fileHashToPathset:"+hashedKey).Result()
-	if err != nil && err != redis.Nil {
+	fileHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+	if err != nil {
 		return fmt.Errorf("error retrieving fileHash for key %s: %v", hashedKey, err)
 	}
 
@@ -108,13 +110,15 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 
 	// 删除记录
 	pipe := rdb.TxPipeline()
-	pipe.Del(ctx, "updateTime:"+hashedKey)                  // 删除 updateTime 键
-	pipe.Del(ctx, "fileInfo:"+hashedKey)                    // 删除 fileInfo 相关数据
-	pipe.Del(ctx, "hashedKeyToPath:"+hashedKey)             // 删除 path 相关数据
-	pipe.Del(ctx, "pathToHashedKey:"+filePath)              // 删除从路径到 hashedKey 的映射
-	pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)         // 删除完整文件哈希相关数据
-	pipe.ZRem(ctx, duplicateFilesKey, filePath)             // 从 duplicateFiles 有序集合中移除路径
-	pipe.SRem(ctx, "fileHashToPathset:"+fileHash, filePath) // 从 hash 集合中移除文件路径
+	pipe.Del(ctx, "fileInfo:"+hashedKey)            // 删除 fileInfo 相关数据
+	pipe.Del(ctx, "hashedKeyToPath:"+hashedKey)     // 删除 path 相关数据
+	pipe.Del(ctx, "pathToHashedKey:"+filePath)      // 删除从路径到 hashedKey 的映射
+	pipe.Del(ctx, "hashedKeyToFileHash:"+hashedKey) // 删除 hashedKey 到 fileHash 的映射
+	if fullHash != "" {
+		pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey) // 删除完整文件哈希相关数据
+		pipe.ZRem(ctx, duplicateFilesKey, filePath)     // 从 duplicateFiles 有序集合中移除路径
+	}
+	pipe.SRem(ctx, "fileHashToPathSet:"+fileHash, filePath) // 从 hash 集合中移除文件路径
 
 	_, err = pipe.Exec(ctx)
 	if err != nil {
