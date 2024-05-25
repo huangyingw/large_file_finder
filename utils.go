@@ -143,7 +143,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 
 			// 获取或计算完整文件的SHA-256哈希值
 			hashedKey := generateHash(fullPath)
-			fullHash, err := rdb.Get(ctx, "fullHash:"+hashedKey).Result()
+			fullHash, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
 			var buf bytes.Buffer
 			if err == redis.Nil {
 				fullHash, err = calculateFileHash(fullPath, true)
@@ -524,20 +524,20 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
 			filesToDelete := duplicateFiles[1:]
 
 			for _, duplicateFile := range filesToDelete {
-				// 删除文件
-				err := os.Remove(duplicateFile)
+				// 先从 Redis 中删除相关记录
+				err := cleanUpRecordsByFilePath(rdb, ctx, duplicateFile)
+				if err != nil {
+					fmt.Printf("Error cleaning up records for file %s: %s\n", duplicateFile, err)
+					continue
+				}
+
+				// 然后删除文件
+				err = os.Remove(duplicateFile)
 				if err != nil {
 					fmt.Printf("Error deleting file %s: %s\n", duplicateFile, err)
 					continue
 				}
 				fmt.Printf("Deleted duplicate file: %s\n", duplicateFile)
-
-				// 从 Redis 中删除相关记录
-				err = cleanUpRecordsByFilePath(rdb, ctx, duplicateFile)
-				if err != nil {
-					fmt.Printf("Error cleaning up records for file %s: %s\n", duplicateFile, err)
-					continue
-				}
 			}
 		}
 	}
