@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/go-redis/redis/v8"
 	"github.com/karrick/godirwalk"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,7 +25,7 @@ func main() {
 	startTime := time.Now().Unix()
 	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, maxDuplicateFiles, err := initializeApp(os.Args)
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		return
 	}
 
@@ -32,13 +33,13 @@ func main() {
 	if findDuplicates {
 		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx, maxDuplicateFiles) // 先查找重复文件
 		if err != nil {
-			fmt.Println("Error finding and logging duplicates:", err)
+			log.Println("Error finding and logging duplicates:", err)
 			return
 		}
 
 		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx) // 再输出结果
 		if err != nil {
-			fmt.Println("Error writing duplicates to file:", err)
+			log.Println("Error writing duplicates to file:", err)
 		}
 		return // 如果进行重复查找并输出结果，则结束程序
 	}
@@ -47,14 +48,14 @@ func main() {
 	if deleteDuplicates {
 		err = deleteDuplicateFiles(rootDir, rdb, ctx)
 		if err != nil {
-			fmt.Println("Error deleting duplicate files:", err)
+			log.Println("Error deleting duplicate files:", err)
 		}
 		return // 如果删除重复文件，则结束程序
 	}
 
 	err = cleanUpOldRecords(rdb, ctx)
 	if err != nil {
-		fmt.Println("Error cleaning up old records:", err)
+		log.Println("Error cleaning up old records:", err)
 	}
 
 	progressCtx, progressCancel := context.WithCancel(ctx)
@@ -64,7 +65,7 @@ func main() {
 	go monitorProgress(progressCtx, &progressCounter)
 
 	workerCount := 500
-	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount) // 修改此处
+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
 
 	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
 
@@ -74,7 +75,7 @@ func main() {
 	// 此时所有任务已经完成，取消进度监控上下文
 	progressCancel()
 
-	fmt.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
+	log.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
 
 	// 文件处理完成后的保存操作
 	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
@@ -88,7 +89,7 @@ func main() {
 func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		fmt.Println("Error opening file:", err)
+		log.Println("Error opening file:", err)
 		return
 	}
 	defer file.Close()
@@ -115,7 +116,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	totalKeywords := len(keywords)
 
 	workerCount := 500
-	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount) // 修改此处
+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
 
 	for i, keyword := range keywords {
 		keywordFiles := closeFiles[keyword]
@@ -123,8 +124,8 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 			poolWg.Add(1) // 在将任务发送到队列之前增加计数
 			taskQueue <- func(kw string, kf []string, idx int) Task {
 				return func() {
-					defer poolWg.Done() // 确保在任务结束时减少计数
-					fmt.Printf("Processing keyword %d of %d: %s\n", idx+1, totalKeywords, kw)
+					defer poolWg.Done()
+					log.Printf("Processing keyword %d of %d: %s\n", idx+1, totalKeywords, kw)
 					processKeyword(kw, kf, rdb, ctx, rootDir)
 				}
 			}(keyword, keywordFiles, i)
@@ -143,7 +144,7 @@ func newRedisClient(ctx context.Context) *redis.Client {
 	})
 	_, err := rdb.Ping(ctx).Result()
 	if err != nil {
-		fmt.Println("Error connecting to Redis:", err)
+		log.Println("Error connecting to Redis:", err)
 		os.Exit(1)
 	}
 	return rdb
@@ -198,7 +199,7 @@ func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Rege
 
 			fileInfo, err := os.Lstat(osPathname)
 			if err != nil {
-				fmt.Printf("Error getting file info: %s\n", err)
+				log.Printf("Error getting file info: %s\n", err)
 				return err
 			}
 
@@ -216,7 +217,7 @@ func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Rege
 				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
 					processSymlink(osPathname)
 				} else {
-					fmt.Printf("Skipping unknown type: %s\n", osPathname)
+					log.Printf("Skipping unknown type: %s\n", osPathname)
 				}
 			}
 			return nil
@@ -236,7 +237,7 @@ func monitorProgress(ctx context.Context, progressCounter *int32) {
 			return
 		case <-ticker.C: // 每秒触发一次
 			processed := atomic.LoadInt32(progressCounter)
-			fmt.Printf("Progress: %d files processed.\n", processed)
+			log.Printf("Progress: %d files processed.\n", processed)
 		}
 	}
 }
