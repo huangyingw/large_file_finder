@@ -29,6 +29,12 @@ func main() {
 		return
 	}
 
+	// 先清理旧记录
+	err = cleanUpOldRecords(rdb, ctx)
+	if err != nil {
+		log.Println("Error cleaning up old records:", err)
+	}
+
 	// 根据参数决定是否进行重复文件查找并输出结果
 	if findDuplicates {
 		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx, maxDuplicateFiles) // 先查找重复文件
@@ -51,11 +57,6 @@ func main() {
 			log.Println("Error deleting duplicate files:", err)
 		}
 		return // 如果删除重复文件，则结束程序
-	}
-
-	err = cleanUpOldRecords(rdb, ctx)
-	if err != nil {
-		log.Println("Error cleaning up old records:", err)
 	}
 
 	progressCtx, progressCancel := context.WithCancel(ctx)
