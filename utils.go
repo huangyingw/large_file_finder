@@ -158,19 +158,19 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			fullHash, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
 			var buf bytes.Buffer
 			if err == redis.Nil {
-				fullHash, err = calculateFileHash(fullPath, true)
+				fullHash, err = calculateFileHash(fullPath, true, rdb, ctx)
 				if err != nil {
 					fmt.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
 					<-semaphore // 释放信号量
 					continue
 				}
 
-				fileHash, err := calculateFileHash(fullPath, false)
+				// 计算文件的SHA-512哈希值（只读取前4KB）
+				fileHash, err := calculateFileHash(fullPath, false, rdb, ctx)
 				if err != nil {
 					fmt.Printf("Error calculating hash for file %s: %s\n", fullPath, err)
+					<-semaphore // 释放信号量
 					continue
-				} else {
-					fmt.Printf("Calculated hash for file %s: %s\n", fullPath, fileHash)
 				}
 
 				// 获取文件信息并编码
