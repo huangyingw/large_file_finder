@@ -65,7 +65,7 @@ func main() {
 	go monitorProgress(progressCtx, &progressCounter)
 
 	workerCount := 500
-	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopPool, _ := NewWorkerPool(workerCount)
 
 	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
 
@@ -116,7 +116,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	totalKeywords := len(keywords)
 
 	workerCount := 500
-	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopPool, _ := NewWorkerPool(workerCount)
 
 	for i, keyword := range keywords {
 		keywordFiles := closeFiles[keyword]
