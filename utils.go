@@ -120,6 +120,12 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
 		hashes := make(map[string][]fileInfo)
 		for _, fullPath := range filePaths {
+			// 检查是否达到最大重复文件数量限制
+			if fileCount >= maxDuplicateFiles {
+				fmt.Printf("Reached the limit of duplicate files, stopping processing for hash %s.\n", fileHash)
+				break
+			}
+
 			// 确保只处理rootDir下的文件
 			if !strings.HasPrefix(fullPath, rootDir) {
 				fmt.Printf("Skipping file outside root directory: %s\n", fullPath)
