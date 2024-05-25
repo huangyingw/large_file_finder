@@ -222,18 +222,6 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 							fmt.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fileHash, err)
 						}
 					}
-					// 检查是否需要停止查找
-					shouldStop, err := shouldStopDuplicateFileSearch(rdb, ctx, maxDuplicateFiles)
-					if err != nil {
-						fmt.Printf("Error checking duplicate files count: %s\n", err)
-						mu.Unlock()
-						return fileCount, err
-					}
-					if shouldStop {
-						fmt.Println("Reached the limit of duplicate files, stopping search.")
-						mu.Unlock()
-						return fileCount, nil
-					}
 				}
 				mu.Unlock()
 			}
@@ -254,6 +242,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	fmt.Printf("Scanned file hashes: %v\n", fileHashes)
 
 	fileCount := 0
+	duplicateCount := 0 // 用于缓存重复文件数量
 
 	// 用于存储已处理的文件哈希
 	processedFullHashes := make(map[string]bool)
@@ -262,12 +251,8 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	var mu sync.Mutex     // 用于保护对 fileCount 的并发访问
 
 	for fileHash, filePaths := range fileHashes {
-		shouldStop, err := shouldStopDuplicateFileSearch(rdb, ctx, maxDuplicateFiles)
-		if err != nil {
-			fmt.Printf("Error checking duplicate files count: %s\n", err)
-			return err
-		}
-		if shouldStop {
+		// 如果达到最大重复文件数量限制，停止查找
+		if duplicateCount >= maxDuplicateFiles {
 			fmt.Println("Reached the limit of duplicate files, stopping search.")
 			break
 		}
@@ -282,8 +267,10 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 				fmt.Printf("Error processing file hash %s: %s\n", fileHash, err)
 				return
 			}
+
 			mu.Lock()
 			fileCount += count
+			duplicateCount += len(filePaths) - 1 // 假设每个哈希至少有一个重复文件
 			mu.Unlock()
 		}(fileHash, filePaths)
 	}
@@ -574,17 +561,6 @@ func cleanUpHashKeys(rdb *redis.Client, ctx context.Context, fullHash, duplicate
 	return nil
 }
 
-func shouldStopDuplicateFileSearch(rdb *redis.Client, ctx context.Context, maxDuplicateFiles int) (bool, error) {
-	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
-	count := 0
-	for iter.Next(ctx) {
-		count++
-		if count >= maxDuplicateFiles {
-			return true, nil
-		}
-	}
-	if err := iter.Err(); err != nil {
-		return false, fmt.Errorf("error during iteration: %w", err)
-	}
-	return false, nil
+func shouldStopDuplicateFileSearch(duplicateCount int, maxDuplicateFiles int) bool {
+	return duplicateCount >= maxDuplicateFiles
 }
