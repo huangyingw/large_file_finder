@@ -14,7 +14,7 @@ def query_redis(path, redis_host="localhost", redis_port=6379, redis_db=0):
         print(f"Data found for {path}: {file_info}")
 
         # 获取并打印文件哈希值
-        file_hash = r.get("hash:" + hashed_key)
+        file_hash = r.get("fileHashToPathset:" + hashed_key)
         if file_hash:
             print(f"File hash for {path}: {file_hash.decode('utf-8')}")
         else:
