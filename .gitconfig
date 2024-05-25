@@ -5,5 +5,5 @@
     remote = origin
 [gsync]
     remote = origin
-    target = origin/hashSizeKey
+    target = 7896ac267fe9347382282a4c38107d745f0ffc92
 
