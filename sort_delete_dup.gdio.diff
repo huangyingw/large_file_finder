@@ -10,7 +10,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,238 @@
 +// file_processing.go
 +package main
 +
@@ -107,12 +107,8 @@ new file mode 100644
 +		return
 +	}
 +	if exists > 0 {
-+		// 文件已存在于Redis中，更新其更新时间戳
-+		_, err := rdb.Set(ctx, "updateTime:"+hashedKey, startTime, 0).Result()
-+		if err != nil {
-+			fmt.Printf("Error updating updateTime for file %s: %s\n", path, err)
-+		}
-+		// fmt.Printf("File %s already exists in Redis, skipping processing.\n", path) // 添加打印信息
++		// 文件已存在于Redis中，跳过处理
++		fmt.Printf("File %s already exists in Redis, skipping processing.\n", path)
 +		return
 +	}
 +
@@ -131,7 +127,7 @@ new file mode 100644
 +		return
 +	}
 +
-+	// 计算文件的SHA-256哈希值（只读取前4KB）
++	// 计算文件的SHA-512哈希值（只读取前4KB）
 +	fileHash, err := calculateFileHash(path, false)
 +	if err != nil {
 +		fmt.Printf("Error calculating hash for file %s: %s\n", path, err)
@@ -139,7 +135,7 @@ new file mode 100644
 +	}
 +
 +	// 调用saveFileInfoToRedis函数来保存文件信息到Redis，不需要完整文件的哈希值
-+	if err := saveFileInfoToRedis(rdb, ctx, hashedKey, path, buf, startTime, fileHash, ""); err != nil {
++	if err := saveFileInfoToRedis(rdb, ctx, hashedKey, path, buf, fileHash, ""); err != nil {
 +		fmt.Printf("Error saving file info to Redis for file %s: %s\n", path, err)
 +		return
 +	}
@@ -516,7 +512,7 @@ diff --git a/redis_client.go b/redis_client.go
 new file mode 100644
 --- /dev/null
 +++ ./redis_client.go
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,130 @@
 +// redis_client.go
 +package main
 +
@@ -557,20 +553,21 @@ new file mode 100644
 +	return nil
 +}
 +
-+func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, startTime int64, fileHash string, fullHash string) error {
++func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, fileHash string, fullHash string) error {
 +	// 使用管道批量处理Redis命令
 +	pipe := rdb.Pipeline()
 +
 +	// 这里我们添加命令到管道，但不立即检查错误
 +	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
 +	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
-+	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
 +	pipe.SAdd(ctx, "fileHashToPathset:"+fileHash, path) // 将文件路径存储为集合
 +	if fullHash != "" {
 +		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
 +	}
 +	// 存储从路径到hashedKey的映射
 +	pipe.Set(ctx, "pathToHashedKey:"+path, hashedKey, 0)
++	// 存储hashedKey到fileHash的映射
++	pipe.Set(ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
 +
 +	if _, err := pipe.Exec(ctx); err != nil {
 +		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
@@ -612,8 +609,8 @@ new file mode 100644
 +	}
 +
 +	// 获取 fileHash
-+	fileHash, err := rdb.Get(ctx, "fileHashToPathset:"+hashedKey).Result()
-+	if err != nil && err != redis.Nil {
++	fileHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
++	if err != nil {
 +		return fmt.Errorf("error retrieving fileHash for key %s: %v", hashedKey, err)
 +	}
 +
@@ -628,13 +625,15 @@ new file mode 100644
 +
 +	// 删除记录
 +	pipe := rdb.TxPipeline()
-+	pipe.Del(ctx, "updateTime:"+hashedKey)      // 删除 updateTime 键
-+	pipe.Del(ctx, "fileInfo:"+hashedKey)        // 删除 fileInfo 相关数据
-+	pipe.Del(ctx, "hashedKeyToPath:"+hashedKey)            // 删除 path 相关数据
-+	pipe.Del(ctx, "pathToHashedKey:"+filePath)       // 删除从路径到 hashedKey 的映射
-+	pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)        // 删除完整文件哈希相关数据
-+	pipe.ZRem(ctx, duplicateFilesKey, filePath) // 从 duplicateFiles 有序集合中移除路径
-+	pipe.SRem(ctx, "fileHashToPathset:"+fileHash, filePath)  // 从 hash 集合中移除文件路径
++	pipe.Del(ctx, "fileInfo:"+hashedKey)            // 删除 fileInfo 相关数据
++	pipe.Del(ctx, "hashedKeyToPath:"+hashedKey)     // 删除 path 相关数据
++	pipe.Del(ctx, "pathToHashedKey:"+filePath)      // 删除从路径到 hashedKey 的映射
++	pipe.Del(ctx, "hashedKeyToFileHash:"+hashedKey) // 删除 hashedKey 到 fileHash 的映射
++	if fullHash != "" {
++		pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey) // 删除完整文件哈希相关数据
++		pipe.ZRem(ctx, duplicateFilesKey, filePath)     // 从 duplicateFiles 有序集合中移除路径
++	}
++	pipe.SRem(ctx, "fileHashToPathSet:"+fileHash, filePath) // 从 hash 集合中移除文件路径
 +
 +	_, err = pipe.Exec(ctx)
 +	if err != nil {
@@ -828,7 +827,7 @@ new file mode 100644
 +				}
 +
 +				// 调用saveFileInfoToRedis函数来保存文件信息到Redis
-+				if err := saveFileInfoToRedis(rdb, ctx, hashedKey, fullPath, buf, time.Now().Unix(), fileHash, fullHash); err != nil {
++				if err := saveFileInfoToRedis(rdb, ctx, hashedKey, fullPath, buf, fileHash, fullHash); err != nil {
 +					fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
 +					<-semaphore // 释放信号量
 +					continue
