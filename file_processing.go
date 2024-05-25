@@ -126,7 +126,7 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 	}
 
 	// 调用saveFileInfoToRedis函数来保存文件信息到Redis，不需要完整文件的哈希值
-	if err := saveFileInfoToRedis(rdb, ctx, hashedKey, path, buf, startTime, fileHash, ""); err != nil {
+	if err := saveFileInfoToRedis(rdb, ctx, hashedKey, path, buf, fileHash, ""); err != nil {
 		fmt.Printf("Error saving file info to Redis for file %s: %s\n", path, err)
 		return
 	}
