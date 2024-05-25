@@ -301,7 +301,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 }
 
 func scanFileHashes(rdb *redis.Client, ctx context.Context) (map[string][]string, error) {
-	iter := rdb.Scan(ctx, 0, "hash:*", 0).Iterator()
+	iter := rdb.Scan(ctx, 0, "fileHashToPathset:*", 0).Iterator()
 	fileHashes := make(map[string][]string)
 	for iter.Next(ctx) {
 		hashKey := iter.Val()
