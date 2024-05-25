@@ -647,7 +647,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,566 @@
+@@ -0,0 +1,572 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -770,6 +770,12 @@ new file mode 100644
 +		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
 +		hashes := make(map[string][]fileInfo)
 +		for _, fullPath := range filePaths {
++			// 检查是否达到最大重复文件数量限制
++			if fileCount >= maxDuplicateFiles {
++				fmt.Printf("Reached the limit of duplicate files, stopping processing for hash %s.\n", fileHash)
++				break
++			}
++
 +			// 确保只处理rootDir下的文件
 +			if !strings.HasPrefix(fullPath, rootDir) {
 +				fmt.Printf("Skipping file outside root directory: %s\n", fullPath)
