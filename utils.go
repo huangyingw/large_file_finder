@@ -177,7 +177,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 				}
 
 				// 调用saveFileInfoToRedis函数来保存文件信息到Redis
-				if err := saveFileInfoToRedis(rdb, ctx, hashedKey, fullPath, buf, time.Now().Unix(), fileHash, fullHash); err != nil {
+				if err := saveFileInfoToRedis(rdb, ctx, hashedKey, fullPath, buf, fileHash, fullHash); err != nil {
 					fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
 					<-semaphore // 释放信号量
 					continue
