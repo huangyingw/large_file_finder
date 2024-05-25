@@ -10,12 +10,13 @@ go get -u github.com/go-redis/redis/v8
 go get -u github.com/mattn/go-zglob/fastwalk
 go get -u github.com/karrick/godirwalk
 
-cp -v /media/secure_bcache/test/test.mp4.bak.bak /media/secure_bcache/test/test.mp4.bak
-cp -v /media/secure_bcache/test/test.mp4.bak.bak /media/secure_bcache/test/test.mp4
-docker-compose down -v
-docker-compose restart
+#cp -v /media/secure_bcache/test/test.mp4.bak.bak /media/secure_bcache/test/test.mp4.bak
+#cp -v /media/secure_bcache/test/test.mp4.bak.bak /media/secure_bcache/test/test.mp4
+#docker-compose down -v
+#docker-compose restart
 docker-compose up -d
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -38,8 +39,10 @@ go run . /media
 >>>>>>> 11de013 (n)
 =======
 
+=======
+>>>>>>> 2f303b4 (n)
 # 定义路径变量，确保处理包含空格和特殊字符的情况
-rootDir="/media/secure_bcache/test/"
+rootDir="/media/"
 
 # 正常运行
 go run . "$rootDir"
@@ -49,8 +52,12 @@ go run . "$rootDir" --find-duplicates
 
 # 删除重复文件（示例，实际运行时取消注释）
 <<<<<<< HEAD
+<<<<<<< HEAD
 # go run . "$rootDir" --delete-duplicates
 >>>>>>> 1c14d61 (n)
 =======
 go run . "$rootDir" --delete-duplicates
 >>>>>>> 2f382eb (n)
+=======
+# go run . "$rootDir" --delete-duplicates
+>>>>>>> 2f303b4 (n)
