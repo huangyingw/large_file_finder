@@ -2,7 +2,7 @@ diff --git a/.gitconfig b/.gitconfig
 new file mode 100644
 --- /dev/null
 +++ ./.gitconfig
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,8 @@
 +[remote "origin"]
 +    url = git@github.com:huangyingw/efficient_file_scanner.git
 +    fetch = +refs/heads/*:refs/remotes/origin/*
@@ -11,7 +11,6 @@ new file mode 100644
 +[gsync]
 +    remote = origin
 +    target = 7896ac267fe9347382282a4c38107d745f0ffc92
-+
 diff --git a/.gitignore b/.gitignore
 new file mode 100644
 --- /dev/null
