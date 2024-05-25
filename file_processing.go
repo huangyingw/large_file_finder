@@ -113,23 +113,10 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		return
 	}
 
-	// 尝试从Redis获取文件的SHA-512哈希值（只读取前4KB）
-	fileHash, err := rdb.Get(ctx, "fileHash:"+hashedKey).Result()
-	if err == redis.Nil {
-		// 如果哈希值不存在，则计算哈希值
-		fileHash, err = calculateFileHash(path, false)
-		if err != nil {
-			log.Printf("Error calculating hash for file %s: %s\n", path, err)
-			return
-		}
-		// 将计算出的哈希值保存到Redis
-		err = rdb.Set(ctx, "fileHash:"+hashedKey, fileHash, 0).Err()
-		if err != nil {
-			log.Printf("Error saving file hash to Redis for file %s: %s\n", path, err)
-			return
-		}
-	} else if err != nil {
-		log.Printf("Error getting file hash from Redis for file %s: %s\n", path, err)
+	// 计算文件的SHA-512哈希值（只读取前4KB）
+	fileHash, err := calculateFileHash(path, false, rdb, ctx)
+	if err != nil {
+		log.Printf("Error calculating hash for file %s: %s\n", path, err)
 		return
 	}
 
