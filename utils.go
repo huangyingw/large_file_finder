@@ -531,6 +531,13 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
 					continue
 				}
 				fmt.Printf("Deleted duplicate file: %s\n", duplicateFile)
+
+				// 从 Redis 中删除相关记录
+				err = cleanUpRecordsByFilePath(rdb, ctx, duplicateFile)
+				if err != nil {
+					fmt.Printf("Error cleaning up records for file %s: %s\n", duplicateFile, err)
+					continue
+				}
 			}
 		}
 	}
