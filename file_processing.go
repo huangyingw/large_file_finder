@@ -39,7 +39,7 @@ func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx
 		hashedKey := iter.Val()
 		hashedKey = strings.TrimPrefix(hashedKey, "fileInfo:")
 
-		originalPath, err := rdb.Get(ctx, "path:"+hashedKey).Result()
+		originalPath, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
 		if err != nil {
 			continue
 		}
