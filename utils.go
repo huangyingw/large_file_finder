@@ -112,7 +112,7 @@ var mu sync.Mutex
 var semaphore = make(chan struct{}, 100) // 同时最多打开100个文件
 
 // 处理每个文件哈希并查找重复文件
-func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool, maxDuplicateFiles int) (int, error) {
+func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool, maxDuplicateFiles int, stopProcessing chan struct{}) (int, error) {
 	fileCount := 0
 
 	if len(filePaths) > 1 {
@@ -120,10 +120,16 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
 		hashes := make(map[string][]fileInfo)
 		for _, fullPath := range filePaths {
+			select {
+			case <-stopProcessing:
+				return fileCount, nil // 返回并终止任务
+			default:
+			}
+
 			// 检查是否达到最大重复文件数量限制
 			if fileCount >= maxDuplicateFiles {
 				fmt.Printf("Reached the limit of duplicate files, stopping processing for hash %s.\n", fileHash)
-				break
+				return fileCount, nil
 			}
 
 			// 确保只处理rootDir下的文件
@@ -256,10 +262,14 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	var wg sync.WaitGroup // 等待 goroutine 完成
 	var mu sync.Mutex     // 用于保护对 fileCount 的并发访问
 
+	// 创建一个停止信号通道
+	stopProcessing := make(chan struct{})
+
 	for fileHash, filePaths := range fileHashes {
 		// 如果达到最大重复文件数量限制，停止查找
 		if duplicateCount >= maxDuplicateFiles {
 			fmt.Println("Reached the limit of duplicate files, stopping search.")
+			close(stopProcessing) // 发送停止信号
 			break
 		}
 
@@ -268,7 +278,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		go func(fileHash string, filePaths []string) {
 			defer wg.Done()
 
-			count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicateFiles)
+			count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicateFiles, stopProcessing)
 			if err != nil {
 				fmt.Printf("Error processing file hash %s: %s\n", fileHash, err)
 				return
@@ -429,7 +439,7 @@ var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a
 func extractKeywords(fileNames []string) []string {
 	workerCount := 100
 	// 创建自己的工作池
-	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopPool, _ := NewWorkerPool(workerCount)
 
 	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
 
