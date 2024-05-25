@@ -38,14 +38,13 @@ func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
 	return nil
 }
 
-func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, startTime int64, fileHash string, fullHash string) error {
+func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, fileHash string, fullHash string) error {
 	// 使用管道批量处理Redis命令
 	pipe := rdb.Pipeline()
 
 	// 这里我们添加命令到管道，但不立即检查错误
 	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
 	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
-	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
 	pipe.SAdd(ctx, "fileHashToPathset:"+fileHash, path) // 将文件路径存储为集合
 	if fullHash != "" {
 		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
@@ -109,13 +108,13 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 
 	// 删除记录
 	pipe := rdb.TxPipeline()
-	pipe.Del(ctx, "updateTime:"+hashedKey)      // 删除 updateTime 键
-	pipe.Del(ctx, "fileInfo:"+hashedKey)        // 删除 fileInfo 相关数据
-	pipe.Del(ctx, "hashedKeyToPath:"+hashedKey)            // 删除 path 相关数据
-	pipe.Del(ctx, "pathToHashedKey:"+filePath)       // 删除从路径到 hashedKey 的映射
-	pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)        // 删除完整文件哈希相关数据
-	pipe.ZRem(ctx, duplicateFilesKey, filePath) // 从 duplicateFiles 有序集合中移除路径
-	pipe.SRem(ctx, "fileHashToPathset:"+fileHash, filePath)  // 从 hash 集合中移除文件路径
+	pipe.Del(ctx, "updateTime:"+hashedKey)                  // 删除 updateTime 键
+	pipe.Del(ctx, "fileInfo:"+hashedKey)                    // 删除 fileInfo 相关数据
+	pipe.Del(ctx, "hashedKeyToPath:"+hashedKey)             // 删除 path 相关数据
+	pipe.Del(ctx, "pathToHashedKey:"+filePath)              // 删除从路径到 hashedKey 的映射
+	pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)         // 删除完整文件哈希相关数据
+	pipe.ZRem(ctx, duplicateFilesKey, filePath)             // 从 duplicateFiles 有序集合中移除路径
+	pipe.SRem(ctx, "fileHashToPathset:"+fileHash, filePath) // 从 hash 集合中移除文件路径
 
 	_, err = pipe.Exec(ctx)
 	if err != nil {
