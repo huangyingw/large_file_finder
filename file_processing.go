@@ -113,10 +113,23 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		return
 	}
 
-	// 计算文件的SHA-512哈希值（只读取前4KB）
-	fileHash, err := calculateFileHash(path, false)
-	if err != nil {
-		log.Printf("Error calculating hash for file %s: %s\n", path, err)
+	// 尝试从Redis获取文件的SHA-512哈希值（只读取前4KB）
+	fileHash, err := rdb.Get(ctx, "fileHash:"+hashedKey).Result()
+	if err == redis.Nil {
+		// 如果哈希值不存在，则计算哈希值
+		fileHash, err = calculateFileHash(path, false)
+		if err != nil {
+			log.Printf("Error calculating hash for file %s: %s\n", path, err)
+			return
+		}
+		// 将计算出的哈希值保存到Redis
+		err = rdb.Set(ctx, "fileHash:"+hashedKey, fileHash, 0).Err()
+		if err != nil {
+			log.Printf("Error saving file hash to Redis for file %s: %s\n", path, err)
+			return
+		}
+	} else if err != nil {
+		log.Printf("Error getting file hash from Redis for file %s: %s\n", path, err)
 		return
 	}
 
@@ -136,27 +149,45 @@ func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bo
 
 const readLimit = 100 * 1024 // 100KB
 
-func calculateFileHash(path string, fullRead bool) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
+func calculateFileHash(path string, fullRead bool, rdb *redis.Client, ctx context.Context) (string, error) {
+	hashedKey := generateHash(path)
+	hashKey := "fileHash:" + hashedKey
+
+	// 尝试从Redis获取文件哈希值
+	fileHash, err := rdb.Get(ctx, hashKey).Result()
+	if err == redis.Nil {
+		// 如果哈希值不存在，则计算哈希值
+		file, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		defer file.Close()
+
+		hasher := sha512.New()
+		if fullRead {
+			log.Printf("Calculating full hash for file: %s\n", path)
+			if _, err := io.Copy(hasher, file); err != nil {
+				return "", err
+			}
+		} else {
+			reader := io.LimitReader(file, readLimit)
+			if _, err := io.Copy(hasher, reader); err != nil {
+				return "", err
+			}
+		}
+
+		fileHash = fmt.Sprintf("%x", hasher.Sum(nil))
+
+		// 将计算出的哈希值保存到Redis
+		err = rdb.Set(ctx, hashKey, fileHash, 0).Err()
+		if err != nil {
+			return "", err
+		}
+	} else if err != nil {
 		return "", err
 	}
-	defer file.Close()
 
-	hasher := sha512.New()
-	if fullRead {
-		log.Printf("Calculating full hash for file: %s\n", path)
-		if _, err := io.Copy(hasher, file); err != nil {
-			return "", err
-		}
-	} else {
-		reader := io.LimitReader(file, readLimit)
-		if _, err := io.Copy(hasher, reader); err != nil {
-			return "", err
-		}
-	}
-
-	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
+	return fileHash, nil
 }
 
 func processDirectory(path string) {
