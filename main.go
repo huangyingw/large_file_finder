@@ -57,18 +57,6 @@ func main() {
 		fmt.Println("Error cleaning up old records:", err)
 	}
 
-	// 检查是否需要开始重复文件查找
-	shouldSearch, err := shouldStopDuplicateFileSearch(rdb, ctx, maxDuplicateFiles)
-	if err != nil {
-		fmt.Println("Error checking duplicate files count:", err)
-		return
-	}
-	if shouldSearch {
-		fmt.Println("Duplicate files limit reached, skipping search.")
-		return
-	}
-
-	// 创建一个新的上下文和取消函数
 	progressCtx, progressCancel := context.WithCancel(ctx)
 	defer progressCancel()
 
