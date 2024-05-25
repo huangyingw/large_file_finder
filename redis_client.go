@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/gob"
 	"encoding/hex"
 	"fmt"
 	"github.com/go-redis/redis/v8"
@@ -49,7 +48,7 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey strin
 	pipe.Set(ctx, "updateTime:"+hashedKey, startTime, 0)
 	pipe.SAdd(ctx, "hash:"+fileHash, path) // 将文件路径存储为集合
 	if fullHash != "" {
-		pipe.Set(ctx, "fullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
+		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
 	}
 	// 存储从路径到hashedKey的映射
 	pipe.Set(ctx, "pathToHash:"+path, hashedKey, 0)
@@ -100,7 +99,7 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 	}
 
 	// 获取 fullHash
-	fullHash, err := rdb.Get(ctx, "fullHash:"+hashedKey).Result()
+	fullHash, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
 	if err != nil && err != redis.Nil {
 		return fmt.Errorf("error retrieving fullHash for key %s: %v", hashedKey, err)
 	}
@@ -108,37 +107,21 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 	// 构造 duplicateFilesKey
 	duplicateFilesKey := "duplicateFiles:" + fullHash
 
-	// 获取文件信息
-	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
-	if err != nil && err != redis.Nil {
-		return fmt.Errorf("error retrieving fileInfo for key %s: %v", hashedKey, err)
-	}
-
-	// 解码文件信息
-	var fileInfo FileInfo
-	if len(fileInfoData) > 0 {
-		buf := bytes.NewBuffer(fileInfoData)
-		dec := gob.NewDecoder(buf)
-		if err := dec.Decode(&fileInfo); err != nil {
-			return fmt.Errorf("error decoding fileInfo for key %s: %v", hashedKey, err)
-		}
-	}
-
 	// 删除记录
 	pipe := rdb.TxPipeline()
 	pipe.Del(ctx, "updateTime:"+hashedKey)      // 删除 updateTime 键
 	pipe.Del(ctx, "fileInfo:"+hashedKey)        // 删除 fileInfo 相关数据
 	pipe.Del(ctx, "path:"+hashedKey)            // 删除 path 相关数据
-	pipe.SRem(ctx, "hash:"+fileHash, filePath)  // 从集合中移除文件路径
 	pipe.Del(ctx, "pathToHash:"+filePath)       // 删除从路径到 hashedKey 的映射
-	pipe.Del(ctx, "fullHash:"+hashedKey)        // 删除完整文件哈希相关数据
+	pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)        // 删除完整文件哈希相关数据
 	pipe.ZRem(ctx, duplicateFilesKey, filePath) // 从 duplicateFiles 有序集合中移除路径
+	pipe.SRem(ctx, "hash:"+fileHash, filePath)  // 从 hash 集合中移除文件路径
 
 	_, err = pipe.Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("error deleting keys for outdated record %s: %v", hashedKey, err)
 	}
 
-	fmt.Printf("Deleted outdated record: path=%s, size=%d\n", filePath, fileInfo.Size)
+	fmt.Printf("Deleted outdated record: path=%s\n", filePath)
 	return nil
 }
