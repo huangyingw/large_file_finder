@@ -10,7 +10,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,262 @@
+@@ -0,0 +1,261 @@
 +// file_processing.go
 +package main
 +
@@ -149,7 +149,6 @@ new file mode 100644
 +
 +const readLimit = 100 * 1024 // 100KB
 +
-+
 +func processDirectory(path string) {
 +	log.Printf("Processing directory: %s\n", path)
 +}
@@ -209,7 +208,7 @@ new file mode 100644
 +
 +func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 +	hashedKey := generateHash(path)
-+	hashKey := "hashedKeyToFileHash:"+hashedKey
++	hashKey := "hashedKeyToFileHash:" + hashedKey
 +
 +	// 尝试从Redis获取文件哈希值
 +	fileHash, err := rdb.Get(ctx, hashKey).Result()
@@ -243,7 +242,7 @@ new file mode 100644
 +
 +func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 +	hashedKey := generateHash(path)
-+	fullHashKey := "hashedKeyToFullHash:"+hashedKey
++	fullHashKey := "hashedKeyToFullHash:" + hashedKey
 +
 +	// 尝试从Redis获取完整文件哈希值
 +	fullHash, err := rdb.Get(ctx, fullHashKey).Result()
@@ -709,7 +708,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,551 @@
+@@ -0,0 +1,550 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -909,26 +908,26 @@ new file mode 100644
 +				path:      fullPath,
 +				buf:       buf,
 +				startTime: time.Now().Unix(),
-+				fileHash:  generateHash(fullPath),
++				fileHash:  fileHash,
 +				fullHash:  fullHash,
 +				line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
 +				header:    header,
 +				FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
 +			}
-+			hashes[fileHash] = append(hashes[fileHash], infoStruct)
++			hashes[fullHash] = append(hashes[fullHash], infoStruct)
 +			fileCount++
 +			<-semaphore // 释放信号量
 +		}
-+		for fileHash, infos := range hashes {
++		for fullHash, infos := range hashes {
 +			if len(infos) > 1 {
-+				fmt.Printf("Writing duplicate files for hash %s: %v\n", fileHash, infos)
++				fmt.Printf("Writing duplicate files for hash %s: %v\n", fullHash, infos)
 +				mu.Lock()
-+				if !processedFullHashes[fileHash] {
-+					processedFullHashes[fileHash] = true
++				if !processedFullHashes[fullHash] {
++					processedFullHashes[fullHash] = true
 +					for _, info := range infos {
-+						err := saveDuplicateFileInfoToRedis(rdb, ctx, fileHash, info)
++						err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
 +						if err != nil {
-+							fmt.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fileHash, err)
++							fmt.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fullHash, err)
 +						}
 +					}
 +				}
@@ -1256,7 +1255,6 @@ new file mode 100644
 +	fmt.Println("Duplicate files deleted and Redis keys cleaned up successfully.")
 +	return nil
 +}
-+
 +
 +func shouldStopDuplicateFileSearch(duplicateCount int, maxDuplicateFiles int) bool {
 +	return duplicateCount >= maxDuplicateFiles
