@@ -197,26 +197,26 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 				path:      fullPath,
 				buf:       buf,
 				startTime: time.Now().Unix(),
-				fileHash:  generateHash(fullPath),
+				fileHash:  fileHash,
 				fullHash:  fullHash,
 				line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
 				header:    header,
 				FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
 			}
-			hashes[fileHash] = append(hashes[fileHash], infoStruct)
+			hashes[fullHash] = append(hashes[fullHash], infoStruct)
 			fileCount++
 			<-semaphore // 释放信号量
 		}
-		for fileHash, infos := range hashes {
+		for fullHash, infos := range hashes {
 			if len(infos) > 1 {
-				fmt.Printf("Writing duplicate files for hash %s: %v\n", fileHash, infos)
+				fmt.Printf("Writing duplicate files for hash %s: %v\n", fullHash, infos)
 				mu.Lock()
-				if !processedFullHashes[fileHash] {
-					processedFullHashes[fileHash] = true
+				if !processedFullHashes[fullHash] {
+					processedFullHashes[fullHash] = true
 					for _, info := range infos {
-						err := saveDuplicateFileInfoToRedis(rdb, ctx, fileHash, info)
+						err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
 						if err != nil {
-							fmt.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fileHash, err)
+							fmt.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fullHash, err)
 						}
 					}
 				}
@@ -544,7 +544,6 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
 	fmt.Println("Duplicate files deleted and Redis keys cleaned up successfully.")
 	return nil
 }
-
 
 func shouldStopDuplicateFileSearch(duplicateCount int, maxDuplicateFiles int) bool {
 	return duplicateCount >= maxDuplicateFiles
