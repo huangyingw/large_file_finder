@@ -196,7 +196,7 @@ func getFileSize(rdb *redis.Client, ctx context.Context, fullPath string) (int64
 
 func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 	hashedKey := generateHash(path)
-	hashKey := "fileHash:" + hashedKey
+	hashKey := "hashedKeyToFileHash:"+hashedKey
 
 	// 尝试从Redis获取文件哈希值
 	fileHash, err := rdb.Get(ctx, hashKey).Result()
