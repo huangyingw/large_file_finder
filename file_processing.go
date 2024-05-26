@@ -136,7 +136,6 @@ func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bo
 
 const readLimit = 100 * 1024 // 100KB
 
-
 func processDirectory(path string) {
 	log.Printf("Processing directory: %s\n", path)
 }
@@ -196,7 +195,7 @@ func getFileSize(rdb *redis.Client, ctx context.Context, fullPath string) (int64
 
 func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 	hashedKey := generateHash(path)
-	hashKey := "hashedKeyToFileHash:"+hashedKey
+	hashKey := "hashedKeyToFileHash:" + hashedKey
 
 	// 尝试从Redis获取文件哈希值
 	fileHash, err := rdb.Get(ctx, hashKey).Result()
@@ -230,7 +229,7 @@ func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, e
 
 func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 	hashedKey := generateHash(path)
-	fullHashKey := "hashedKeyToFullHash:"+hashedKey
+	fullHashKey := "hashedKeyToFullHash:" + hashedKey
 
 	// 尝试从Redis获取完整文件哈希值
 	fullHash, err := rdb.Get(ctx, fullHashKey).Result()
