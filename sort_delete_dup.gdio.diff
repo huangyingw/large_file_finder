@@ -10,7 +10,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,262 @@
 +// file_processing.go
 +package main
 +
@@ -539,23 +539,23 @@ new file mode 100755
 +go get -u github.com/mattn/go-zglob/fastwalk
 +go get -u github.com/karrick/godirwalk
 +
-+#cp -v /media/secure_bcache/test/test.mp4.bak.bak /media/secure_bcache/test/test.mp4.bak
-+#cp -v /media/secure_bcache/test/test.mp4.bak.bak /media/secure_bcache/test/test.mp4
-+#docker-compose down -v
-+#docker-compose restart
++cp -v /media/secure_bcache/test/test.mp4.bak.bak /media/secure_bcache/test/test.mp4.bak
++cp -v /media/secure_bcache/test/test.mp4.bak.bak /media/secure_bcache/test/test.mp4
++docker-compose down -v
++docker-compose restart
 +docker-compose up -d
 +
 +# 定义路径变量，确保处理包含空格和特殊字符的情况
-+rootDir="/media/"
++rootDir="/media/secure_bcache/test/"
 +
 +# 正常运行
-+# go run . "$rootDir"
++go run . "$rootDir"
 +
 +# 输出重复文件结果
 +go run . "$rootDir" --find-duplicates --max-duplicates=50
 +
 +# 删除重复文件（示例，实际运行时取消注释）
-+# go run . "$rootDir" --delete-duplicates
++go run . "$rootDir" --delete-duplicates
 diff --git a/redis_client.go b/redis_client.go
 new file mode 100644
 --- /dev/null
@@ -693,7 +693,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,582 @@
+@@ -0,0 +1,567 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -849,56 +849,41 @@ new file mode 100644
 +			}
 +			fileName := filepath.Base(relativePath)
 +
-+			// 获取或计算完整文件的SHA-256哈希值
-+			hashedKey := generateHash(fullPath)
-+			fullHash, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
-+			var buf bytes.Buffer
-+			if err == redis.Nil {
-+				fullHash, err = calculateFileHash(fullPath, true)
-+				if err != nil {
-+					fmt.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
-+					<-semaphore // 释放信号量
-+					continue
-+				}
-+
-+				fileHash, err := calculateFileHash(fullPath, false)
-+				if err != nil {
-+					fmt.Printf("Error calculating hash for file %s: %s\n", fullPath, err)
-+					continue
-+				} else {
-+					fmt.Printf("Calculated hash for file %s: %s\n", fullPath, fileHash)
-+				}
-+
-+				// 获取文件信息并编码
-+				info, err := os.Stat(fullPath)
-+				if err != nil {
-+					fmt.Printf("Error stating file: %s, Error: %s\n", fullPath, err)
-+					<-semaphore // 释放信号量
-+					continue
-+				}
-+
-+				enc := gob.NewEncoder(&buf)
-+				if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-+					fmt.Printf("Error encoding: %s, File: %s\n", err, fullPath)
-+					<-semaphore // 释放信号量
-+					continue
-+				}
-+
-+				// 调用saveFileInfoToRedis函数来保存文件信息到Redis
-+				if err := saveFileInfoToRedis(rdb, ctx, hashedKey, fullPath, buf, fileHash, fullHash); err != nil {
-+					fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
-+					<-semaphore // 释放信号量
-+					continue
-+				}
-+			} else if err != nil {
-+				fmt.Printf("Error getting full hash for file %s from Redis: %s\n", fullPath, err)
++			// 获取或计算完整文件的SHA-512哈希值
++			fullHash, err := getFullFileHash(fullPath, rdb, ctx)
++			if err != nil {
++				fmt.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
 +				<-semaphore // 释放信号量
 +				continue
 +			}
 +
-+			info, err := os.Stat(fullPath) // 获取文件信息
++			// 计算文件的SHA-512哈希值（只读取前4KB）
++			fileHash, err := getFileHash(fullPath, rdb, ctx)
 +			if err != nil {
-+				fmt.Printf("Error stating file %s: %s\n", fullPath, err)
++				fmt.Printf("Error calculating hash for file %s: %s\n", fullPath, err)
++				<-semaphore // 释放信号量
++				continue
++			}
++
++			// 获取文件信息并编码
++			info, err := os.Stat(fullPath)
++			if err != nil {
++				fmt.Printf("Error stating file: %s, Error: %s\n", fullPath, err)
++				<-semaphore // 释放信号量
++				continue
++			}
++
++			var buf bytes.Buffer
++			enc := gob.NewEncoder(&buf)
++			if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
++				fmt.Printf("Error encoding: %s, File: %s\n", err, fullPath)
++				<-semaphore // 释放信号量
++				continue
++			}
++
++			// 调用saveFileInfoToRedis函数来保存文件信息到Redis
++			if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, fileHash, fullHash); err != nil {
++				fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
 +				<-semaphore // 释放信号量
 +				continue
 +			}
@@ -908,7 +893,7 @@ new file mode 100644
 +				path:      fullPath,
 +				buf:       buf,
 +				startTime: time.Now().Unix(),
-+				fileHash:  hashedKey,
++				fileHash:  generateHash(fullPath),
 +				fullHash:  fullHash,
 +				line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
 +				header:    header,
