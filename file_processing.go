@@ -136,46 +136,6 @@ func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bo
 
 const readLimit = 100 * 1024 // 100KB
 
-func calculateFileHash(path string, fullRead bool, rdb *redis.Client, ctx context.Context) (string, error) {
-	hashedKey := generateHash(path)
-	hashKey := "fileHash:" + hashedKey
-
-	// 尝试从Redis获取文件哈希值
-	fileHash, err := rdb.Get(ctx, hashKey).Result()
-	if err == redis.Nil {
-		// 如果哈希值不存在，则计算哈希值
-		file, err := os.Open(path)
-		if err != nil {
-			return "", err
-		}
-		defer file.Close()
-
-		hasher := sha512.New()
-		if fullRead {
-			log.Printf("Calculating full hash for file: %s\n", path)
-			if _, err := io.Copy(hasher, file); err != nil {
-				return "", err
-			}
-		} else {
-			reader := io.LimitReader(file, readLimit)
-			if _, err := io.Copy(hasher, reader); err != nil {
-				return "", err
-			}
-		}
-
-		fileHash = fmt.Sprintf("%x", hasher.Sum(nil))
-
-		// 将计算出的哈希值保存到Redis
-		err = rdb.Set(ctx, hashKey, fileHash, 0).Err()
-		if err != nil {
-			return "", err
-		}
-	} else if err != nil {
-		return "", err
-	}
-
-	return fileHash, nil
-}
 
 func processDirectory(path string) {
 	log.Printf("Processing directory: %s\n", path)
