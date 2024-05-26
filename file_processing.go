@@ -114,7 +114,7 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 	}
 
 	// 计算文件的SHA-512哈希值（只读取前4KB）
-	fileHash, err := calculateFileHash(path, false, rdb, ctx)
+	fileHash, err := getFileHash(path, rdb, ctx)
 	if err != nil {
 		log.Printf("Error calculating hash for file %s: %s\n", path, err)
 		return
@@ -232,4 +232,71 @@ func getFileSize(rdb *redis.Client, ctx context.Context, fullPath string) (int64
 		return 0, err
 	}
 	return size, nil
+}
+
+func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
+	hashedKey := generateHash(path)
+	hashKey := "fileHash:" + hashedKey
+
+	// 尝试从Redis获取文件哈希值
+	fileHash, err := rdb.Get(ctx, hashKey).Result()
+	if err == redis.Nil {
+		// 如果哈希值不存在，则计算哈希值
+		file, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		defer file.Close()
+
+		hasher := sha512.New()
+		reader := io.LimitReader(file, readLimit)
+		if _, err := io.Copy(hasher, reader); err != nil {
+			return "", err
+		}
+
+		fileHash = fmt.Sprintf("%x", hasher.Sum(nil))
+
+		// 将计算出的哈希值保存到Redis
+		err = rdb.Set(ctx, hashKey, fileHash, 0).Err()
+		if err != nil {
+			return "", err
+		}
+	} else if err != nil {
+		return "", err
+	}
+
+	return fileHash, nil
+}
+
+func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
+	hashedKey := generateHash(path)
+	fullHashKey := "hashedKeyToFullHash:" + hashedKey
+
+	// 尝试从Redis获取完整文件哈希值
+	fullHash, err := rdb.Get(ctx, fullHashKey).Result()
+	if err == redis.Nil {
+		// 如果哈希值不存在，则计算完整哈希值
+		file, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		defer file.Close()
+
+		hasher := sha512.New()
+		if _, err := io.Copy(hasher, file); err != nil {
+			return "", err
+		}
+
+		fullHash = fmt.Sprintf("%x", hasher.Sum(nil))
+
+		// 将计算出的完整哈希值保存到Redis
+		err = rdb.Set(ctx, fullHashKey, fullHash, 0).Err()
+		if err != nil {
+			return "", err
+		}
+	} else if err != nil {
+		return "", err
+	}
+
+	return fullHash, nil
 }
