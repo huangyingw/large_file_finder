@@ -289,11 +289,11 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 }
 
 func scanFileHashes(rdb *redis.Client, ctx context.Context) (map[string][]string, error) {
-	iter := rdb.Scan(ctx, 0, "fileHashToPathset:*", 0).Iterator()
+	iter := rdb.Scan(ctx, 0, "fileHashToPathSet:*", 0).Iterator()
 	fileHashes := make(map[string][]string)
 	for iter.Next(ctx) {
 		hashKey := iter.Val()
-		fileHash := strings.TrimPrefix(hashKey, "fileHashToPathset:")
+		fileHash := strings.TrimPrefix(hashKey, "fileHashToPathSet:")
 		duplicateFiles, err := rdb.SMembers(ctx, hashKey).Result()
 		if err != nil {
 			return nil, fmt.Errorf("error retrieving duplicate files for key %s: %w", hashKey, err)
@@ -545,22 +545,6 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
 	return nil
 }
 
-func cleanUpHashKeys(rdb *redis.Client, ctx context.Context, fullHash, duplicateFilesKey string) error {
-	fileHashKey := "fileHashToPathset:" + fullHash
-
-	// 使用管道批量删除 Redis 键
-	pipe := rdb.TxPipeline()
-	pipe.Del(ctx, duplicateFilesKey)
-	pipe.Del(ctx, fileHashKey)
-
-	_, err := pipe.Exec(ctx)
-	if err != nil {
-		return fmt.Errorf("error executing pipeline for cleaning up hash keys: %w", err)
-	}
-
-	fmt.Printf("Cleaned up Redis keys: %s and %s\n", duplicateFilesKey, fileHashKey)
-	return nil
-}
 
 func shouldStopDuplicateFileSearch(duplicateCount int, maxDuplicateFiles int) bool {
 	return duplicateCount >= maxDuplicateFiles
