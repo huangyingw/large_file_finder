@@ -214,7 +214,7 @@ new file mode 100644
 +	hash, err := rdb.Get(ctx, hashKey).Result()
 +	if err == redis.Nil {
 +		// 如果哈希值不存在，则计算哈希值
-+		log.Printf("Hash miss for key: %s", hashKey)
++		log.Printf("Hash miss for path: %s, key: %s", path, hashKey)
 +		file, err := os.Open(path)
 +		if err != nil {
 +			return "", err
@@ -234,11 +234,11 @@ new file mode 100644
 +		if err != nil {
 +			return "", err
 +		}
-+		log.Printf("Computed and saved hash for key: %s", hashKey)
++		log.Printf("Computed and saved hash for path: %s, key: %s", path, hashKey)
 +	} else if err != nil {
 +		return "", err
 +	} else {
-+		log.Printf("Hash hit for key: %s", hashKey)
++		log.Printf("Hash hit for path: %s, key: %s", path, hashKey)
 +	}
 +
 +	return hash, nil
