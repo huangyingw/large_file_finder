@@ -153,56 +153,41 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			}
 			fileName := filepath.Base(relativePath)
 
-			// 获取或计算完整文件的SHA-256哈希值
-			hashedKey := generateHash(fullPath)
-			fullHash, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
-			var buf bytes.Buffer
-			if err == redis.Nil {
-				fullHash, err = calculateFileHash(fullPath, true, rdb, ctx)
-				if err != nil {
-					fmt.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
-					<-semaphore // 释放信号量
-					continue
-				}
-
-				// 计算文件的SHA-512哈希值（只读取前4KB）
-				fileHash, err := calculateFileHash(fullPath, false, rdb, ctx)
-				if err != nil {
-					fmt.Printf("Error calculating hash for file %s: %s\n", fullPath, err)
-					<-semaphore // 释放信号量
-					continue
-				}
-
-				// 获取文件信息并编码
-				info, err := os.Stat(fullPath)
-				if err != nil {
-					fmt.Printf("Error stating file: %s, Error: %s\n", fullPath, err)
-					<-semaphore // 释放信号量
-					continue
-				}
-
-				enc := gob.NewEncoder(&buf)
-				if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-					fmt.Printf("Error encoding: %s, File: %s\n", err, fullPath)
-					<-semaphore // 释放信号量
-					continue
-				}
-
-				// 调用saveFileInfoToRedis函数来保存文件信息到Redis
-				if err := saveFileInfoToRedis(rdb, ctx, hashedKey, fullPath, buf, fileHash, fullHash); err != nil {
-					fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
-					<-semaphore // 释放信号量
-					continue
-				}
-			} else if err != nil {
-				fmt.Printf("Error getting full hash for file %s from Redis: %s\n", fullPath, err)
+			// 获取或计算完整文件的SHA-512哈希值
+			fullHash, err := getFullFileHash(fullPath, rdb, ctx)
+			if err != nil {
+				fmt.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
 				<-semaphore // 释放信号量
 				continue
 			}
 
-			info, err := os.Stat(fullPath) // 获取文件信息
+			// 计算文件的SHA-512哈希值（只读取前4KB）
+			fileHash, err := getFileHash(fullPath, rdb, ctx)
 			if err != nil {
-				fmt.Printf("Error stating file %s: %s\n", fullPath, err)
+				fmt.Printf("Error calculating hash for file %s: %s\n", fullPath, err)
+				<-semaphore // 释放信号量
+				continue
+			}
+
+			// 获取文件信息并编码
+			info, err := os.Stat(fullPath)
+			if err != nil {
+				fmt.Printf("Error stating file: %s, Error: %s\n", fullPath, err)
+				<-semaphore // 释放信号量
+				continue
+			}
+
+			var buf bytes.Buffer
+			enc := gob.NewEncoder(&buf)
+			if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
+				fmt.Printf("Error encoding: %s, File: %s\n", err, fullPath)
+				<-semaphore // 释放信号量
+				continue
+			}
+
+			// 调用saveFileInfoToRedis函数来保存文件信息到Redis
+			if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, fileHash, fullHash); err != nil {
+				fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
 				<-semaphore // 释放信号量
 				continue
 			}
@@ -212,7 +197,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 				path:      fullPath,
 				buf:       buf,
 				startTime: time.Now().Unix(),
-				fileHash:  hashedKey,
+				fileHash:  generateHash(fullPath),
 				fullHash:  fullHash,
 				line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
 				header:    header,
