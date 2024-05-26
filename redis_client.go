@@ -45,7 +45,7 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey strin
 	// 这里我们添加命令到管道，但不立即检查错误
 	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
 	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
-	pipe.SAdd(ctx, "fileHashToPathset:"+fileHash, path) // 将文件路径存储为集合
+	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, path) // 将文件路径存储为集合
 	if fullHash != "" {
 		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
 	}
@@ -123,5 +123,22 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 	}
 
 	fmt.Printf("Deleted outdated record: path=%s\n", filePath)
+	return nil
+}
+
+func cleanUpHashKeys(rdb *redis.Client, ctx context.Context, fullHash, duplicateFilesKey string) error {
+	fileHashKey := "fileHashToPathSet:" + fullHash
+
+	// 使用管道批量删除 Redis 键
+	pipe := rdb.TxPipeline()
+	pipe.Del(ctx, duplicateFilesKey)
+	pipe.Del(ctx, fileHashKey)
+
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("error executing pipeline for cleaning up hash keys: %w", err)
+	}
+
+	fmt.Printf("Cleaned up Redis keys: %s and %s\n", duplicateFilesKey, fileHashKey)
 	return nil
 }
