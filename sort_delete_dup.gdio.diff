@@ -555,12 +555,12 @@ new file mode 100755
 +go run . "$rootDir" --find-duplicates --max-duplicates=50
 +
 +# 删除重复文件（示例，实际运行时取消注释）
-+go run . "$rootDir" --delete-duplicates
++# go run . "$rootDir" --delete-duplicates
 diff --git a/redis_client.go b/redis_client.go
 new file mode 100644
 --- /dev/null
 +++ ./redis_client.go
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,127 @@
 +// redis_client.go
 +package main
 +
@@ -668,7 +668,6 @@ new file mode 100644
 +		return fmt.Errorf("error retrieving fullHash for key %s: %v", hashedKey, err)
 +	}
 +
-+
 +	// 删除记录
 +	pipe := rdb.TxPipeline()
 +	pipe.Del(ctx, "fileInfo:"+hashedKey)            // 删除 fileInfo 相关数据
@@ -676,8 +675,8 @@ new file mode 100644
 +	pipe.Del(ctx, "pathToHashedKey:"+filePath)      // 删除从路径到 hashedKey 的映射
 +	pipe.Del(ctx, "hashedKeyToFileHash:"+hashedKey) // 删除 hashedKey 到 fileHash 的映射
 +	if fullHash != "" {
-+		pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey) // 删除完整文件哈希相关数据
-+		pipe.ZRem(ctx, "duplicateFiles:" + fullHash, filePath)     // 从 duplicateFiles 有序集合中移除路径
++		pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)      // 删除完整文件哈希相关数据
++		pipe.ZRem(ctx, "duplicateFiles:"+fullHash, filePath) // 从 duplicateFiles 有序集合中移除路径
 +	}
 +	pipe.SRem(ctx, "fileHashToPathSet:"+fileHash, filePath) // 从 hash 集合中移除文件路径
 +
