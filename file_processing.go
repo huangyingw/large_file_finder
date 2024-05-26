@@ -230,7 +230,7 @@ func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, e
 
 func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 	hashedKey := generateHash(path)
-	fullHashKey := "hashedKeyToFullHash:" + hashedKey
+	fullHashKey := "hashedKeyToFullHash:"+hashedKey
 
 	// 尝试从Redis获取完整文件哈希值
 	fullHash, err := rdb.Get(ctx, fullHashKey).Result()
