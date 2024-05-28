@@ -17,7 +17,9 @@ import (
 func generateHash(s string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(s))
-	return hex.EncodeToString(hasher.Sum(nil))
+	hash := hex.EncodeToString(hasher.Sum(nil))
+	fmt.Printf("Generated hash for %s: %s\n", s, hash) // 添加日志
+	return hash
 }
 
 // 将重复文件的信息存储到 Redis
@@ -39,24 +41,30 @@ func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
 }
 
 func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, fileHash string, fullHash string) error {
+	// 规范化路径
+	normalizedPath := filepath.Clean(path)
+
 	// 使用管道批量处理Redis命令
 	pipe := rdb.Pipeline()
 
 	// 这里我们添加命令到管道，但不立即检查错误
 	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
-	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
-	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, path) // 将文件路径存储为集合
+	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, normalizedPath, 0)
+	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, normalizedPath) // 将文件路径存储为集合
 	if fullHash != "" {
 		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
 	}
 	// 存储从路径到hashedKey的映射
-	pipe.Set(ctx, "pathToHashedKey:"+path, hashedKey, 0)
+	pipe.Set(ctx, "pathToHashedKey:"+normalizedPath, hashedKey, 0)
 	// 存储hashedKey到fileHash的映射
 	pipe.Set(ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
 
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
 	}
+
+	// 添加日志
+	fmt.Printf("Saved file info to Redis: normalizedPath=%s, hashedKey=%s, fileHash=%s, fullHash=%s\n", normalizedPath, hashedKey, fileHash, fullHash)
 	return nil
 }
 
