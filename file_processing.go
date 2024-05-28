@@ -21,12 +21,14 @@ func getFileInfoFromRedis(rdb *redis.Client, ctx context.Context, hashedKey stri
 	var fileInfo FileInfo
 	value, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
 	if err != nil {
+		fmt.Printf("Error retrieving file info for hashedKey %s: %v\n", hashedKey, err) // 添加日志
 		return fileInfo, err
 	}
 
 	buf := bytes.NewBuffer(value)
 	dec := gob.NewDecoder(buf)
 	err = dec.Decode(&fileInfo)
+	fmt.Printf("Retrieved file info for hashedKey %s: %+v\n", hashedKey, fileInfo) // 添加日志
 	return fileInfo, err
 }
 
