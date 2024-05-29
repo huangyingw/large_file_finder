@@ -221,6 +221,7 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 		log.Printf("Hash miss for path: %s, key: %s", path, hashKey)
 		file, err := os.Open(path)
 		if err != nil {
+			log.Printf("Error opening file %s: %s", path, err) // 添加日志
 			return "", err
 		}
 		defer file.Close()
@@ -228,6 +229,7 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 		hasher := sha512.New()
 		reader := io.LimitReader(file, limit)
 		if _, err := io.Copy(hasher, reader); err != nil {
+			log.Printf("Error copying file content for hash calculation %s: %s", path, err) // 添加日志
 			return "", err
 		}
 
@@ -236,11 +238,14 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 		// 将计算出的哈希值保存到Redis
 		err = rdb.Set(ctx, hashKey, hash, 0).Err()
 		if err != nil {
+			log.Printf("Error setting hash in Redis for path %s: %s", path, err) // 添加日志
 			return "", err
 		}
-		log.Printf("Computed and saved hash for path: %s, key: %s", path, hashKey)
+		log.Printf("Computed and saved hash for path: %s, key: %s, hash: %s", path, hashKey, hash)
 	} else if err != nil {
 		return "", err
+	} else {
+		log.Printf("Retrieved hash from Redis for path: %s, key: %s, hash: %s", path, hashKey, hash) // 添加日志
 	}
 
 	return hash, nil
@@ -255,5 +260,11 @@ func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, e
 // 获取完整文件哈希
 func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 	const noLimit = -1 // No limit for full file hash
-	return getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit)
+	hash, err := getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit)
+	if err != nil {
+		log.Printf("Error calculating full hash for file %s: %s\n", path, err)
+	} else {
+		log.Printf("Full hash for file %s: %s\n", path, hash)
+	}
+	return hash, err
 }
