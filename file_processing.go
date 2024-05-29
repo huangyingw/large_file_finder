@@ -17,21 +17,25 @@ import (
 	"sync/atomic"
 )
 
+var debugFile = "9 uncensored あやみ旬果 ABP-557 & ABP-566.mp4"
+
+// 获取文件信息
 func getFileInfoFromRedis(rdb *redis.Client, ctx context.Context, hashedKey string) (FileInfo, error) {
 	var fileInfo FileInfo
 	value, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
 	if err != nil {
-		fmt.Printf("Error retrieving file info for hashedKey %s: %v\n", hashedKey, err) // 添加日志
+		fmt.Printf("Error retrieving file info for hashedKey %s: %v\n", hashedKey, err)
 		return fileInfo, err
 	}
 
 	buf := bytes.NewBuffer(value)
 	dec := gob.NewDecoder(buf)
 	err = dec.Decode(&fileInfo)
-	fmt.Printf("Retrieved file info for hashedKey %s: %+v\n", hashedKey, fileInfo) // 添加日志
+	fmt.Printf("Retrieved file info for hashedKey %s: %+v\n", hashedKey, fileInfo)
 	return fileInfo, err
 }
 
+// 保存文件信息到文件
 func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
 	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
 	var data = make(map[string]FileInfo)
@@ -83,6 +87,7 @@ func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx
 	return writeLinesToFile(filepath.Join(dir, filename), lines)
 }
 
+// 处理文件
 func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context, startTime int64) {
 	defer atomic.AddInt32(&progressCounter, 1)
 
@@ -127,8 +132,13 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		log.Printf("Error saving file info to Redis for file %s: %s\n", path, err)
 		return
 	}
+
+	if strings.Contains(path, debugFile) {
+		log.Printf("Debug Info: Processed file %s with hash %s\n", path, fileHash)
+	}
 }
 
+// 格式化文件信息行
 func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bool) string {
 	if sortByModTime {
 		return fmt.Sprintf("\"./%s\"", relativePath)
@@ -138,14 +148,17 @@ func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bo
 
 const readLimit = 100 * 1024 // 100KB
 
+// 处理目录
 func processDirectory(path string) {
 	log.Printf("Processing directory: %s\n", path)
 }
 
+// 处理符号链接
 func processSymlink(path string) {
 	log.Printf("Processing symlink: %s\n", path)
 }
 
+// 处理关键词
 func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context, rootDir string) {
 	// 对 keywordFiles 进行排序
 	sort.Slice(keywordFiles, func(i, j int) bool {
@@ -169,7 +182,7 @@ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ct
 		log.Println("Error creating file:", err)
 		return
 	}
-	defer outputFile.Close() // 确保文件会被关闭
+	defer outputFile.Close()
 
 	_, err = outputFile.WriteString(outputData.String())
 	if err != nil {
@@ -177,7 +190,7 @@ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ct
 	}
 }
 
-// cleanPath 用于清理和标准化路径
+// 清理和标准化路径
 func cleanPath(path string) string {
 	path = strings.Trim(path, `"`)
 	if strings.HasPrefix(path, "./") {
@@ -186,6 +199,7 @@ func cleanPath(path string) string {
 	return path
 }
 
+// 获取文件大小
 func getFileSize(rdb *redis.Client, ctx context.Context, fullPath string) (int64, error) {
 	size, err := getFileSizeFromRedis(rdb, ctx, fullPath)
 	if err != nil {
@@ -195,6 +209,7 @@ func getFileSize(rdb *redis.Client, ctx context.Context, fullPath string) (int64
 	return size, nil
 }
 
+// 获取文件哈希值
 func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix string, limit int64) (string, error) {
 	hashedKey := generateHash(path)
 	hashKey := keyPrefix + hashedKey
@@ -230,14 +245,20 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 		log.Printf("Hash hit for path: %s, key: %s", path, hashKey)
 	}
 
+	if strings.Contains(path, debugFile) {
+		log.Printf("Debug Info: File %s, Key %s, Hash %s\n", path, hashKey, hash)
+	}
+
 	return hash, nil
 }
 
+// 获取文件哈希
 func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 	const readLimit = 100 * 1024 // 100KB
 	return getHash(path, rdb, ctx, "hashedKeyToFileHash:", readLimit)
 }
 
+// 获取完整文件哈希
 func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 	const noLimit = -1 // No limit for full file hash
 	return getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit)
