@@ -23,7 +23,7 @@ var progressCounter int32 // Progress counter
 
 func main() {
 	startTime := time.Now().Unix()
-	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, maxDuplicateFiles, err := initializeApp(os.Args)
+	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, err := initializeApp(os.Args)
 	if err != nil {
 		log.Println(err)
 		return
@@ -37,7 +37,7 @@ func main() {
 
 	// 根据参数决定是否进行重复文件查找并输出结果
 	if findDuplicates {
-		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx, maxDuplicateFiles) // 先查找重复文件
+		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx) // 先查找重复文件
 		if err != nil {
 			log.Println("Error finding and logging duplicates:", err)
 			return
@@ -66,7 +66,7 @@ func main() {
 	go monitorProgress(progressCtx, &progressCounter)
 
 	workerCount := 500
-	taskQueue, poolWg, stopPool, _ := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
 
 	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
 
@@ -117,7 +117,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	totalKeywords := len(keywords)
 
 	workerCount := 500
-	taskQueue, poolWg, stopPool, _ := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
 
 	for i, keyword := range keywords {
 		keywordFiles := closeFiles[keyword]
@@ -134,7 +134,6 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	}
 
 	stopPool() // 使用停止函数来关闭任务队列
-
 	poolWg.Wait()
 }
 
@@ -152,16 +151,15 @@ func newRedisClient(ctx context.Context) *redis.Client {
 }
 
 // initializeApp 初始化应用程序设置
-func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Client, context.Context, bool, bool, int, error) {
+func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Client, context.Context, bool, bool, error) {
 	if len(args) < 2 {
-		return "", 0, nil, nil, nil, false, false, 0, fmt.Errorf("Usage: %s <rootDir> [--delete-duplicates] [--find-duplicates] [--max-duplicates=N]", args[0])
+		return "", 0, nil, nil, nil, false, false, fmt.Errorf("Usage: %s <rootDir> [--delete-duplicates] [--find-duplicates]", args[0])
 	}
 
 	// Root directory to start the search
 	rootDir := args[1]
 	deleteDuplicates := false
 	findDuplicates := false
-	maxDuplicateFiles := 50 // 默认值
 
 	// 解析参数
 	for _, arg := range args {
@@ -169,8 +167,6 @@ func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Clien
 			deleteDuplicates = true
 		} else if arg == "--find-duplicates" {
 			findDuplicates = true
-		} else if strings.HasPrefix(arg, "--max-duplicates=") {
-			fmt.Sscanf(arg, "--max-duplicates=%d", &maxDuplicateFiles)
 		}
 	}
 
@@ -184,7 +180,7 @@ func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Clien
 	ctx := context.Background()
 	rdb := newRedisClient(ctx)
 
-	return rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, maxDuplicateFiles, nil
+	return rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, nil
 }
 
 // walkFiles 遍历指定目录下的文件，并根据条件进行处理
