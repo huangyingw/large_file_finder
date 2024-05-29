@@ -5,7 +5,7 @@
     remote = origin
 [gsync]
     remote = origin
-    target = 7896ac267fe9347382282a4c38107d745f0ffc92
+    target = 3404ff1b9e572236f89205c8f6d83950bf7406ac
 [gdio]
     ignore = ./.gitconfig
     ignore = ./.gitignore
