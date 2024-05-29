@@ -38,13 +38,13 @@ go run . /media
 =======
 >>>>>>> 2f303b4 (n)
 # 定义路径变量，确保处理包含空格和特殊字符的情况
-rootDir="/media/"
+rootDir="/media/av91/test/"
 
 # 正常运行
 go run . "$rootDir"
 
 # 输出重复文件结果
-go run . "$rootDir" --find-duplicates --max-duplicates=50
+go run . "$rootDir" --find-duplicates --max-duplicates=50000
 
 # 删除重复文件（示例，实际运行时取消注释）
 <<<<<<< HEAD
