@@ -10,7 +10,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,244 @@
 +// file_processing.go
 +package main
 +
@@ -34,12 +34,14 @@ new file mode 100644
 +	var fileInfo FileInfo
 +	value, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
 +	if err != nil {
++		fmt.Printf("Error retrieving file info for hashedKey %s: %v\n", hashedKey, err) // 添加日志
 +		return fileInfo, err
 +	}
 +
 +	buf := bytes.NewBuffer(value)
 +	dec := gob.NewDecoder(buf)
 +	err = dec.Decode(&fileInfo)
++	fmt.Printf("Retrieved file info for hashedKey %s: %+v\n", hashedKey, fileInfo) // 添加日志
 +	return fileInfo, err
 +}
 +
@@ -522,13 +524,13 @@ new file mode 100755
 +docker-compose up -d
 +
 +# 定义路径变量，确保处理包含空格和特殊字符的情况
-+rootDir="/media/"
++rootDir="/media/av91/test/"
 +
 +# 正常运行
 +go run . "$rootDir"
 +
 +# 输出重复文件结果
-+go run . "$rootDir" --find-duplicates --max-duplicates=50
++go run . "$rootDir" --find-duplicates --max-duplicates=50000
 +
 +# 删除重复文件（示例，实际运行时取消注释）
 +# go run . "$rootDir" --delete-duplicates
@@ -536,7 +538,7 @@ diff --git a/redis_client.go b/redis_client.go
 new file mode 100644
 --- /dev/null
 +++ ./redis_client.go
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,152 @@
 +// redis_client.go
 +package main
 +
@@ -556,7 +558,9 @@ new file mode 100644
 +func generateHash(s string) string {
 +	hasher := sha256.New()
 +	hasher.Write([]byte(s))
-+	return hex.EncodeToString(hasher.Sum(nil))
++	hash := hex.EncodeToString(hasher.Sum(nil))
++	fmt.Printf("Generated hash for %s: %s\n", s, hash) // 添加日志
++	return hash
 +}
 +
 +// 将重复文件的信息存储到 Redis
@@ -578,24 +582,30 @@ new file mode 100644
 +}
 +
 +func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, fileHash string, fullHash string) error {
++	// 规范化路径
++	normalizedPath := filepath.Clean(path)
++
 +	// 使用管道批量处理Redis命令
 +	pipe := rdb.Pipeline()
 +
 +	// 这里我们添加命令到管道，但不立即检查错误
 +	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
-+	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
-+	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, path) // 将文件路径存储为集合
++	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, normalizedPath, 0)
++	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, normalizedPath) // 将文件路径存储为集合
 +	if fullHash != "" {
 +		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
 +	}
 +	// 存储从路径到hashedKey的映射
-+	pipe.Set(ctx, "pathToHashedKey:"+path, hashedKey, 0)
++	pipe.Set(ctx, "pathToHashedKey:"+normalizedPath, hashedKey, 0)
 +	// 存储hashedKey到fileHash的映射
 +	pipe.Set(ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
 +
 +	if _, err := pipe.Exec(ctx); err != nil {
 +		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
 +	}
++
++	// 添加日志
++	fmt.Printf("Saved file info to Redis: normalizedPath=%s, hashedKey=%s, fileHash=%s, fullHash=%s\n", normalizedPath, hashedKey, fileHash, fullHash)
 +	return nil
 +}
 +
@@ -685,7 +695,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,550 @@
+@@ -0,0 +1,556 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -1099,7 +1109,13 @@ new file mode 100644
 +}
 +
 +func getHashedKeyFromPath(rdb *redis.Client, ctx context.Context, path string) (string, error) {
-+	return rdb.Get(ctx, "pathToHashedKey:"+path).Result()
++	hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
++	if err != nil {
++		fmt.Printf("Error retrieving hashed key for path %s: %v\n", path, err) // 添加日志
++	} else {
++		fmt.Printf("Retrieved hashed key for path %s: %s\n", path, hashedKey) // 添加日志
++	}
++	return hashedKey, err
 +}
 +
 +// extractFileName extracts the file name from a given file path.
