@@ -6,6 +6,22 @@ new file mode 100644
 +package main
 +
 +import ()
+diff --git a/docker-compose.yml b/docker-compose.yml
+new file mode 100644
+--- /dev/null
++++ ./docker-compose.yml
+@@ -0,0 +1,11 @@
++version: '3'
++services:
++  my-redis:
++    image: redis
++    ports:
++      - "6379:6379"
++    volumes:
++      - my-redis-data:/data
++
++volumes:
++  my-redis-data:
 diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
