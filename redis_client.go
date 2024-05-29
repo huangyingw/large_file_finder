@@ -18,7 +18,6 @@ func generateHash(s string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(s))
 	hash := hex.EncodeToString(hasher.Sum(nil))
-	fmt.Printf("Generated hash for %s: %s\n", s, hash) // 添加日志
 	return hash
 }
 
@@ -64,7 +63,6 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey strin
 	}
 
 	// 添加日志
-	fmt.Printf("Saved file info to Redis: normalizedPath=%s, hashedKey=%s, fileHash=%s, fullHash=%s\n", normalizedPath, hashedKey, fileHash, fullHash)
 	return nil
 }
 
