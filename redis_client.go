@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/go-redis/redis/v8"
+	"log"
 	"os"
 	"path/filepath" // 添加导入
 	"strings"
@@ -33,9 +34,13 @@ func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
 		Member: info.path,
 	})
 
+	// 添加日志记录
+	log.Printf("Saving duplicate file info to Redis: fullHash=%s, path=%s, score=%d\n", fullHash, info.path, -fileNameLength)
+
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("error executing pipeline for duplicate file: %s: %w", info.path, err)
 	}
+	log.Printf("Successfully saved duplicate file info to Redis: fullHash=%s, path=%s\n", fullHash, info.path)
 	return nil
 }
 
