@@ -13,6 +13,6 @@
 "./readme"
 "./redis_client.go"
 "./rsync.files"
-"./sort_delete_dup.gdio.diff"
 "./utils.go"
 "./worker_pool.go"
+"./zero.gdio.diff"
