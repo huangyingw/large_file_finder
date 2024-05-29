@@ -1,11 +1,17 @@
 version: '3'
 services:
   my-redis:
-    image: redis
+    image: redis:latest
     ports:
       - "6379:6379"
     volumes:
       - my-redis-data:/data
+    command: redis-server --appendonly yes --save 60 1 --loglevel notice --maxmemory 2gb --maxmemory-policy allkeys-lru
+    environment:
+      - TZ=Asia/Shanghai
+    restart: always
 
 volumes:
   my-redis-data:
+    driver: local
+
