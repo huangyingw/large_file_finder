@@ -12,31 +12,6 @@ go get -u github.com/karrick/godirwalk
 
 docker-compose up -d
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-rm /media/av162/cartoon/dragonball/test/*.txt
->>>>>>> 80d9d45 (n)
-go run . /media/av162/cartoon/dragonball/test/
-ls -al /media/av162/cartoon/dragonball/test/*.txt
-#go run . /media
-=======
-#go run . /media/secure_bcache/av/onlyfans/
-go run . /media
->>>>>>> a2c1f16 (n)
-=======
-#rm /media/av162/cartoon/dragonball/test/*.txt
-#go run . /media/av162/cartoon/dragonball/test/
-#ls -al /media/av162/cartoon/dragonball/test/*.txt
-<<<<<<< HEAD
-go run . /media
->>>>>>> 11de013 (n)
-=======
-
-=======
->>>>>>> 2f303b4 (n)
 # 定义路径变量，确保处理包含空格和特殊字符的情况
 rootDir="/media/av91/test/"
 
@@ -47,13 +22,4 @@ go run . "$rootDir"
 go run . "$rootDir" --find-duplicates --max-duplicates=50000
 
 # 删除重复文件（示例，实际运行时取消注释）
-<<<<<<< HEAD
-<<<<<<< HEAD
 # go run . "$rootDir" --delete-duplicates
->>>>>>> 1c14d61 (n)
-=======
-go run . "$rootDir" --delete-duplicates
->>>>>>> 2f382eb (n)
-=======
-# go run . "$rootDir" --delete-duplicates
->>>>>>> 2f303b4 (n)
