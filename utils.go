@@ -10,6 +10,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"github.com/go-redis/redis/v8"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -116,25 +117,26 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 	fileCount := 0
 
 	if len(filePaths) > 1 {
-		header := fmt.Sprintf("Duplicate files for fileHash %s:", fileHash)
+		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
 		hashes := make(map[string][]fileInfo)
 		for _, fullPath := range filePaths {
+
 			// 确保只处理rootDir下的文件
 			if !strings.HasPrefix(fullPath, rootDir) {
-				fmt.Printf("Skipping file outside root directory: %s\n", fullPath)
+				log.Printf("Skipping file outside root directory: %s\n", fullPath)
 				continue
 			}
 
 			// 检查文件是否存在
 			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-				fmt.Printf("File does not exist: %s\n", fullPath)
+				log.Printf("File does not exist: %s\n", fullPath)
 				continue
 			}
 
 			semaphore <- struct{}{} // 获取一个信号量
 			relativePath, err := filepath.Rel(rootDir, fullPath)
 			if err != nil {
-				fmt.Printf("Error converting to relative path: %s\n", err)
+				log.Printf("Error converting to relative path: %s\n", err)
 				<-semaphore // 释放信号量
 				continue
 			}
@@ -143,7 +145,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			// 获取或计算完整文件的SHA-512哈希值
 			fullHash, err := getFullFileHash(fullPath, rdb, ctx)
 			if err != nil {
-				fmt.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
+				log.Printf("Error calculating full hash for file %s: %s\n", fullPath, err)
 				<-semaphore // 释放信号量
 				continue
 			}
@@ -151,7 +153,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			// 计算文件的SHA-512哈希值（只读取前4KB）
 			fileHash, err := getFileHash(fullPath, rdb, ctx)
 			if err != nil {
-				fmt.Printf("Error calculating hash for file %s: %s\n", fullPath, err)
+				log.Printf("Error calculating hash for file %s: %s\n", fullPath, err)
 				<-semaphore // 释放信号量
 				continue
 			}
@@ -159,7 +161,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			// 获取文件信息并编码
 			info, err := os.Stat(fullPath)
 			if err != nil {
-				fmt.Printf("Error stating file: %s, Error: %s\n", fullPath, err)
+				log.Printf("Error stating file: %s, Error: %s\n", fullPath, err)
 				<-semaphore // 释放信号量
 				continue
 			}
@@ -167,14 +169,14 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			var buf bytes.Buffer
 			enc := gob.NewEncoder(&buf)
 			if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-				fmt.Printf("Error encoding: %s, File: %s\n", err, fullPath)
+				log.Printf("Error encoding: %s, File: %s\n", err, fullPath)
 				<-semaphore // 释放信号量
 				continue
 			}
 
 			// 调用saveFileInfoToRedis函数来保存文件信息到Redis
 			if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, fileHash, fullHash); err != nil {
-				fmt.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
+				log.Printf("Error saving file info to Redis for file %s: %s\n", fullPath, err)
 				<-semaphore // 释放信号量
 				continue
 			}
@@ -194,20 +196,31 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			fileCount++
 			<-semaphore // 释放信号量
 		}
+
+		var saveErr error
 		for fullHash, infos := range hashes {
 			if len(infos) > 1 {
 				mu.Lock()
+				log.Printf("Checking if fullHash %s is already processed", fullHash)
 				if !processedFullHashes[fullHash] {
-					processedFullHashes[fullHash] = true
+					log.Printf("FullHash %s is not processed yet, proceeding to save.", fullHash)
 					for _, info := range infos {
+						log.Printf("Attempting to save duplicate file info to Redis: fullHash=%s, path=%s\n", fullHash, info.path)
 						err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
 						if err != nil {
-							fmt.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fullHash, err)
+							log.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fullHash, err)
+							saveErr = err
 						}
 					}
+				} else {
+					log.Printf("FullHash %s has already been processed", fullHash)
 				}
 				mu.Unlock()
 			}
+		}
+
+		if saveErr == nil {
+			processedFullHashes[fileHash] = true
 		}
 	}
 	return fileCount, nil
@@ -237,7 +250,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 
 			count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
 			if err != nil {
-				fmt.Printf("Error processing file hash %s: %s\n", fileHash, err)
+				log.Printf("Error processing file hash %s: %s\n", fileHash, err)
 				return
 			}
 
@@ -249,10 +262,10 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 
 	wg.Wait()
 
-	fmt.Printf("Processed %d files\n", fileCount)
+	log.Printf("Processed %d files\n", fileCount)
 
 	if fileCount == 0 {
-		fmt.Println("No duplicates found.")
+		log.Println("No duplicates found.")
 		return nil
 	}
 
