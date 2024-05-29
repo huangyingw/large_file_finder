@@ -32,7 +32,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,259 @@
 +// file_processing.go
 +package main
 +
@@ -276,12 +276,6 @@ new file mode 100644
 +		log.Printf("Computed and saved hash for path: %s, key: %s", path, hashKey)
 +	} else if err != nil {
 +		return "", err
-+	} else {
-+		log.Printf("Hash hit for path: %s, key: %s", path, hashKey)
-+	}
-+
-+	if strings.Contains(path, debugFile) {
-+		log.Printf("Debug Info: File %s, Key %s, Hash %s\n", path, hashKey, hash)
 +	}
 +
 +	return hash, nil
@@ -302,7 +296,7 @@ diff --git a/main.go b/main.go
 new file mode 100644
 --- /dev/null
 +++ ./main.go
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,244 @@
 +// main.go
 +// 此文件是Go程序的主要入口点，包含了文件处理程序的核心逻辑和初始化代码。
 +
@@ -328,7 +322,7 @@ new file mode 100644
 +
 +func main() {
 +	startTime := time.Now().Unix()
-+	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, maxDuplicateFiles, err := initializeApp(os.Args)
++	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, err := initializeApp(os.Args)
 +	if err != nil {
 +		log.Println(err)
 +		return
@@ -342,7 +336,7 @@ new file mode 100644
 +
 +	// 根据参数决定是否进行重复文件查找并输出结果
 +	if findDuplicates {
-+		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx, maxDuplicateFiles) // 先查找重复文件
++		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx) // 先查找重复文件
 +		if err != nil {
 +			log.Println("Error finding and logging duplicates:", err)
 +			return
@@ -371,7 +365,7 @@ new file mode 100644
 +	go monitorProgress(progressCtx, &progressCounter)
 +
 +	workerCount := 500
-+	taskQueue, poolWg, stopPool, _ := NewWorkerPool(workerCount)
++	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
 +
 +	walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
 +
@@ -422,7 +416,7 @@ new file mode 100644
 +	totalKeywords := len(keywords)
 +
 +	workerCount := 500
-+	taskQueue, poolWg, stopPool, _ := NewWorkerPool(workerCount)
++	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
 +
 +	for i, keyword := range keywords {
 +		keywordFiles := closeFiles[keyword]
@@ -439,7 +433,6 @@ new file mode 100644
 +	}
 +
 +	stopPool() // 使用停止函数来关闭任务队列
-+
 +	poolWg.Wait()
 +}
 +
@@ -457,16 +450,15 @@ new file mode 100644
 +}
 +
 +// initializeApp 初始化应用程序设置
-+func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Client, context.Context, bool, bool, int, error) {
++func initializeApp(args []string) (string, int64, []*regexp.Regexp, *redis.Client, context.Context, bool, bool, error) {
 +	if len(args) < 2 {
-+		return "", 0, nil, nil, nil, false, false, 0, fmt.Errorf("Usage: %s <rootDir> [--delete-duplicates] [--find-duplicates] [--max-duplicates=N]", args[0])
++		return "", 0, nil, nil, nil, false, false, fmt.Errorf("Usage: %s <rootDir> [--delete-duplicates] [--find-duplicates]", args[0])
 +	}
 +
 +	// Root directory to start the search
 +	rootDir := args[1]
 +	deleteDuplicates := false
 +	findDuplicates := false
-+	maxDuplicateFiles := 50 // 默认值
 +
 +	// 解析参数
 +	for _, arg := range args {
@@ -474,8 +466,6 @@ new file mode 100644
 +			deleteDuplicates = true
 +		} else if arg == "--find-duplicates" {
 +			findDuplicates = true
-+		} else if strings.HasPrefix(arg, "--max-duplicates=") {
-+			fmt.Sscanf(arg, "--max-duplicates=%d", &maxDuplicateFiles)
 +		}
 +	}
 +
@@ -489,7 +479,7 @@ new file mode 100644
 +	ctx := context.Background()
 +	rdb := newRedisClient(ctx)
 +
-+	return rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, maxDuplicateFiles, nil
++	return rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, nil
 +}
 +
 +// walkFiles 遍历指定目录下的文件，并根据条件进行处理
@@ -577,7 +567,7 @@ new file mode 100755
 +# go run . "$rootDir"
 +
 +# 输出重复文件结果
-+go run . "$rootDir" --find-duplicates --max-duplicates=50000
++go run . "$rootDir" --find-duplicates
 +
 +# 删除重复文件（示例，实际运行时取消注释）
 +# go run . "$rootDir" --delete-duplicates
@@ -585,7 +575,7 @@ diff --git a/redis_client.go b/redis_client.go
 new file mode 100644
 --- /dev/null
 +++ ./redis_client.go
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,155 @@
 +// redis_client.go
 +package main
 +
@@ -596,6 +586,7 @@ new file mode 100644
 +	"encoding/hex"
 +	"fmt"
 +	"github.com/go-redis/redis/v8"
++	"log"
 +	"os"
 +	"path/filepath" // 添加导入
 +	"strings"
@@ -606,7 +597,6 @@ new file mode 100644
 +	hasher := sha256.New()
 +	hasher.Write([]byte(s))
 +	hash := hex.EncodeToString(hasher.Sum(nil))
-+	fmt.Printf("Generated hash for %s: %s\n", s, hash) // 添加日志
 +	return hash
 +}
 +
@@ -622,9 +612,13 @@ new file mode 100644
 +		Member: info.path,
 +	})
 +
++	// 添加日志记录
++	log.Printf("Saving duplicate file info to Redis: fullHash=%s, path=%s, score=%d\n", fullHash, info.path, -fileNameLength)
++
 +	if _, err := pipe.Exec(ctx); err != nil {
 +		return fmt.Errorf("error executing pipeline for duplicate file: %s: %w", info.path, err)
 +	}
++	log.Printf("Successfully saved duplicate file info to Redis: fullHash=%s, path=%s\n", fullHash, info.path)
 +	return nil
 +}
 +
@@ -652,7 +646,6 @@ new file mode 100644
 +	}
 +
 +	// 添加日志
-+	fmt.Printf("Saved file info to Redis: normalizedPath=%s, hashedKey=%s, fileHash=%s, fullHash=%s\n", normalizedPath, hashedKey, fileHash, fullHash)
 +	return nil
 +}
 +
@@ -742,7 +735,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,556 @@
+@@ -0,0 +1,527 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -857,26 +850,13 @@ new file mode 100644
 +var semaphore = make(chan struct{}, 100) // 同时最多打开100个文件
 +
 +// 处理每个文件哈希并查找重复文件
-+func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool, maxDuplicateFiles int, stopProcessing chan struct{}) (int, error) {
++func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
 +	fileCount := 0
 +
 +	if len(filePaths) > 1 {
-+		fmt.Printf("Found duplicate files for hash %s: %v\n", fileHash, filePaths)
-+		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
++		header := fmt.Sprintf("Duplicate files for fileHash %s:", fileHash)
 +		hashes := make(map[string][]fileInfo)
 +		for _, fullPath := range filePaths {
-+			select {
-+			case <-stopProcessing:
-+				return fileCount, nil // 返回并终止任务
-+			default:
-+			}
-+
-+			// 检查是否达到最大重复文件数量限制
-+			if fileCount >= maxDuplicateFiles {
-+				fmt.Printf("Reached the limit of duplicate files, stopping processing for hash %s.\n", fileHash)
-+				return fileCount, nil
-+			}
-+
 +			// 确保只处理rootDir下的文件
 +			if !strings.HasPrefix(fullPath, rootDir) {
 +				fmt.Printf("Skipping file outside root directory: %s\n", fullPath)
@@ -954,7 +934,6 @@ new file mode 100644
 +		}
 +		for fullHash, infos := range hashes {
 +			if len(infos) > 1 {
-+				fmt.Printf("Writing duplicate files for hash %s: %v\n", fullHash, infos)
 +				mu.Lock()
 +				if !processedFullHashes[fullHash] {
 +					processedFullHashes[fullHash] = true
@@ -973,7 +952,7 @@ new file mode 100644
 +}
 +
 +// 主函数
-+func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context, maxDuplicateFiles int) error {
++func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
 +	fmt.Println("Starting to find duplicates...")
 +
 +	fileHashes, err := scanFileHashes(rdb, ctx)
@@ -981,10 +960,7 @@ new file mode 100644
 +		return err
 +	}
 +
-+	fmt.Printf("Scanned file hashes: %v\n", fileHashes)
-+
 +	fileCount := 0
-+	duplicateCount := 0 // 用于缓存重复文件数量
 +
 +	// 用于存储已处理的文件哈希
 +	processedFullHashes := make(map[string]bool)
@@ -992,23 +968,12 @@ new file mode 100644
 +	var wg sync.WaitGroup // 等待 goroutine 完成
 +	var mu sync.Mutex     // 用于保护对 fileCount 的并发访问
 +
-+	// 创建一个停止信号通道
-+	stopProcessing := make(chan struct{})
-+
 +	for fileHash, filePaths := range fileHashes {
-+		// 如果达到最大重复文件数量限制，停止查找
-+		if duplicateCount >= maxDuplicateFiles {
-+			fmt.Println("Reached the limit of duplicate files, stopping search.")
-+			close(stopProcessing) // 发送停止信号
-+			break
-+		}
-+
-+		fmt.Printf("Processing fileHash: %s, filePaths: %v\n", fileHash, filePaths)
 +		wg.Add(1)
 +		go func(fileHash string, filePaths []string) {
 +			defer wg.Done()
 +
-+			count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicateFiles, stopProcessing)
++			count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
 +			if err != nil {
 +				fmt.Printf("Error processing file hash %s: %s\n", fileHash, err)
 +				return
@@ -1016,7 +981,6 @@ new file mode 100644
 +
 +			mu.Lock()
 +			fileCount += count
-+			duplicateCount += len(filePaths) - 1 // 假设每个哈希至少有一个重复文件
 +			mu.Unlock()
 +		}(fileHash, filePaths)
 +	}
@@ -1043,8 +1007,10 @@ new file mode 100644
 +		if err != nil {
 +			return nil, fmt.Errorf("error retrieving duplicate files for key %s: %w", hashKey, err)
 +		}
-+		fmt.Printf("Found hashKey: %s with files: %v\n", hashKey, duplicateFiles)
-+		fileHashes[fileHash] = duplicateFiles
++		// 只添加包含多个文件路径的条目
++		if len(duplicateFiles) > 1 {
++			fileHashes[fileHash] = duplicateFiles
++		}
 +	}
 +	if err := iter.Err(); err != nil {
 +		return nil, fmt.Errorf("error during iteration: %w", err)
@@ -1074,7 +1040,7 @@ new file mode 100644
 +		}
 +
 +		if len(duplicateFiles) > 1 {
-+			header := fmt.Sprintf("Duplicate files for hash %s:\n", fullHash)
++			header := fmt.Sprintf("Duplicate files for fullHash %s:\n", fullHash)
 +			if _, err := file.WriteString(header); err != nil {
 +				fmt.Printf("Error writing header to file %s: %s\n", outputFile, err)
 +				continue
@@ -1159,8 +1125,6 @@ new file mode 100644
 +	hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
 +	if err != nil {
 +		fmt.Printf("Error retrieving hashed key for path %s: %v\n", path, err) // 添加日志
-+	} else {
-+		fmt.Printf("Retrieved hashed key for path %s: %s\n", path, hashedKey) // 添加日志
 +	}
 +	return hashedKey, err
 +}
@@ -1175,7 +1139,7 @@ new file mode 100644
 +func extractKeywords(fileNames []string) []string {
 +	workerCount := 100
 +	// 创建自己的工作池
-+	taskQueue, poolWg, stopPool, _ := NewWorkerPool(workerCount)
++	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
 +
 +	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
 +
@@ -1249,7 +1213,7 @@ new file mode 100644
 +		}
 +
 +		if len(duplicateFiles) > 1 {
-+			fmt.Printf("Processing duplicate files for hash %s:\n", fullHash)
++			fmt.Printf("Processing duplicate files for fullHash %s:\n", fullHash)
 +
 +			// 保留第一个文件（你可以根据自己的需求修改保留策略）
 +			fileToKeep := duplicateFiles[0]
@@ -1303,7 +1267,7 @@ diff --git a/worker_pool.go b/worker_pool.go
 new file mode 100644
 --- /dev/null
 +++ ./worker_pool.go
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,30 @@
 +// worker_pool.go
 +package main
 +
@@ -1314,33 +1278,23 @@ new file mode 100644
 +// Task 定义了工作池中的任务类型
 +type Task func()
 +
-+func NewWorkerPool(workerCount int) (chan<- Task, *sync.WaitGroup, func(), chan struct{}) {
++func NewWorkerPool(workerCount int) (chan<- Task, *sync.WaitGroup, func()) {
 +	var wg sync.WaitGroup
 +	taskQueue := make(chan Task)
-+	stopProcessing := make(chan struct{})
 +
 +	for i := 0; i < workerCount; i++ {
 +		wg.Add(1)
 +		go func() {
 +			defer wg.Done()
-+			for {
-+				select {
-+				case <-stopProcessing:
-+					return
-+				case task, ok := <-taskQueue:
-+					if !ok {
-+						return
-+					}
-+					task()
-+				}
++			for task := range taskQueue {
++				task()
 +			}
 +		}()
 +	}
 +
 +	stopFunc := func() {
-+		close(stopProcessing) // 发送停止信号
-+		close(taskQueue)      // 关闭任务队列
++		close(taskQueue) // 关闭任务队列
 +	}
 +
-+	return taskQueue, &wg, stopFunc, stopProcessing
++	return taskQueue, &wg, stopFunc
 +}
