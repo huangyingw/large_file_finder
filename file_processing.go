@@ -216,38 +216,41 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 
 	// 尝试从Redis获取哈希值
 	hash, err := rdb.Get(ctx, hashKey).Result()
-	if err == redis.Nil {
-		// 如果哈希值不存在，则计算哈希值
-		log.Printf("Hash miss for path: %s, key: %s", path, hashKey)
-		file, err := os.Open(path)
-		if err != nil {
-			log.Printf("Error opening file %s: %s", path, err) // 添加日志
-			return "", err
-		}
-		defer file.Close()
-
-		hasher := sha512.New()
-		reader := io.LimitReader(file, limit)
-		if _, err := io.Copy(hasher, reader); err != nil {
-			log.Printf("Error copying file content for hash calculation %s: %s", path, err) // 添加日志
-			return "", err
-		}
-
-		hash = fmt.Sprintf("%x", hasher.Sum(nil))
-
-		// 将计算出的哈希值保存到Redis
-		err = rdb.Set(ctx, hashKey, hash, 0).Err()
-		if err != nil {
-			log.Printf("Error setting hash in Redis for path %s: %s", path, err) // 添加日志
-			return "", err
-		}
-		log.Printf("Computed and saved hash for path: %s, key: %s, hash: %s", path, hashKey, hash)
-	} else if err != nil {
-		return "", err
-	} else {
-		log.Printf("Retrieved hash from Redis for path: %s, key: %s, hash: %s", path, hashKey, hash) // 添加日志
+	if err == nil && hash != "" && hash != "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e" {
+		log.Printf("Retrieved hash from Redis for path: %s, key: %s, hash: %s", path, hashKey, hash)
+		return hash, nil
 	}
 
+	if err != nil && err != redis.Nil {
+		return "", err
+	}
+
+	// 计算哈希值
+	log.Printf("Hash miss for path: %s, key: %s", path, hashKey)
+	file, err := os.Open(path)
+	if err != nil {
+		log.Printf("Error opening file %s: %s", path, err)
+		return "", err
+	}
+	defer file.Close()
+
+	hasher := sha512.New()
+	reader := io.LimitReader(file, limit)
+
+	if _, err := io.Copy(hasher, reader); err != nil {
+		log.Printf("Error copying file content for hash calculation %s: %s", path, err)
+		return "", err
+	}
+
+	hash = fmt.Sprintf("%x", hasher.Sum(nil))
+
+	// 将计算出的哈希值保存到Redis
+	err = rdb.Set(ctx, hashKey, hash, 0).Err()
+	if err != nil {
+		log.Printf("Error setting hash in Redis for path %s: %s", path, err)
+		return "", err
+	}
+	log.Printf("Computed and saved hash for path: %s, key: %s", path, hashKey)
 	return hash, nil
 }
 
