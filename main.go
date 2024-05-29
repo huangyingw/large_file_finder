@@ -209,6 +209,10 @@ func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Rege
 				return nil
 			}
 
+			if strings.Contains(osPathname, debugFile) {
+				log.Printf("Debug Info: Traversing file %s\n", osPathname)
+			}
+
 			// 将任务发送到工作池
 			taskQueue <- func() {
 				if fileInfo.Mode().IsDir() {
