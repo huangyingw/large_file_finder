@@ -243,10 +243,6 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 		return "", err
 	}
 
-	if strings.Contains(path, debugFile) {
-		log.Printf("Debug Info: File %s, Key %s, Hash %s\n", path, hashKey, hash)
-	}
-
 	return hash, nil
 }
 
