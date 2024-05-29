@@ -241,8 +241,6 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 		log.Printf("Computed and saved hash for path: %s, key: %s", path, hashKey)
 	} else if err != nil {
 		return "", err
-	} else {
-		log.Printf("Hash hit for path: %s, key: %s", path, hashKey)
 	}
 
 	if strings.Contains(path, debugFile) {
