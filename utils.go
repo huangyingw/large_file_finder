@@ -201,11 +201,8 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 		for fullHash, infos := range hashes {
 			if len(infos) > 1 {
 				mu.Lock()
-				log.Printf("Checking if fullHash %s is already processed", fullHash)
 				if !processedFullHashes[fullHash] {
-					log.Printf("FullHash %s is not processed yet, proceeding to save.", fullHash)
 					for _, info := range infos {
-						log.Printf("Attempting to save duplicate file info to Redis: fullHash=%s, path=%s\n", fullHash, info.path)
 						err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
 						if err != nil {
 							log.Printf("Error saving duplicate file info to Redis for hash %s: %s\n", fullHash, err)
