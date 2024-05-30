@@ -31,7 +31,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,262 @@
 +// file_processing.go
 +package main
 +
@@ -43,6 +43,7 @@ new file mode 100644
 +	"fmt"
 +	"github.com/go-redis/redis/v8"
 +	"io"
++	"log"
 +	"os"
 +	"path/filepath"
 +	"sort"
@@ -284,7 +285,13 @@ new file mode 100644
 +// 获取完整文件哈希
 +func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 +	const noLimit = -1 // No limit for full file hash
++	log.Printf("Calculating full hash for file: %s", path)
 +	hash, err := getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit)
++	if err != nil {
++		log.Printf("Error calculating full hash for file %s: %v", path, err)
++	} else {
++		log.Printf("Full hash for file %s: %s", path, hash)
++	}
 +	return hash, err
 +}
 diff --git a/main.go b/main.go
@@ -724,7 +731,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,508 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -965,7 +972,6 @@ new file mode 100644
 +	for fileHash, filePaths := range fileHashes {
 +		taskQueue <- func(fileHash string, filePaths []string) Task {
 +			return func() {
-+				log.Printf("Processing file hash: %s\n", fileHash)
 +				count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicates)
 +				if err != nil {
 +					log.Printf("Error processing file hash %s: %s\n", fileHash, err)
