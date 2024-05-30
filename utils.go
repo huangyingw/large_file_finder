@@ -103,7 +103,7 @@ type fileInfo struct {
 	fullHash  string
 	line      string
 	header    string
-	FileInfo  // 嵌入已有的FileInfo结构体
+	FileInfo
 }
 
 var mu sync.Mutex
@@ -112,63 +112,56 @@ var mu sync.Mutex
 var semaphore = make(chan struct{}, 100) // 同时最多打开100个文件
 
 // 处理每个文件哈希并查找重复文件
-func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
+func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool, maxDuplicates int) (int, error) {
 	fileCount := 0
 
 	if len(filePaths) > 1 {
 		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
 		hashes := make(map[string][]fileInfo)
 		for _, fullPath := range filePaths {
-
-			// 确保只处理rootDir下的文件
 			if !strings.HasPrefix(fullPath, rootDir) {
 				continue
 			}
 
-			// 检查文件是否存在
 			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 				continue
 			}
 
-			semaphore <- struct{}{} // 获取一个信号量
+			semaphore <- struct{}{}
 			relativePath, err := filepath.Rel(rootDir, fullPath)
 			if err != nil {
-				<-semaphore // 释放信号量
+				<-semaphore
 				continue
 			}
 			fileName := filepath.Base(relativePath)
 
-			// 获取或计算完整文件的SHA-512哈希值
 			fullHash, err := getFullFileHash(fullPath, rdb, ctx)
 			if err != nil {
-				<-semaphore // 释放信号量
+				<-semaphore
 				continue
 			}
 
-			// 计算文件的SHA-512哈希值（只读取前4KB）
 			fileHash, err := getFileHash(fullPath, rdb, ctx)
 			if err != nil {
-				<-semaphore // 释放信号量
+				<-semaphore
 				continue
 			}
 
-			// 获取文件信息并编码
 			info, err := os.Stat(fullPath)
 			if err != nil {
-				<-semaphore // 释放信号量
+				<-semaphore
 				continue
 			}
 
 			var buf bytes.Buffer
 			enc := gob.NewEncoder(&buf)
 			if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-				<-semaphore // 释放信号量
+				<-semaphore
 				continue
 			}
 
-			// 调用saveFileInfoToRedis函数来保存文件信息到Redis
 			if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, fileHash, fullHash); err != nil {
-				<-semaphore // 释放信号量
+				<-semaphore
 				continue
 			}
 
@@ -185,7 +178,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			}
 			hashes[fullHash] = append(hashes[fullHash], infoStruct)
 			fileCount++
-			<-semaphore // 释放信号量
+			<-semaphore
 		}
 
 		var saveErr error
@@ -207,42 +200,46 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 		if saveErr == nil {
 			processedFullHashes[fileHash] = true
 		}
+
+		// 停止逻辑
+		if shouldStopDuplicateFileSearch(len(hashes), maxDuplicates) {
+			return fileCount, fmt.Errorf("maximum number of duplicates reached: %d", maxDuplicates)
+		}
 	}
 	return fileCount, nil
 }
 
-// 主函数
-func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
+func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context, maxDuplicates int) error {
 	fileHashes, err := scanFileHashes(rdb, ctx)
 	if err != nil {
 		return err
 	}
 
 	fileCount := 0
-
-	// 用于存储已处理的文件哈希
 	processedFullHashes := make(map[string]bool)
 
-	var wg sync.WaitGroup // 等待 goroutine 完成
-	var mu sync.Mutex     // 用于保护对 fileCount 的并发访问
+	workerCount := 500
+	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
+
+	var mu sync.Mutex
 
 	for fileHash, filePaths := range fileHashes {
-		wg.Add(1)
-		go func(fileHash string, filePaths []string) {
-			defer wg.Done()
+		taskQueue <- func(fileHash string, filePaths []string) Task {
+			return func() {
+				count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicates)
+				if err != nil {
+					return
+				}
 
-			count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
-			if err != nil {
-				return
+				mu.Lock()
+				fileCount += count
+				mu.Unlock()
 			}
-
-			mu.Lock()
-			fileCount += count
-			mu.Unlock()
 		}(fileHash, filePaths)
 	}
 
-	wg.Wait()
+	stopPool()
+	poolWg.Wait()
 
 	if fileCount == 0 {
 		return nil
