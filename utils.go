@@ -139,14 +139,14 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			fileName := filepath.Base(relativePath)
 
 			// 获取或计算完整文件的SHA-512哈希值
-			fullHash, err := getFullFileHash(fullPath, rdb, ctx, &stopProcessing)
+			fullHash, err := getFullFileHash(fullPath, rdb, ctx, stopProcessing)
 			if err != nil {
 				<-semaphore // 释放信号量
 				continue
 			}
 
 			// 计算文件的SHA-512哈希值（只读取前4KB）
-			fileHash, err := getFileHash(fullPath, rdb, ctx, &stopProcessing)
+			fileHash, err := getFileHash(fullPath, rdb, ctx, stopProcessing)
 			if err != nil {
 				<-semaphore // 释放信号量
 				continue
@@ -227,7 +227,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 }
 
 // 主函数
-func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context, maxDuplicates int) error {
+func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context, maxDuplicates int) error {
 	log.Println("Scanning file hashes")
 	fileHashes, err := scanFileHashes(rdb, ctx)
 	if err != nil {
@@ -412,7 +412,7 @@ var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a
 func extractKeywords(fileNames []string, stopProcessing *int32) []string {
 	workerCount := 100
 	// 创建自己的工作池
-	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
+	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, stopProcessing)
 
 	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
 
