@@ -19,7 +19,7 @@ rootDir="/media/"
 # go run . --rootDir="$rootDir"
 
 # 输出重复文件结果
-go run . --rootDir="$rootDir" --find-duplicates --max-duplicates 100
+go run . --rootDir="$rootDir" --find-duplicates --max-duplicates 1
 
 # 删除重复文件（示例，实际运行时取消注释）
 # go run . --rootDir="$rootDir" --delete-duplicates
