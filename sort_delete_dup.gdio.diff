@@ -291,7 +291,7 @@ diff --git a/main.go b/main.go
 new file mode 100644
 --- /dev/null
 +++ ./main.go
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,241 @@
 +// main.go
 +// 此文件是Go程序的主要入口点，包含了文件处理程序的核心逻辑和初始化代码。
 +
@@ -325,7 +325,7 @@ new file mode 100644
 +		return
 +	}
 +
-+	// 先清理旧记录
++	log.Println("Starting to clean up old records")
 +	err = cleanUpOldRecords(rdb, ctx)
 +	if err != nil {
 +		log.Println("Error cleaning up old records:", err)
@@ -333,12 +333,14 @@ new file mode 100644
 +
 +	// 根据参数决定是否进行重复文件查找并输出结果
 +	if findDuplicates {
++		log.Println("Finding and logging duplicates")
 +		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx, maxDuplicates) // 先查找重复文件
 +		if err != nil {
 +			log.Println("Error finding and logging duplicates:", err)
 +			return
 +		}
 +
++		log.Println("Writing duplicates to file")
 +		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx) // 再输出结果
 +		if err != nil {
 +			log.Println("Error writing duplicates to file:", err)
@@ -348,6 +350,7 @@ new file mode 100644
 +
 +	// 根据参数决定是否删除重复文件
 +	if deleteDuplicates {
++		log.Println("Deleting duplicate files")
 +		err = deleteDuplicateFiles(rootDir, rdb, ctx)
 +		if err != nil {
 +			log.Println("Error deleting duplicate files:", err)
@@ -379,7 +382,9 @@ new file mode 100644
 +	log.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
 +
 +	// 文件处理完成后的保存操作
++	log.Println("Saving data to fav.log")
 +	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
++	log.Println("Saving data to fav.log.sort")
 +	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
 +
 +	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
@@ -495,11 +500,16 @@ new file mode 100644
 +			// 将任务发送到工作池
 +			taskQueue <- func() {
 +				if fileInfo.Mode().IsDir() {
++					log.Printf("Processing directory: %s\n", osPathname)
 +					processDirectory(osPathname)
 +				} else if fileInfo.Mode().IsRegular() {
++					log.Printf("Processing file: %s\n", osPathname)
 +					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime)
 +				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
++					log.Printf("Processing symlink: %s\n", osPathname)
 +					processSymlink(osPathname)
++				} else {
++					log.Printf("Skipping unknown type: %s\n", osPathname)
 +				}
 +			}
 +			return nil
@@ -714,7 +724,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,493 @@
+@@ -0,0 +1,509 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -783,6 +793,7 @@ new file mode 100644
 +}
 +
 +func performSaveOperation(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) {
++	log.Printf("Starting save operation to %s\n", filepath.Join(rootDir, filename))
 +	if err := saveToFile(rootDir, filename, sortByModTime, rdb, ctx); err != nil {
 +		log.Printf("Error saving to %s: %s\n", filepath.Join(rootDir, filename), err)
 +	} else {
@@ -820,7 +831,7 @@ new file mode 100644
 +	fullHash  string
 +	line      string
 +	header    string
-+	FileInfo
++	FileInfo  // 嵌入已有的FileInfo结构体
 +}
 +
 +var mu sync.Mutex
@@ -836,49 +847,56 @@ new file mode 100644
 +		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
 +		hashes := make(map[string][]fileInfo)
 +		for _, fullPath := range filePaths {
++
++			// 确保只处理rootDir下的文件
 +			if !strings.HasPrefix(fullPath, rootDir) {
 +				continue
 +			}
 +
++			// 检查文件是否存在
 +			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 +				continue
 +			}
 +
-+			semaphore <- struct{}{}
++			semaphore <- struct{}{} // 获取一个信号量
 +			relativePath, err := filepath.Rel(rootDir, fullPath)
 +			if err != nil {
-+				<-semaphore
++				<-semaphore // 释放信号量
 +				continue
 +			}
 +			fileName := filepath.Base(relativePath)
 +
++			// 获取或计算完整文件的SHA-512哈希值
 +			fullHash, err := getFullFileHash(fullPath, rdb, ctx)
 +			if err != nil {
-+				<-semaphore
++				<-semaphore // 释放信号量
 +				continue
 +			}
 +
++			// 计算文件的SHA-512哈希值（只读取前4KB）
 +			fileHash, err := getFileHash(fullPath, rdb, ctx)
 +			if err != nil {
-+				<-semaphore
++				<-semaphore // 释放信号量
 +				continue
 +			}
 +
++			// 获取文件信息并编码
 +			info, err := os.Stat(fullPath)
 +			if err != nil {
-+				<-semaphore
++				<-semaphore // 释放信号量
 +				continue
 +			}
 +
 +			var buf bytes.Buffer
 +			enc := gob.NewEncoder(&buf)
 +			if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-+				<-semaphore
++				<-semaphore // 释放信号量
 +				continue
 +			}
 +
++			// 调用saveFileInfoToRedis函数来保存文件信息到Redis
 +			if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, fileHash, fullHash); err != nil {
-+				<-semaphore
++				<-semaphore // 释放信号量
 +				continue
 +			}
 +
@@ -895,7 +913,7 @@ new file mode 100644
 +			}
 +			hashes[fullHash] = append(hashes[fullHash], infoStruct)
 +			fileCount++
-+			<-semaphore
++			<-semaphore // 释放信号量
 +		}
 +
 +		var saveErr error
@@ -926,13 +944,17 @@ new file mode 100644
 +	return fileCount, nil
 +}
 +
++// 主函数
 +func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context, maxDuplicates int) error {
++	log.Println("Scanning file hashes")
 +	fileHashes, err := scanFileHashes(rdb, ctx)
 +	if err != nil {
 +		return err
 +	}
 +
 +	fileCount := 0
++
++	// 用于存储已处理的文件哈希
 +	processedFullHashes := make(map[string]bool)
 +
 +	workerCount := 500
@@ -943,8 +965,10 @@ new file mode 100644
 +	for fileHash, filePaths := range fileHashes {
 +		taskQueue <- func(fileHash string, filePaths []string) Task {
 +			return func() {
++				log.Printf("Processing file hash: %s\n", fileHash)
 +				count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicates)
 +				if err != nil {
++					log.Printf("Error processing file hash %s: %s\n", fileHash, err)
 +					return
 +				}
 +
@@ -957,6 +981,8 @@ new file mode 100644
 +
 +	stopPool()
 +	poolWg.Wait()
++
++	log.Printf("Total duplicates found: %d\n", fileCount)
 +
 +	if fileCount == 0 {
 +		return nil
