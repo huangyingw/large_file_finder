@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -67,7 +68,7 @@ func compileExcludePatterns(filename string) ([]*regexp.Regexp, error) {
 
 func performSaveOperation(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) {
 	log.Printf("Starting save operation to %s\n", filepath.Join(rootDir, filename))
-	if err := saveToFile(rootDir, filename, sortByModTime, rdb, ctx); err != nil {
+	if err := saveToFile(rootDir, filename, sortByModTime, rdb, ctx, &stopProcessing); err != nil {
 		log.Printf("Error saving to %s: %s\n", filepath.Join(rootDir, filename), err)
 	} else {
 		log.Printf("Saved data to %s\n", filepath.Join(rootDir, filename))
@@ -107,19 +108,17 @@ type fileInfo struct {
 	FileInfo  // 嵌入已有的FileInfo结构体
 }
 
-var mu sync.Mutex
-
-// 用信号量来限制并发数
-var semaphore = make(chan struct{}, 100) // 同时最多打开100个文件
-
-// 处理每个文件哈希并查找重复文件
-func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool, maxDuplicates int) (int, error) {
+func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool, maxDuplicates int, stopProcessing *int32) (int, error) {
 	fileCount := 0
 
 	if len(filePaths) > 1 {
 		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
 		hashes := make(map[string][]fileInfo)
 		for _, fullPath := range filePaths {
+			// 检查全局停止标志
+			if atomic.LoadInt32(stopProcessing) != 0 {
+				return fileCount, fmt.Errorf("processing stopped")
+			}
 
 			// 确保只处理rootDir下的文件
 			if !strings.HasPrefix(fullPath, rootDir) {
@@ -209,9 +208,12 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			processedFullHashes[fileHash] = true
 		}
 
-		// 停止逻辑
-		if shouldStopDuplicateFileSearch(len(hashes), maxDuplicates) {
-			return fileCount, fmt.Errorf("maximum number of duplicates reached: %d", maxDuplicates)
+		// 增加已处理的重复文件数量
+		atomic.AddInt32(&duplicateCounter, int32(len(hashes)))
+
+		// 设置停止标志
+		if atomic.LoadInt32(&duplicateCounter) >= int32(maxDuplicates) {
+			atomic.StoreInt32(stopProcessing, 1)
 		}
 	}
 	return fileCount, nil
@@ -231,14 +233,25 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	processedFullHashes := make(map[string]bool)
 
 	workerCount := 500
-	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
 
 	var mu sync.Mutex
 
 	for fileHash, filePaths := range fileHashes {
+		// 检查全局停止标志
+		if atomic.LoadInt32(&stopProcessing) != 0 {
+			log.Printf("Maximum number of duplicates reached: %d\n", maxDuplicates)
+			break
+		}
+
 		taskQueue <- func(fileHash string, filePaths []string) Task {
 			return func() {
-				count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicates)
+				// 再次检查是否达到maxDuplicates
+				if atomic.LoadInt32(&stopProcessing) != 0 {
+					return
+				}
+
+				count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicates, &stopProcessing)
 				if err != nil {
 					log.Printf("Error processing file hash %s: %s\n", fileHash, err)
 					return
@@ -251,7 +264,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 		}(fileHash, filePaths)
 	}
 
-	stopPool()
+	stopFunc()
 	poolWg.Wait()
 
 	log.Printf("Total duplicates found: %d\n", fileCount)
@@ -389,10 +402,10 @@ func extractFileName(filePath string) string {
 
 var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
 
-func extractKeywords(fileNames []string) []string {
+func extractKeywords(fileNames []string, stopProcessing *int32) []string {
 	workerCount := 100
 	// 创建自己的工作池
-	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, stopProcessing)
 
 	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
 
@@ -413,7 +426,7 @@ func extractKeywords(fileNames []string) []string {
 		}(fileName)
 	}
 
-	stopPool() // 使用停止函数来关闭任务队列
+	stopFunc() // 使用停止函数来关闭任务队列
 
 	// 关闭通道的逻辑保持不变
 	go func() {
