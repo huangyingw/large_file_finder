@@ -221,7 +221,7 @@ func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Rege
 					processDirectory(osPathname)
 				} else if fileInfo.Mode().IsRegular() {
 					log.Printf("Processing file: %s\n", osPathname)
-					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime, stopProcessing)
+					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime, &stopProcessing)
 				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
 					log.Printf("Processing symlink: %s\n", osPathname)
 					processSymlink(osPathname)
