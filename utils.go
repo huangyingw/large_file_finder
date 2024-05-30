@@ -192,14 +192,12 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 				header:    header,
 				FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
 			}
-			log.Printf("Appending to hashes: fullHash=%s, infoStruct=%v\n", fullHash, infoStruct)
 			hashes[fullHash] = append(hashes[fullHash], infoStruct)
 			fileCount++
 			<-semaphore // 释放信号量
 		}
 
 		var saveErr error
-		log.Printf("Hash map contents: %v\n", hashes) // 添加日志
 		for fullHash, infos := range hashes {
 			if len(infos) > 1 {
 				mu.Lock()
