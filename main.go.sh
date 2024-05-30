@@ -13,10 +13,10 @@ go get -u github.com/karrick/godirwalk
 docker-compose up -d
 
 # 定义路径变量，确保处理包含空格和特殊字符的情况
-rootDir="/media/av91/test"
+rootDir="/media/"
 
 # 正常运行
-# go run . "$rootDir"
+go run . "$rootDir"
 
 # 输出重复文件结果
 go run . "$rootDir" --find-duplicates
