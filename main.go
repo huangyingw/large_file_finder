@@ -135,6 +135,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 			taskQueue <- func(kw string, kf []string, idx int) Task {
 				return func() {
 					defer poolWg.Done()
+					log.Printf("Processing keyword %d of %d: %s\n", idx+1, len(keywords), kw)
 					processKeyword(kw, kf, rdb, ctx, rootDir)
 				}
 			}(keyword, keywordFiles, i)
@@ -195,6 +196,7 @@ func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Rege
 
 			fileInfo, err := os.Lstat(osPathname)
 			if err != nil {
+				log.Printf("Error getting file info: %s\n", err)
 				return err
 			}
 
