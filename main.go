@@ -126,7 +126,6 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 			taskQueue <- func(kw string, kf []string, idx int) Task {
 				return func() {
 					defer poolWg.Done()
-					log.Printf("Processing keyword %d of %d: %s\n", idx+1, totalKeywords, kw)
 					processKeyword(kw, kf, rdb, ctx, rootDir)
 				}
 			}(keyword, keywordFiles, i)
@@ -196,17 +195,12 @@ func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Rege
 
 			fileInfo, err := os.Lstat(osPathname)
 			if err != nil {
-				log.Printf("Error getting file info: %s\n", err)
 				return err
 			}
 
 			// 检查文件大小是否满足最小阈值
 			if fileInfo.Size() < minSizeBytes {
 				return nil
-			}
-
-			if strings.Contains(osPathname, debugFile) {
-				log.Printf("Debug Info: Traversing file %s\n", osPathname)
 			}
 
 			// 将任务发送到工作池
@@ -217,8 +211,6 @@ func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Rege
 					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime)
 				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
 					processSymlink(osPathname)
-				} else {
-					log.Printf("Skipping unknown type: %s\n", osPathname)
 				}
 			}
 			return nil
