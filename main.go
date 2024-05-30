@@ -31,7 +31,7 @@ func main() {
 		return
 	}
 
-	// 先清理旧记录
+	log.Println("Starting to clean up old records")
 	err = cleanUpOldRecords(rdb, ctx)
 	if err != nil {
 		log.Println("Error cleaning up old records:", err)
@@ -39,12 +39,14 @@ func main() {
 
 	// 根据参数决定是否进行重复文件查找并输出结果
 	if findDuplicates {
+		log.Println("Finding and logging duplicates")
 		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx, maxDuplicates) // 先查找重复文件
 		if err != nil {
 			log.Println("Error finding and logging duplicates:", err)
 			return
 		}
 
+		log.Println("Writing duplicates to file")
 		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx) // 再输出结果
 		if err != nil {
 			log.Println("Error writing duplicates to file:", err)
@@ -54,6 +56,7 @@ func main() {
 
 	// 根据参数决定是否删除重复文件
 	if deleteDuplicates {
+		log.Println("Deleting duplicate files")
 		err = deleteDuplicateFiles(rootDir, rdb, ctx)
 		if err != nil {
 			log.Println("Error deleting duplicate files:", err)
@@ -85,7 +88,9 @@ func main() {
 	log.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
 
 	// 文件处理完成后的保存操作
+	log.Println("Saving data to fav.log")
 	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
+	log.Println("Saving data to fav.log.sort")
 	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
 
 	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
@@ -201,11 +206,16 @@ func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Rege
 			// 将任务发送到工作池
 			taskQueue <- func() {
 				if fileInfo.Mode().IsDir() {
+					log.Printf("Processing directory: %s\n", osPathname)
 					processDirectory(osPathname)
 				} else if fileInfo.Mode().IsRegular() {
+					log.Printf("Processing file: %s\n", osPathname)
 					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime)
 				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
+					log.Printf("Processing symlink: %s\n", osPathname)
 					processSymlink(osPathname)
+				} else {
+					log.Printf("Skipping unknown type: %s\n", osPathname)
 				}
 			}
 			return nil
