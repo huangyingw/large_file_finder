@@ -244,7 +244,7 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 		}
 	} else {
 		// 读取整个文件
-		buf := make([]byte, 1024*1024) // 每次读取 1MB 数据
+		buf := make([]byte, 4*1024*1024) // 每次读取 4MB 数据
 		for {
 			n, err := file.Read(buf)
 			if err != nil && err != io.EOF {
