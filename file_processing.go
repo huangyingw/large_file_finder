@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"github.com/go-redis/redis/v8"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
