@@ -10,7 +10,7 @@ diff --git a/docker-compose.yml b/docker-compose.yml
 new file mode 100644
 --- /dev/null
 +++ ./docker-compose.yml
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,16 @@
 +version: '3'
 +services:
 +  my-redis:
@@ -27,12 +27,11 @@ new file mode 100644
 +volumes:
 +  my-redis-data:
 +    driver: local
-+
 diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,255 @@
 +// file_processing.go
 +package main
 +
@@ -44,7 +43,6 @@ new file mode 100644
 +	"fmt"
 +	"github.com/go-redis/redis/v8"
 +	"io"
-+	"log"
 +	"os"
 +	"path/filepath"
 +	"sort"
@@ -293,7 +291,7 @@ diff --git a/main.go b/main.go
 new file mode 100644
 --- /dev/null
 +++ ./main.go
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,233 @@
 +// main.go
 +// 此文件是Go程序的主要入口点，包含了文件处理程序的核心逻辑和初始化代码。
 +
@@ -310,7 +308,6 @@ new file mode 100644
 +	"path/filepath"
 +	"regexp"
 +	"sort"
-+	"strings"
 +	"sync/atomic"
 +	"time"
 +)
@@ -409,8 +406,6 @@ new file mode 100644
 +	sort.Slice(keywords, func(i, j int) bool {
 +		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
 +	})
-+
-+	totalKeywords := len(keywords)
 +
 +	workerCount := 500
 +	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
@@ -550,10 +545,10 @@ new file mode 100755
 +docker-compose up -d
 +
 +# 定义路径变量，确保处理包含空格和特殊字符的情况
-+rootDir="/media/av91/test"
++rootDir="/media/"
 +
 +# 正常运行
-+# go run . "$rootDir"
++go run . "$rootDir"
 +
 +# 输出重复文件结果
 +go run . "$rootDir" --find-duplicates
@@ -637,7 +632,7 @@ new file mode 100644
 +}
 +
 +func cleanUpOldRecords(rdb *redis.Client, ctx context.Context) error {
-+	fmt.Println("Starting to clean up old records")
++	log.Println("Starting to clean up old records")
 +	iter := rdb.Scan(ctx, 0, "pathToHashedKey:*", 0).Iterator()
 +	for iter.Next(ctx) {
 +		pathToHashKey := iter.Val()
@@ -722,7 +717,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,496 @@
+@@ -0,0 +1,495 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -735,7 +730,6 @@ new file mode 100644
 +	"encoding/gob"
 +	"fmt"
 +	"github.com/go-redis/redis/v8"
-+	"log"
 +	"os"
 +	"path/filepath"
 +	"regexp"
