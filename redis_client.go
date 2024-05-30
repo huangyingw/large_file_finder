@@ -70,7 +70,7 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey strin
 }
 
 func cleanUpOldRecords(rdb *redis.Client, ctx context.Context) error {
-	fmt.Println("Starting to clean up old records")
+	log.Println("Starting to clean up old records")
 	iter := rdb.Scan(ctx, 0, "pathToHashedKey:*", 0).Iterator()
 	for iter.Next(ctx) {
 		pathToHashKey := iter.Val()
