@@ -39,7 +39,6 @@ func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
 		return fmt.Errorf("error executing pipeline for duplicate file: %s: %w", info.path, err)
 	}
 
-	log.Printf("Successfully saved duplicate file info to Redis: fullHash=%s, path=%s\n", fullHash, info.path)
 	return nil
 }
 
