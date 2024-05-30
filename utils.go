@@ -10,7 +10,6 @@ import (
 	"encoding/gob"
 	"fmt"
 	"github.com/go-redis/redis/v8"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
