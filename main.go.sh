@@ -16,7 +16,7 @@ docker-compose up -d
 rootDir="/media/av91/test"
 
 # 正常运行
-go run . "$rootDir"
+# go run . "$rootDir"
 
 # 输出重复文件结果
 go run . "$rootDir" --find-duplicates
