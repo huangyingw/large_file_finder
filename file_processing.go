@@ -101,7 +101,6 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 		return
 	}
 	if exists > 0 {
-		log.Printf("File %s already exists in Redis, skipping processing.\n", path)
 		return
 	}
 
@@ -235,14 +234,37 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 	defer file.Close()
 
 	hasher := sha512.New()
-	reader := io.LimitReader(file, limit)
 
-	if _, err := io.Copy(hasher, reader); err != nil {
-		log.Printf("Error copying file content for hash calculation %s: %s", path, err)
-		return "", err
+	if limit > 0 {
+		// 只读取前 limit 字节
+		reader := io.LimitReader(file, limit)
+		if _, err := io.Copy(hasher, reader); err != nil {
+			log.Printf("Error copying file content for hash calculation %s: %s", path, err)
+			return "", err
+		}
+	} else {
+		// 读取整个文件
+		buf := make([]byte, 1024*1024) // 每次读取 1MB 数据
+		for {
+			n, err := file.Read(buf)
+			if err != nil && err != io.EOF {
+				log.Printf("Error reading file content for hash calculation %s: %s", path, err)
+				return "", err
+			}
+			if n == 0 {
+				break
+			}
+			if _, err := hasher.Write(buf[:n]); err != nil {
+				log.Printf("Error writing to hasher for file %s: %s", path, err)
+				return "", err
+			}
+		}
 	}
 
-	hash = fmt.Sprintf("%x", hasher.Sum(nil))
+	hashBytes := hasher.Sum(nil)
+	hash = fmt.Sprintf("%x", hashBytes)
+
+	log.Printf("Calculated hash for path %s: %x", path, hashBytes)
 
 	// 将计算出的哈希值保存到Redis
 	err = rdb.Set(ctx, hashKey, hash, 0).Err()
@@ -250,7 +272,7 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 		log.Printf("Error setting hash in Redis for path %s: %s", path, err)
 		return "", err
 	}
-	log.Printf("Computed and saved hash for path: %s, key: %s", path, hashKey)
+	log.Printf("Computed and saved hash for path: %s, key: %s, hash: %s", path, hashKey, hash)
 	return hash, nil
 }
 
