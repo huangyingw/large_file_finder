@@ -34,7 +34,7 @@ func main() {
 	startTime := time.Now().Unix()
 
 	// 解析命令行参数
-	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, maxDuplicates, err := initializeApp()
+	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, outputDuplicates, maxDuplicates, err := initializeApp()
 	if err != nil {
 		log.Println(err)
 		return
@@ -46,17 +46,20 @@ func main() {
 		log.Println("Error cleaning up old records:", err)
 	}
 
-	// 根据参数决定是否进行重复文件查找并输出结果
+	// 根据参数决定是否进行重复文件查找
 	if findDuplicates {
-		log.Println("Finding and logging duplicates")
-		err = findAndLogDuplicates(rootDir, "fav.log.dup", rdb, ctx, maxDuplicates) // 先查找重复文件
+		log.Println("Finding duplicates")
+		err = findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates) // 查找重复文件
 		if err != nil {
-			log.Println("Error finding and logging duplicates:", err)
+			log.Println("Error finding duplicates:", err)
 			return
 		}
+	}
 
+	// 根据参数决定是否输出重复文件
+	if outputDuplicates {
 		log.Println("Writing duplicates to file")
-		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx) // 再输出结果
+		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx) // 输出结果
 		if err != nil {
 			log.Println("Error writing duplicates to file:", err)
 		}
@@ -168,15 +171,16 @@ func newRedisClient(ctx context.Context) *redis.Client {
 	return rdb
 }
 
-func initializeApp() (string, int64, []*regexp.Regexp, *redis.Client, context.Context, bool, bool, int, error) {
+func initializeApp() (string, int64, []*regexp.Regexp, *redis.Client, context.Context, bool, bool, bool, int, error) {
 	rootDir := flag.String("rootDir", "", "Root directory to start the search")
 	deleteDuplicates := flag.Bool("delete-duplicates", false, "Delete duplicate files")
 	findDuplicates := flag.Bool("find-duplicates", false, "Find duplicate files")
+	outputDuplicates := flag.Bool("output-duplicates", false, "Output duplicate files")
 	maxDuplicates := flag.Int("max-duplicates", 50, "Maximum number of duplicates to process")
 	flag.Parse()
 
 	if *rootDir == "" {
-		return "", 0, nil, nil, nil, false, false, 0, fmt.Errorf("rootDir must be specified")
+		return "", 0, nil, nil, nil, false, false, false, 0, fmt.Errorf("rootDir must be specified")
 	}
 
 	// Minimum file size in bytes
@@ -189,7 +193,7 @@ func initializeApp() (string, int64, []*regexp.Regexp, *redis.Client, context.Co
 	ctx := context.Background()
 	rdb := newRedisClient(ctx)
 
-	return *rootDir, minSizeBytes, excludeRegexps, rdb, ctx, *deleteDuplicates, *findDuplicates, *maxDuplicates, nil
+	return *rootDir, minSizeBytes, excludeRegexps, rdb, ctx, *deleteDuplicates, *findDuplicates, *outputDuplicates, *maxDuplicates, nil
 }
 
 // walkFiles 遍历指定目录下的文件，并根据条件进行处理
@@ -221,7 +225,7 @@ func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Rege
 					processDirectory(osPathname)
 				} else if fileInfo.Mode().IsRegular() {
 					log.Printf("Processing file: %s\n", osPathname)
-					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime, &stopProcessing)
+					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime, stopProcessing)
 				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
 					log.Printf("Processing symlink: %s\n", osPathname)
 					processSymlink(osPathname)
