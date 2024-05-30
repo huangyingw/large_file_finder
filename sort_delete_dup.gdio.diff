@@ -559,7 +559,7 @@ diff --git a/redis_client.go b/redis_client.go
 new file mode 100644
 --- /dev/null
 +++ ./redis_client.go
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,152 @@
 +// redis_client.go
 +package main
 +
@@ -597,7 +597,6 @@ new file mode 100644
 +	})
 +
 +	if _, err := pipe.Exec(ctx); err != nil {
-+		log.Printf("Error executing pipeline for duplicate file: %s, Error: %v\n", info.path, err)
 +		return fmt.Errorf("error executing pipeline for duplicate file: %s: %w", info.path, err)
 +	}
 +
@@ -644,13 +643,13 @@ new file mode 100644
 +		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 +			err := cleanUpRecordsByFilePath(rdb, ctx, filePath)
 +			if err != nil {
-+				fmt.Printf("Error cleaning up records for file %s: %s\n", filePath, err)
++				log.Printf("Error cleaning up records for file %s: %s\n", filePath, err)
 +			}
 +		}
 +	}
 +
 +	if err := iter.Err(); err != nil {
-+		fmt.Printf("Error during iteration: %s\n", err)
++		log.Printf("Error during iteration: %s\n", err)
 +		return err
 +	}
 +
@@ -693,7 +692,7 @@ new file mode 100644
 +		return fmt.Errorf("error deleting keys for outdated record %s: %v", hashedKey, err)
 +	}
 +
-+	fmt.Printf("Deleted outdated record: path=%s\n", filePath)
++	log.Printf("Deleted outdated record: path=%s\n", filePath)
 +	return nil
 +}
 +
@@ -710,7 +709,7 @@ new file mode 100644
 +		return fmt.Errorf("error executing pipeline for cleaning up hash keys: %w", err)
 +	}
 +
-+	fmt.Printf("Cleaned up Redis keys: %s and %s\n", duplicateFilesKey, fileHashKey)
++	log.Printf("Cleaned up Redis keys: %s and %s\n", duplicateFilesKey, fileHashKey)
 +	return nil
 +}
 diff --git a/utils.go b/utils.go
