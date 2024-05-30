@@ -66,9 +66,9 @@ func compileExcludePatterns(filename string) ([]*regexp.Regexp, error) {
 
 func performSaveOperation(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) {
 	if err := saveToFile(rootDir, filename, sortByModTime, rdb, ctx); err != nil {
-		fmt.Printf("Error saving to %s: %s\n", filepath.Join(rootDir, filename), err)
+		log.Printf("Error saving to %s: %s\n", filepath.Join(rootDir, filename), err)
 	} else {
-		fmt.Printf("Saved data to %s\n", filepath.Join(rootDir, filename))
+		log.Printf("Saved data to %s\n", filepath.Join(rootDir, filename))
 	}
 }
 
