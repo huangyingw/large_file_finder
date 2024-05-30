@@ -15,13 +15,22 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
-var progressCounter int32 // Progress counter
+var (
+	semaphore        = make(chan struct{}, 100)
+	mu               sync.Mutex
+	duplicateCounter int32
+	stopProcessing   int32
+	progressCounter  int32
+)
 
 func main() {
+	// 初始化全局计数器
+	atomic.StoreInt32(&duplicateCounter, 0)
 	startTime := time.Now().Unix()
 
 	// 解析命令行参数
@@ -71,15 +80,15 @@ func main() {
 	go monitorProgress(progressCtx, &progressCounter)
 
 	workerCount := 500
-	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
 
 	log.Printf("Starting to walk files in directory: %s\n", rootDir)
-	err = walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
+	err = walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime, &stopProcessing)
 	if err != nil {
 		log.Printf("Error walking files: %s\n", err)
 	}
 
-	stopPool() // 使用停止函数来关闭任务队列
+	stopFunc()
 	poolWg.Wait()
 
 	// 此时所有任务已经完成，取消进度监控上下文
@@ -116,7 +125,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	}
 
 	// 确定工作池的大小并调用 extractKeywords
-	keywords := extractKeywords(fileNames)
+	keywords := extractKeywords(fileNames, &stopProcessing)
 
 	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
 
@@ -126,7 +135,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	})
 
 	workerCount := 500
-	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
+	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
 
 	for i, keyword := range keywords {
 		keywordFiles := closeFiles[keyword]
@@ -142,7 +151,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 		}
 	}
 
-	stopPool() // 使用停止函数来关闭任务队列
+	stopFunc() // 使用停止函数来关闭任务队列
 	poolWg.Wait()
 }
 
@@ -184,7 +193,7 @@ func initializeApp() (string, int64, []*regexp.Regexp, *redis.Client, context.Co
 }
 
 // walkFiles 遍历指定目录下的文件，并根据条件进行处理
-func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Regexp, taskQueue chan<- Task, rdb *redis.Client, ctx context.Context, startTime int64) error {
+func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Regexp, taskQueue chan<- Task, rdb *redis.Client, ctx context.Context, startTime int64, stopProcessing *int32) error {
 	return godirwalk.Walk(rootDir, &godirwalk.Options{
 		Callback: func(osPathname string, dirent *godirwalk.Dirent) error {
 			// 排除模式匹配
@@ -212,7 +221,7 @@ func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Rege
 					processDirectory(osPathname)
 				} else if fileInfo.Mode().IsRegular() {
 					log.Printf("Processing file: %s\n", osPathname)
-					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime)
+					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime, stopProcessing)
 				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
 					log.Printf("Processing symlink: %s\n", osPathname)
 					processSymlink(osPathname)
