@@ -31,7 +31,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,271 @@
 +// file_processing.go
 +package main
 +
@@ -145,7 +145,7 @@ new file mode 100644
 +	}
 +
 +	// 计算文件的SHA-512哈希值（只读取前4KB）
-+	fileHash, err := getFileHash(path, rdb, ctx)
++	fileHash, err := getFileHash(path, rdb, ctx, &stopProcessing)
 +	if err != nil {
 +		return
 +	}
@@ -223,13 +223,18 @@ new file mode 100644
 +}
 +
 +// 获取文件哈希值
-+func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix string, limit int64) (string, error) {
++func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix string, limit int64, stopProcessing *int32) (string, error) {
++	log.Printf("getHash for file: %s, stopProcessing: %d", path, atomic.LoadInt32(stopProcessing))
++	if (atomic.LoadInt32(stopProcessing)) != 0 {
++		return "", fmt.Errorf("processing stopped")
++	}
++
 +	hashedKey := generateHash(path)
 +	hashKey := keyPrefix + hashedKey
 +
 +	// 尝试从Redis获取哈希值
 +	hash, err := rdb.Get(ctx, hashKey).Result()
-+	if err == nil && hash != "" && hash != "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e" {
++	if err == nil && hash != "" {
 +		return hash, nil
 +	}
 +
@@ -281,16 +286,16 @@ new file mode 100644
 +}
 +
 +// 获取文件哈希
-+func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
++func getFileHash(path string, rdb *redis.Client, ctx context.Context, stopProcessing *int32) (string, error) {
 +	const readLimit = 100 * 1024 // 100KB
-+	return getHash(path, rdb, ctx, "hashedKeyToFileHash:", readLimit)
++	return getHash(path, rdb, ctx, "hashedKeyToFileHash:", readLimit, &stopProcessing)
 +}
 +
 +// 获取完整文件哈希
-+func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
++func getFullFileHash(path string, rdb *redis.Client, ctx context.Context, stopProcessing *int32) (string, error) {
 +	const noLimit = -1 // No limit for full file hash
-+	log.Printf("Calculating full hash for file: %s", path)
-+	hash, err := getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit)
++	log.Printf("Calculating full hash for file: %s, stopProcessing: %d", path, atomic.LoadInt32(stopProcessing))
++	hash, err := getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit, &stopProcessing)
 +	if err != nil {
 +		log.Printf("Error calculating full hash for file %s: %v", path, err)
 +	} else {
@@ -526,7 +531,7 @@ new file mode 100644
 +					processDirectory(osPathname)
 +				} else if fileInfo.Mode().IsRegular() {
 +					log.Printf("Processing file: %s\n", osPathname)
-+					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime, stopProcessing)
++					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime, &stopProcessing)
 +				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
 +					log.Printf("Processing symlink: %s\n", osPathname)
 +					processSymlink(osPathname)
@@ -746,7 +751,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,521 @@
+@@ -0,0 +1,528 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -888,14 +893,14 @@ new file mode 100644
 +			fileName := filepath.Base(relativePath)
 +
 +			// 获取或计算完整文件的SHA-512哈希值
-+			fullHash, err := getFullFileHash(fullPath, rdb, ctx)
++			fullHash, err := getFullFileHash(fullPath, rdb, ctx, &stopProcessing)
 +			if err != nil {
 +				<-semaphore // 释放信号量
 +				continue
 +			}
 +
 +			// 计算文件的SHA-512哈希值（只读取前4KB）
-+			fileHash, err := getFileHash(fullPath, rdb, ctx)
++			fileHash, err := getFileHash(fullPath, rdb, ctx, &stopProcessing)
 +			if err != nil {
 +				<-semaphore // 释放信号量
 +				continue
@@ -943,28 +948,35 @@ new file mode 100644
 +				mu.Lock()
 +				if !processedFullHashes[fullHash] {
 +					for _, info := range infos {
++						if atomic.LoadInt32(stopProcessing) != 0 {
++							mu.Unlock()
++							return fileCount, fmt.Errorf("processing stopped")
++						}
++						log.Printf("Saving duplicate file info to Redis for file: %s", info.path)
 +						err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
 +						if err != nil {
++							log.Printf("Error saving duplicate file info to Redis for file: %s, error: %v", info.path, err)
 +							saveErr = err
++						} else {
++							log.Printf("Successfully saved duplicate file info to Redis for file: %s", info.path)
++							atomic.AddInt32(&duplicateCounter, 1) // 增加已处理的重复文件数量
++							// 设置停止标志
++							if atomic.LoadInt32(&duplicateCounter) >= int32(maxDuplicates) {
++								atomic.StoreInt32(stopProcessing, 1)
++							}
 +						}
 +					}
++					processedFullHashes[fullHash] = true
 +				}
 +				mu.Unlock()
 +			}
 +		}
 +
-+		if saveErr == nil {
-+			processedFullHashes[fileHash] = true
-+		}
-+
-+		// 增加已处理的重复文件数量
-+		atomic.AddInt32(&duplicateCounter, int32(len(hashes)))
-+
-+		// 设置停止标志
-+		if atomic.LoadInt32(&duplicateCounter) >= int32(maxDuplicates) {
-+			atomic.StoreInt32(stopProcessing, 1)
++		if saveErr != nil {
++			return fileCount, saveErr
 +		}
 +	}
++
 +	return fileCount, nil
 +}
 +
@@ -1154,7 +1166,7 @@ new file mode 100644
 +func extractKeywords(fileNames []string, stopProcessing *int32) []string {
 +	workerCount := 100
 +	// 创建自己的工作池
-+	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, stopProcessing)
++	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
 +
 +	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
 +
