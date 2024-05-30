@@ -66,6 +66,7 @@ func compileExcludePatterns(filename string) ([]*regexp.Regexp, error) {
 }
 
 func performSaveOperation(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) {
+	log.Printf("Starting save operation to %s\n", filepath.Join(rootDir, filename))
 	if err := saveToFile(rootDir, filename, sortByModTime, rdb, ctx); err != nil {
 		log.Printf("Error saving to %s: %s\n", filepath.Join(rootDir, filename), err)
 	} else {
@@ -103,7 +104,7 @@ type fileInfo struct {
 	fullHash  string
 	line      string
 	header    string
-	FileInfo
+	FileInfo  // 嵌入已有的FileInfo结构体
 }
 
 var mu sync.Mutex
@@ -119,49 +120,56 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
 		hashes := make(map[string][]fileInfo)
 		for _, fullPath := range filePaths {
+
+			// 确保只处理rootDir下的文件
 			if !strings.HasPrefix(fullPath, rootDir) {
 				continue
 			}
 
+			// 检查文件是否存在
 			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 				continue
 			}
 
-			semaphore <- struct{}{}
+			semaphore <- struct{}{} // 获取一个信号量
 			relativePath, err := filepath.Rel(rootDir, fullPath)
 			if err != nil {
-				<-semaphore
+				<-semaphore // 释放信号量
 				continue
 			}
 			fileName := filepath.Base(relativePath)
 
+			// 获取或计算完整文件的SHA-512哈希值
 			fullHash, err := getFullFileHash(fullPath, rdb, ctx)
 			if err != nil {
-				<-semaphore
+				<-semaphore // 释放信号量
 				continue
 			}
 
+			// 计算文件的SHA-512哈希值（只读取前4KB）
 			fileHash, err := getFileHash(fullPath, rdb, ctx)
 			if err != nil {
-				<-semaphore
+				<-semaphore // 释放信号量
 				continue
 			}
 
+			// 获取文件信息并编码
 			info, err := os.Stat(fullPath)
 			if err != nil {
-				<-semaphore
+				<-semaphore // 释放信号量
 				continue
 			}
 
 			var buf bytes.Buffer
 			enc := gob.NewEncoder(&buf)
 			if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-				<-semaphore
+				<-semaphore // 释放信号量
 				continue
 			}
 
+			// 调用saveFileInfoToRedis函数来保存文件信息到Redis
 			if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, fileHash, fullHash); err != nil {
-				<-semaphore
+				<-semaphore // 释放信号量
 				continue
 			}
 
@@ -178,7 +186,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			}
 			hashes[fullHash] = append(hashes[fullHash], infoStruct)
 			fileCount++
-			<-semaphore
+			<-semaphore // 释放信号量
 		}
 
 		var saveErr error
@@ -209,13 +217,17 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 	return fileCount, nil
 }
 
+// 主函数
 func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context, maxDuplicates int) error {
+	log.Println("Scanning file hashes")
 	fileHashes, err := scanFileHashes(rdb, ctx)
 	if err != nil {
 		return err
 	}
 
 	fileCount := 0
+
+	// 用于存储已处理的文件哈希
 	processedFullHashes := make(map[string]bool)
 
 	workerCount := 500
@@ -228,6 +240,7 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 			return func() {
 				count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicates)
 				if err != nil {
+					log.Printf("Error processing file hash %s: %s\n", fileHash, err)
 					return
 				}
 
@@ -240,6 +253,8 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 
 	stopPool()
 	poolWg.Wait()
+
+	log.Printf("Total duplicates found: %d\n", fileCount)
 
 	if fileCount == 0 {
 		return nil
