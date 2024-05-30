@@ -35,7 +35,6 @@ func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
 	})
 
 	if _, err := pipe.Exec(ctx); err != nil {
-		log.Printf("Error executing pipeline for duplicate file: %s, Error: %v\n", info.path, err)
 		return fmt.Errorf("error executing pipeline for duplicate file: %s: %w", info.path, err)
 	}
 
@@ -82,13 +81,13 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context) error {
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			err := cleanUpRecordsByFilePath(rdb, ctx, filePath)
 			if err != nil {
-				fmt.Printf("Error cleaning up records for file %s: %s\n", filePath, err)
+				log.Printf("Error cleaning up records for file %s: %s\n", filePath, err)
 			}
 		}
 	}
 
 	if err := iter.Err(); err != nil {
-		fmt.Printf("Error during iteration: %s\n", err)
+		log.Printf("Error during iteration: %s\n", err)
 		return err
 	}
 
@@ -131,7 +130,7 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath s
 		return fmt.Errorf("error deleting keys for outdated record %s: %v", hashedKey, err)
 	}
 
-	fmt.Printf("Deleted outdated record: path=%s\n", filePath)
+	log.Printf("Deleted outdated record: path=%s\n", filePath)
 	return nil
 }
 
@@ -148,6 +147,6 @@ func cleanUpHashKeys(rdb *redis.Client, ctx context.Context, fullHash, duplicate
 		return fmt.Errorf("error executing pipeline for cleaning up hash keys: %w", err)
 	}
 
-	fmt.Printf("Cleaned up Redis keys: %s and %s\n", duplicateFilesKey, fileHashKey)
+	log.Printf("Cleaned up Redis keys: %s and %s\n", duplicateFilesKey, fileHashKey)
 	return nil
 }
