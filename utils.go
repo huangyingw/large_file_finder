@@ -238,7 +238,6 @@ func findAndLogDuplicates(rootDir string, outputFile string, rdb *redis.Client, 
 	for fileHash, filePaths := range fileHashes {
 		taskQueue <- func(fileHash string, filePaths []string) Task {
 			return func() {
-				log.Printf("Processing file hash: %s\n", fileHash)
 				count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicates)
 				if err != nil {
 					log.Printf("Error processing file hash %s: %s\n", fileHash, err)
