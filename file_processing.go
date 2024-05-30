@@ -111,7 +111,7 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 	}
 
 	// 计算文件的SHA-512哈希值（只读取前4KB）
-	fileHash, err := getFileHash(path, rdb, ctx, &stopProcessing)
+	fileHash, err := getFileHash(path, rdb, ctx, stopProcessing)
 	if err != nil {
 		return
 	}
@@ -254,14 +254,14 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 // 获取文件哈希
 func getFileHash(path string, rdb *redis.Client, ctx context.Context, stopProcessing *int32) (string, error) {
 	const readLimit = 100 * 1024 // 100KB
-	return getHash(path, rdb, ctx, "hashedKeyToFileHash:", readLimit, &stopProcessing)
+	return getHash(path, rdb, ctx, "hashedKeyToFileHash:", readLimit, stopProcessing)
 }
 
 // 获取完整文件哈希
 func getFullFileHash(path string, rdb *redis.Client, ctx context.Context, stopProcessing *int32) (string, error) {
 	const noLimit = -1 // No limit for full file hash
 	log.Printf("Calculating full hash for file: %s, stopProcessing: %d", path, atomic.LoadInt32(stopProcessing))
-	hash, err := getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit, &stopProcessing)
+	hash, err := getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit, stopProcessing)
 	if err != nil {
 		log.Printf("Error calculating full hash for file %s: %v", path, err)
 	} else {
