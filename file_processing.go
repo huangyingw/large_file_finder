@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/go-redis/redis/v8"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -250,6 +251,12 @@ func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, e
 // 获取完整文件哈希
 func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 	const noLimit = -1 // No limit for full file hash
+	log.Printf("Calculating full hash for file: %s", path)
 	hash, err := getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit)
+	if err != nil {
+		log.Printf("Error calculating full hash for file %s: %v", path, err)
+	} else {
+		log.Printf("Full hash for file %s: %s", path, hash)
+	}
 	return hash, err
 }
