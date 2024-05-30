@@ -716,7 +716,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,495 @@
+@@ -0,0 +1,496 @@
 +// utils.go
 +// 该文件包含用于整个应用程序的通用工具函数。
 +
@@ -729,6 +729,7 @@ new file mode 100644
 +	"encoding/gob"
 +	"fmt"
 +	"github.com/go-redis/redis/v8"
++	"log"
 +	"os"
 +	"path/filepath"
 +	"regexp"
