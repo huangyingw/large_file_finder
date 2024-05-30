@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -113,8 +112,6 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	sort.Slice(keywords, func(i, j int) bool {
 		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
 	})
-
-	totalKeywords := len(keywords)
 
 	workerCount := 500
 	taskQueue, poolWg, stopPool := NewWorkerPool(workerCount)
