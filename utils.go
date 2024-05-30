@@ -139,14 +139,14 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			fileName := filepath.Base(relativePath)
 
 			// 获取或计算完整文件的SHA-512哈希值
-			fullHash, err := getFullFileHash(fullPath, rdb, ctx)
+			fullHash, err := getFullFileHash(fullPath, rdb, ctx, &stopProcessing)
 			if err != nil {
 				<-semaphore // 释放信号量
 				continue
 			}
 
 			// 计算文件的SHA-512哈希值（只读取前4KB）
-			fileHash, err := getFileHash(fullPath, rdb, ctx)
+			fileHash, err := getFileHash(fullPath, rdb, ctx, &stopProcessing)
 			if err != nil {
 				<-semaphore // 释放信号量
 				continue
@@ -194,28 +194,35 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 				mu.Lock()
 				if !processedFullHashes[fullHash] {
 					for _, info := range infos {
+						if atomic.LoadInt32(stopProcessing) != 0 {
+							mu.Unlock()
+							return fileCount, fmt.Errorf("processing stopped")
+						}
+						log.Printf("Saving duplicate file info to Redis for file: %s", info.path)
 						err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
 						if err != nil {
+							log.Printf("Error saving duplicate file info to Redis for file: %s, error: %v", info.path, err)
 							saveErr = err
+						} else {
+							log.Printf("Successfully saved duplicate file info to Redis for file: %s", info.path)
+							atomic.AddInt32(&duplicateCounter, 1) // 增加已处理的重复文件数量
+							// 设置停止标志
+							if atomic.LoadInt32(&duplicateCounter) >= int32(maxDuplicates) {
+								atomic.StoreInt32(stopProcessing, 1)
+							}
 						}
 					}
+					processedFullHashes[fullHash] = true
 				}
 				mu.Unlock()
 			}
 		}
 
-		if saveErr == nil {
-			processedFullHashes[fileHash] = true
-		}
-
-		// 增加已处理的重复文件数量
-		atomic.AddInt32(&duplicateCounter, int32(len(hashes)))
-
-		// 设置停止标志
-		if atomic.LoadInt32(&duplicateCounter) >= int32(maxDuplicates) {
-			atomic.StoreInt32(stopProcessing, 1)
+		if saveErr != nil {
+			return fileCount, saveErr
 		}
 	}
+
 	return fileCount, nil
 }
 
@@ -405,7 +412,7 @@ var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a
 func extractKeywords(fileNames []string, stopProcessing *int32) []string {
 	workerCount := 100
 	// 创建自己的工作池
-	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, stopProcessing)
+	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
 
 	keywordsCh := make(chan string, len(fileNames)*10) // 假设每个文件名大约有10个关键词
 
