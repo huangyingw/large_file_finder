@@ -32,13 +32,17 @@ func getFileInfoFromRedis(rdb *redis.Client, ctx context.Context, hashedKey stri
 }
 
 // 保存文件信息到文件
-func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
+func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context, stopProcessing *int32) error {
 	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
 	var data = make(map[string]FileInfo)
 
 	foundData := false
 
 	for iter.Next(ctx) {
+		if atomic.LoadInt32(stopProcessing) != 0 {
+			return fmt.Errorf("processing stopped")
+		}
+
 		hashedKey := iter.Val()
 		hashedKey = strings.TrimPrefix(hashedKey, "fileInfo:")
 
@@ -80,18 +84,18 @@ func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx
 }
 
 // 处理文件
-func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context, startTime int64) {
+func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context, startTime int64, stopProcessing *int32) {
 	defer atomic.AddInt32(&progressCounter, 1)
 
-	// 生成文件路径的哈希作为键
+	if atomic.LoadInt32(stopProcessing) != 0 {
+		return
+	}
+
 	hashedKey := generateHash(path)
 
 	// 检查Redis中是否已存在该文件的信息
 	exists, err := rdb.Exists(ctx, "fileInfo:"+hashedKey).Result()
-	if err != nil {
-		return
-	}
-	if exists > 0 {
+	if err != nil || exists > 0 {
 		return
 	}
 
