@@ -32,17 +32,13 @@ func getFileInfoFromRedis(rdb *redis.Client, ctx context.Context, hashedKey stri
 }
 
 // 保存文件信息到文件
-func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context, stopProcessing *int32) error {
+func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
 	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
 	var data = make(map[string]FileInfo)
 
 	foundData := false
 
 	for iter.Next(ctx) {
-		if atomic.LoadInt32(stopProcessing) != 0 {
-			return fmt.Errorf("processing stopped")
-		}
-
 		hashedKey := iter.Val()
 		hashedKey = strings.TrimPrefix(hashedKey, "fileInfo:")
 
@@ -84,12 +80,9 @@ func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx
 }
 
 // 处理文件
-func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context, startTime int64, stopProcessing *int32) {
+func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context, startTime int64) {
 	defer atomic.AddInt32(&progressCounter, 1)
 
-	if atomic.LoadInt32(stopProcessing) != 0 {
-		return
-	}
 
 	hashedKey := generateHash(path)
 
@@ -111,7 +104,7 @@ func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Co
 	}
 
 	// 计算文件的SHA-512哈希值（只读取前4KB）
-	fileHash, err := getFileHash(path, rdb, ctx, stopProcessing)
+	fileHash, err := getFileHash(path, rdb, ctx)
 	if err != nil {
 		return
 	}
@@ -189,12 +182,7 @@ func getFileSize(rdb *redis.Client, ctx context.Context, fullPath string) (int64
 }
 
 // 获取文件哈希值
-func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix string, limit int64, stopProcessing *int32) (string, error) {
-	log.Printf("getHash for file: %s, stopProcessing: %d", path, atomic.LoadInt32(stopProcessing))
-	if (atomic.LoadInt32(stopProcessing)) != 0 {
-		return "", fmt.Errorf("processing stopped")
-	}
-
+func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix string, limit int64) (string, error) {
 	hashedKey := generateHash(path)
 	hashKey := keyPrefix + hashedKey
 
@@ -252,16 +240,15 @@ func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix stri
 }
 
 // 获取文件哈希
-func getFileHash(path string, rdb *redis.Client, ctx context.Context, stopProcessing *int32) (string, error) {
+func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 	const readLimit = 100 * 1024 // 100KB
-	return getHash(path, rdb, ctx, "hashedKeyToFileHash:", readLimit, stopProcessing)
+	return getHash(path, rdb, ctx, "hashedKeyToFileHash:", readLimit)
 }
 
 // 获取完整文件哈希
-func getFullFileHash(path string, rdb *redis.Client, ctx context.Context, stopProcessing *int32) (string, error) {
+func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
 	const noLimit = -1 // No limit for full file hash
-	log.Printf("Calculating full hash for file: %s, stopProcessing: %d", path, atomic.LoadInt32(stopProcessing))
-	hash, err := getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit, stopProcessing)
+	hash, err := getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit)
 	if err != nil {
 		log.Printf("Error calculating full hash for file %s: %v", path, err)
 	} else {
