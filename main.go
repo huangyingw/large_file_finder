@@ -24,7 +24,6 @@ var (
 	semaphore        = make(chan struct{}, 100)
 	mu               sync.Mutex
 	duplicateCounter int32
-	stopProcessing   int32
 	progressCounter  int32
 )
 
@@ -52,8 +51,8 @@ func main() {
 		err = findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates) // 查找重复文件
 		if err != nil {
 			log.Println("Error finding duplicates:", err)
-			return
 		}
+		return
 	}
 
 	// 根据参数决定是否输出重复文件
@@ -82,11 +81,12 @@ func main() {
 	// 启动进度监控 Goroutine
 	go monitorProgress(progressCtx, &progressCounter)
 
+	var stopProcessing bool
 	workerCount := 500
 	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
 
 	log.Printf("Starting to walk files in directory: %s\n", rootDir)
-	err = walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime, &stopProcessing)
+	err = walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
 	if err != nil {
 		log.Printf("Error walking files: %s\n", err)
 	}
@@ -128,6 +128,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 	}
 
 	// 确定工作池的大小并调用 extractKeywords
+	var stopProcessing bool
 	keywords := extractKeywords(fileNames, &stopProcessing)
 
 	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
@@ -197,7 +198,7 @@ func initializeApp() (string, int64, []*regexp.Regexp, *redis.Client, context.Co
 }
 
 // walkFiles 遍历指定目录下的文件，并根据条件进行处理
-func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Regexp, taskQueue chan<- Task, rdb *redis.Client, ctx context.Context, startTime int64, stopProcessing *int32) error {
+func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Regexp, taskQueue chan<- Task, rdb *redis.Client, ctx context.Context, startTime int64) error {
 	return godirwalk.Walk(rootDir, &godirwalk.Options{
 		Callback: func(osPathname string, dirent *godirwalk.Dirent) error {
 			// 排除模式匹配
@@ -225,7 +226,7 @@ func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Rege
 					processDirectory(osPathname)
 				} else if fileInfo.Mode().IsRegular() {
 					log.Printf("Processing file: %s\n", osPathname)
-					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime, stopProcessing)
+					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime)
 				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
 					log.Printf("Processing symlink: %s\n", osPathname)
 					processSymlink(osPathname)
