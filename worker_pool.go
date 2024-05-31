@@ -3,13 +3,12 @@ package main
 
 import (
 	"sync"
-	"sync/atomic"
 )
 
 // Task 定义了工作池中的任务类型
 type Task func()
 
-func NewWorkerPool(workerCount int, stopProcessing *int32) (chan<- Task, *sync.WaitGroup, func(), chan struct{}) {
+func NewWorkerPool(workerCount int, stopProcessing *bool) (chan<- Task, *sync.WaitGroup, func(), chan struct{}) {
 	var wg sync.WaitGroup
 	taskQueue := make(chan Task)
 	stopSignal := make(chan struct{})
@@ -23,7 +22,7 @@ func NewWorkerPool(workerCount int, stopProcessing *int32) (chan<- Task, *sync.W
 				case <-stopSignal:
 					return
 				case task, ok := <-taskQueue:
-					if !ok || atomic.LoadInt32(stopProcessing) != 0 {
+					if !ok || *stopProcessing {
 						return
 					}
 					task()
