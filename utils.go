@@ -16,8 +16,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -68,7 +66,7 @@ func compileExcludePatterns(filename string) ([]*regexp.Regexp, error) {
 
 func performSaveOperation(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) {
 	log.Printf("Starting save operation to %s\n", filepath.Join(rootDir, filename))
-	if err := saveToFile(rootDir, filename, sortByModTime, rdb, ctx, &stopProcessing); err != nil {
+	if err := saveToFile(rootDir, filename, sortByModTime, rdb, ctx); err != nil {
 		log.Printf("Error saving to %s: %s\n", filepath.Join(rootDir, filename), err)
 	} else {
 		log.Printf("Saved data to %s\n", filepath.Join(rootDir, filename))
@@ -108,18 +106,13 @@ type fileInfo struct {
 	FileInfo  // 嵌入已有的FileInfo结构体
 }
 
-func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool, maxDuplicates int, stopProcessing *int32) (int, error) {
+func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
 	fileCount := 0
 
 	if len(filePaths) > 1 {
 		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
 		hashes := make(map[string][]fileInfo)
 		for _, fullPath := range filePaths {
-			// 检查全局停止标志
-			if atomic.LoadInt32(stopProcessing) != 0 {
-				return fileCount, fmt.Errorf("processing stopped")
-			}
-
 			// 确保只处理rootDir下的文件
 			if !strings.HasPrefix(fullPath, rootDir) {
 				continue
@@ -139,14 +132,14 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			fileName := filepath.Base(relativePath)
 
 			// 获取或计算完整文件的SHA-512哈希值
-			fullHash, err := getFullFileHash(fullPath, rdb, ctx, stopProcessing)
+			fullHash, err := getFullFileHash(fullPath, rdb, ctx)
 			if err != nil {
 				<-semaphore // 释放信号量
 				continue
 			}
 
 			// 计算文件的SHA-512哈希值（只读取前4KB）
-			fileHash, err := getFileHash(fullPath, rdb, ctx, stopProcessing)
+			fileHash, err := getFileHash(fullPath, rdb, ctx)
 			if err != nil {
 				<-semaphore // 释放信号量
 				continue
@@ -194,10 +187,6 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 				mu.Lock()
 				if !processedFullHashes[fullHash] {
 					for _, info := range infos {
-						if atomic.LoadInt32(stopProcessing) != 0 {
-							mu.Unlock()
-							return fileCount, fmt.Errorf("processing stopped")
-						}
 						log.Printf("Saving duplicate file info to Redis for file: %s", info.path)
 						err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
 						if err != nil {
@@ -205,11 +194,6 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 							saveErr = err
 						} else {
 							log.Printf("Successfully saved duplicate file info to Redis for file: %s", info.path)
-							atomic.AddInt32(&duplicateCounter, 1) // 增加已处理的重复文件数量
-							// 设置停止标志
-							if atomic.LoadInt32(&duplicateCounter) >= int32(maxDuplicates) {
-								atomic.StoreInt32(stopProcessing, 1)
-							}
 						}
 					}
 					processedFullHashes[fullHash] = true
@@ -240,33 +224,33 @@ func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context
 	processedFullHashes := make(map[string]bool)
 
 	workerCount := 500
+	var stopProcessing bool
 	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
 
-	var mu sync.Mutex
-
 	for fileHash, filePaths := range fileHashes {
-		// 检查全局停止标志
-		if atomic.LoadInt32(&stopProcessing) != 0 {
-			log.Printf("Maximum number of duplicates reached: %d\n", maxDuplicates)
+		fileCount += 1
+		if fileCount >= maxDuplicates {
+			stopProcessing = true
 			break
 		}
 
+		semaphore <- struct{}{} // 获取一个信号量
+
 		taskQueue <- func(fileHash string, filePaths []string) Task {
 			return func() {
-				// 再次检查是否达到maxDuplicates
-				if atomic.LoadInt32(&stopProcessing) != 0 {
+				defer func() {
+					<-semaphore // 释放信号量
+				}()
+
+				if stopProcessing {
 					return
 				}
 
-				count, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, maxDuplicates, &stopProcessing)
+				_, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
 				if err != nil {
 					log.Printf("Error processing file hash %s: %s\n", fileHash, err)
 					return
 				}
-
-				mu.Lock()
-				fileCount += count
-				mu.Unlock()
 			}
 		}(fileHash, filePaths)
 	}
@@ -409,7 +393,7 @@ func extractFileName(filePath string) string {
 
 var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
 
-func extractKeywords(fileNames []string, stopProcessing *int32) []string {
+func extractKeywords(fileNames []string, stopProcessing *bool) []string {
 	workerCount := 100
 	// 创建自己的工作池
 	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, stopProcessing)
