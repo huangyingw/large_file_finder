@@ -108,103 +108,100 @@ type fileInfo struct {
 
 func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
 	fileCount := 0
+	header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
+	hashes := make(map[string][]fileInfo)
+	for _, fullPath := range filePaths {
+		// 确保只处理rootDir下的文件
+		if !strings.HasPrefix(fullPath, rootDir) {
+			continue
+		}
 
-	if len(filePaths) > 1 {
-		header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
-		hashes := make(map[string][]fileInfo)
-		for _, fullPath := range filePaths {
-			// 确保只处理rootDir下的文件
-			if !strings.HasPrefix(fullPath, rootDir) {
-				continue
-			}
+		// 检查文件是否存在
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			continue
+		}
 
-			// 检查文件是否存在
-			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-				continue
-			}
-
-			semaphore <- struct{}{} // 获取一个信号量
-			relativePath, err := filepath.Rel(rootDir, fullPath)
-			if err != nil {
-				<-semaphore // 释放信号量
-				continue
-			}
-			fileName := filepath.Base(relativePath)
-
-			// 获取或计算完整文件的SHA-512哈希值
-			fullHash, err := getFullFileHash(fullPath, rdb, ctx)
-			if err != nil {
-				<-semaphore // 释放信号量
-				continue
-			}
-
-			// 计算文件的SHA-512哈希值（只读取前4KB）
-			fileHash, err := getFileHash(fullPath, rdb, ctx)
-			if err != nil {
-				<-semaphore // 释放信号量
-				continue
-			}
-
-			// 获取文件信息并编码
-			info, err := os.Stat(fullPath)
-			if err != nil {
-				<-semaphore // 释放信号量
-				continue
-			}
-
-			var buf bytes.Buffer
-			enc := gob.NewEncoder(&buf)
-			if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-				<-semaphore // 释放信号量
-				continue
-			}
-
-			// 调用saveFileInfoToRedis函数来保存文件信息到Redis
-			if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, fileHash, fullHash); err != nil {
-				<-semaphore // 释放信号量
-				continue
-			}
-
-			infoStruct := fileInfo{
-				name:      fileName,
-				path:      fullPath,
-				buf:       buf,
-				startTime: time.Now().Unix(),
-				fileHash:  fileHash,
-				fullHash:  fullHash,
-				line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
-				header:    header,
-				FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
-			}
-			hashes[fullHash] = append(hashes[fullHash], infoStruct)
-			fileCount++
+		semaphore <- struct{}{} // 获取一个信号量
+		relativePath, err := filepath.Rel(rootDir, fullPath)
+		if err != nil {
 			<-semaphore // 释放信号量
+			continue
+		}
+		fileName := filepath.Base(relativePath)
+
+		// 获取或计算完整文件的SHA-512哈希值
+		fullHash, err := getFullFileHash(fullPath, rdb, ctx)
+		if err != nil {
+			<-semaphore // 释放信号量
+			continue
 		}
 
-		var saveErr error
-		for fullHash, infos := range hashes {
-			if len(infos) > 1 {
-				mu.Lock()
-				if !processedFullHashes[fullHash] {
-					for _, info := range infos {
-						log.Printf("Saving duplicate file info to Redis for file: %s", info.path)
-						err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
-						if err != nil {
-							log.Printf("Error saving duplicate file info to Redis for file: %s, error: %v", info.path, err)
-							saveErr = err
-						} else {
-							log.Printf("Successfully saved duplicate file info to Redis for file: %s", info.path)
-						}
+		// 计算文件的SHA-512哈希值（只读取前4KB）
+		fileHash, err := getFileHash(fullPath, rdb, ctx)
+		if err != nil {
+			<-semaphore // 释放信号量
+			continue
+		}
+
+		// 获取文件信息并编码
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			<-semaphore // 释放信号量
+			continue
+		}
+
+		var buf bytes.Buffer
+		enc := gob.NewEncoder(&buf)
+		if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
+			<-semaphore // 释放信号量
+			continue
+		}
+
+		// 调用saveFileInfoToRedis函数来保存文件信息到Redis
+		if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, fileHash, fullHash); err != nil {
+			<-semaphore // 释放信号量
+			continue
+		}
+
+		infoStruct := fileInfo{
+			name:      fileName,
+			path:      fullPath,
+			buf:       buf,
+			startTime: time.Now().Unix(),
+			fileHash:  fileHash,
+			fullHash:  fullHash,
+			line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
+			header:    header,
+			FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
+		}
+		hashes[fullHash] = append(hashes[fullHash], infoStruct)
+		fileCount++
+		<-semaphore // 释放信号量
+	}
+
+	var saveErr error
+	for fullHash, infos := range hashes {
+		if len(infos) > 1 {
+			mu.Lock()
+			if !processedFullHashes[fullHash] {
+				for _, info := range infos {
+					log.Printf("Saving duplicate file info to Redis for file: %s", info.path)
+					err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
+					if err != nil {
+						log.Printf("Error saving duplicate file info to Redis for file: %s, error: %v", info.path, err)
+						saveErr = err
+					} else {
+						log.Printf("Successfully saved duplicate file info to Redis for file: %s", info.path)
 					}
-					processedFullHashes[fullHash] = true
 				}
-				mu.Unlock()
+				processedFullHashes[fullHash] = true
 			}
+			mu.Unlock()
 		}
+	}
 
-		if saveErr != nil {
-			return fileCount, saveErr
-		}
+	if saveErr != nil {
+		return fileCount, saveErr
 	}
 
 	return fileCount, nil
@@ -228,31 +225,33 @@ func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context
 	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
 
 	for fileHash, filePaths := range fileHashes {
-		fileCount += 1
-		if fileCount >= maxDuplicates {
-			stopProcessing = true
-			break
-		}
-
-		semaphore <- struct{}{} // 获取一个信号量
-
-		taskQueue <- func(fileHash string, filePaths []string) Task {
-			return func() {
-				defer func() {
-					<-semaphore // 释放信号量
-				}()
-
-				if stopProcessing {
-					return
-				}
-
-				_, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
-				if err != nil {
-					log.Printf("Error processing file hash %s: %s\n", fileHash, err)
-					return
-				}
+		if len(filePaths) > 1 {
+			fileCount += 1
+			if fileCount >= maxDuplicates {
+				stopProcessing = true
+				break
 			}
-		}(fileHash, filePaths)
+
+			semaphore <- struct{}{} // 获取一个信号量
+
+			taskQueue <- func(fileHash string, filePaths []string) Task {
+				return func() {
+					defer func() {
+						<-semaphore // 释放信号量
+					}()
+
+					if stopProcessing {
+						return
+					}
+
+					_, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
+					if err != nil {
+						log.Printf("Error processing file hash %s: %s\n", fileHash, err)
+						return
+					}
+				}
+			}(fileHash, filePaths)
+		}
 	}
 
 	stopFunc()
@@ -354,6 +353,9 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 	if err := iter.Err(); err != nil {
 		return err
 	}
+
+	// 添加日志记录
+	log.Printf("Duplicate files have been written to %s", filepath.Join(rootDir, outputFile))
 
 	return nil
 }
