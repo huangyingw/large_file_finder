@@ -188,7 +188,16 @@ func initializeApp() (string, int64, []*regexp.Regexp, *redis.Client, context.Co
 	minSize := 200 // Default size is 200MB
 	minSizeBytes := int64(minSize * 1024 * 1024)
 
-	excludeRegexps, _ := compileExcludePatterns(filepath.Join(*rootDir, "exclude_patterns.txt"))
+	// 获取当前运行目录
+	currentDir, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("Failed to get current directory: %v", err)
+	}
+
+	// 拼接当前目录和文件名
+	excludePatternsFilePath := filepath.Join(currentDir, "exclude_patterns.txt")
+
+	excludeRegexps, _ := compileExcludePatterns(excludePatternsFilePath)
 
 	// 创建 Redis 客户端
 	ctx := context.Background()
