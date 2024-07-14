@@ -244,6 +244,8 @@ func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context
 						return
 					}
 
+					log.Printf("Processing hash %s with %d files\n", fileHash, len(filePaths)) // 添加的日志
+
 					_, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
 					if err != nil {
 						log.Printf("Error processing file hash %s: %s\n", fileHash, err)
