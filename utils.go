@@ -314,7 +314,7 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 			if _, err := file.WriteString(header); err != nil {
 				continue
 			}
-			for _, duplicateFile := range duplicateFiles {
+			for i, duplicateFile := range duplicateFiles {
 				// 获取文件信息
 				hashedKey, err := getHashedKeyFromPath(rdb, ctx, duplicateFile)
 				if err != nil {
@@ -341,7 +341,15 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 
 				// 使用 filepath.Clean 来规范化路径
 				cleanPath := filepath.Clean(relativePath)
-				line := fmt.Sprintf("%d,\"./%s\"\n", fileInfo.Size, cleanPath)
+
+				// 根据文件是否为第一个，添加不同的前缀
+				var line string
+				if i == 0 {
+					line = fmt.Sprintf("[+] %d,\"./%s\"\n", fileInfo.Size, cleanPath)
+				} else {
+					line = fmt.Sprintf("[-] %d,\"./%s\"\n", fileInfo.Size, cleanPath)
+				}
+
 				if _, err := file.WriteString(line); err != nil {
 					continue
 				}
