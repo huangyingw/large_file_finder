@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath" // 添加导入
+	"regexp"
 	"strings"
 )
 
@@ -22,15 +23,29 @@ func generateHash(s string) string {
 	return hash
 }
 
+// 使用给定的正则表达式匹配时间戳
+func extractTimestamp(filePath string) string {
+	// 匹配冒号或逗号后的 MM:SS 或 H:MM:SS 格式的时间戳
+	re := regexp.MustCompile(`[:,/](\d{1,2}:\d{2}(?::\d{2})?)`)
+	match := re.FindStringSubmatch(filePath)
+	if len(match) > 1 {
+		return match[1]
+	}
+	return ""
+}
+
 // 将重复文件的信息存储到 Redis
 func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHash string, info fileInfo) error {
+	// 提取文件路径中的时间戳
+	timestamp := extractTimestamp(info.path)
+	timestampLength := len(timestamp)
+
 	// 使用管道批量处理 Redis 命令
 	pipe := rdb.Pipeline()
 
-	// 将路径添加到有序集合 duplicateFiles:<fullHash> 中，并使用文件名长度的负值作为分数
-	fileNameLength := len(filepath.Base(info.path))
+	// 将路径添加到有序集合 duplicateFiles:<fullHash> 中，并使用时间戳长度的负值作为分数
 	pipe.ZAdd(ctx, "duplicateFiles:"+fullHash, &redis.Z{
-		Score:  float64(-fileNameLength), // 取负值
+		Score:  float64(-timestampLength), // 取负值
 		Member: info.path,
 	})
 
