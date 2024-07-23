@@ -39,13 +39,18 @@ func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
 	// 提取文件路径中的时间戳
 	timestamp := extractTimestamp(info.path)
 	timestampLength := len(timestamp)
+	fileNameLength := len(filepath.Base(info.path))
+
+	// 计算综合分数
+	// 使用负值排序，确保时间戳长度优先，文件名长度其次
+	combinedScore := float64(-(timestampLength*1000000 + fileNameLength))
 
 	// 使用管道批量处理 Redis 命令
 	pipe := rdb.Pipeline()
 
-	// 将路径添加到有序集合 duplicateFiles:<fullHash> 中，并使用时间戳长度的负值作为分数
+	// 将路径添加到有序集合 duplicateFiles:<fullHash> 中，并使用综合分数
 	pipe.ZAdd(ctx, "duplicateFiles:"+fullHash, &redis.Z{
-		Score:  float64(-timestampLength), // 取负值
+		Score:  combinedScore, // 综合分数
 		Member: info.path,
 	})
 
