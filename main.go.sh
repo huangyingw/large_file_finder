@@ -24,3 +24,4 @@ go run . --rootDir="$rootDir" --output-duplicates
 
 # 删除重复文件（示例，实际运行时取消注释）
 # go run . --rootDir="$rootDir" --delete-duplicates
+pm-suspend
