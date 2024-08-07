@@ -16,7 +16,7 @@ docker-compose up -d
 rootDir="/media/"
 
 go run . --rootDir="$rootDir"
-go run . --rootDir="$rootDir" --find-duplicates --max-duplicates=10000000000000
-go run . --rootDir="$rootDir" --output-duplicates
-go run . --rootDir="$rootDir" --delete-duplicates
+#go run . --rootDir="$rootDir" --find-duplicates --max-duplicates=10000000000000
+#go run . --rootDir="$rootDir" --output-duplicates
+#go run . --rootDir="$rootDir" --delete-duplicates
 pm-suspend
