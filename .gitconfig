@@ -9,7 +9,8 @@
 [gdio]
     ignore = ./.gitconfig
     ignore = ./.gitignore
-    ignore = ./go.mod
-    ignore = ./go.sum
     ignore = ./find_large_files_with_cache.go
     ignore = ./find_large_files_with_cache.go.sh
+    ignore = ./go.mod
+    ignore = ./go.sum
+    ignore = ./readme
