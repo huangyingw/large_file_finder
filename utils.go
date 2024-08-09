@@ -1,6 +1,4 @@
 // utils.go
-// 该文件包含用于整个应用程序的通用工具函数。
-
 package main
 
 import (
@@ -16,8 +14,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+var mu sync.Mutex
 
 func loadExcludePatterns(filename string) ([]string, error) {
 	file, err := os.Open(filename)
@@ -88,12 +89,6 @@ func writeLinesToFile(filename string, lines []string) error {
 	return nil
 }
 
-// FileInfo holds file information
-type FileInfo struct {
-	Size    int64
-	ModTime time.Time
-}
-
 type fileInfo struct {
 	name      string
 	path      string
@@ -108,15 +103,12 @@ type fileInfo struct {
 
 func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
 	fileCount := 0
-	header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
-	hashes := make(map[string][]fileInfo)
+	hashes := make(map[string][]fileInfo) // 添加这行
 	for _, fullPath := range filePaths {
-		// 确保只处理rootDir下的文件
 		if !strings.HasPrefix(fullPath, rootDir) {
 			continue
 		}
 
-		// 检查文件是否存在
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			continue
 		}
@@ -171,8 +163,8 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			fileHash:  fileHash,
 			fullHash:  fullHash,
 			line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
-			header:    header,
-			FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
+			// 删除 header 字段
+			FileInfo: FileInfo{Size: info.Size(), ModTime: info.ModTime()},
 		}
 		hashes[fullHash] = append(hashes[fullHash], infoStruct)
 		fileCount++
@@ -521,4 +513,78 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
 
 func shouldStopDuplicateFileSearch(duplicateCount int, maxDuplicateFiles int) bool {
 	return duplicateCount >= maxDuplicateFiles
+}
+
+func saveToFile(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
+	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
+	data := make(map[string]FileInfo)
+
+	for iter.Next(ctx) {
+		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
+
+		originalPath, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
+		if err != nil {
+			log.Printf("Error getting original path for key %s: %v", hashedKey, err)
+			continue
+		}
+
+		fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+		if err != nil {
+			log.Printf("Error getting file info for key %s: %v", hashedKey, err)
+			continue
+		}
+
+		var fileInfo FileInfo
+		buf := bytes.NewBuffer(fileInfoData)
+		dec := gob.NewDecoder(buf)
+		if err := dec.Decode(&fileInfo); err != nil {
+			log.Printf("Error decoding file info for key %s: %v", hashedKey, err)
+			continue
+		}
+
+		data[originalPath] = fileInfo
+	}
+
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("error iterating over Redis keys: %w", err)
+	}
+
+	if len(data) == 0 {
+		return nil
+	}
+
+	return writeDataToFile(rootDir, filename, data, sortByModTime)
+}
+
+func writeDataToFile(rootDir, filename string, data map[string]FileInfo, sortByModTime bool) error {
+	var lines []string
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+
+	sortKeys(keys, data, sortByModTime)
+
+	for _, k := range keys {
+		relativePath, err := filepath.Rel(rootDir, k)
+		if err != nil {
+			log.Printf("Error getting relative path for %s: %v", k, err)
+			continue
+		}
+		line := formatFileInfoLine(data[k], relativePath, sortByModTime)
+		lines = append(lines, line)
+	}
+
+	return writeLinesToFile(filepath.Join(rootDir, filename), lines)
+}
+
+func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bool) string {
+	if sortByModTime {
+		return fmt.Sprintf("\"./%s\"", relativePath)
+	}
+	return fmt.Sprintf("%d,\"./%s\"", fileInfo.Size, relativePath)
+}
+
+func decodeGob(data []byte, v interface{}) error {
+	return gob.NewDecoder(bytes.NewReader(data)).Decode(v)
 }
