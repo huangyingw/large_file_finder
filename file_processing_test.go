@@ -95,12 +95,12 @@ func TestFileProcessor_SaveDuplicateFileInfoToRedis(t *testing.T) {
 	}
 
 	// Test case 1: File with one timestamp
-	filePath1 := "/path/to/file_12:34:56.mp4"
+	filePath1 := "/path/to/file:12:34:56.mp4"
 	err = fp.SaveDuplicateFileInfoToRedis(fullHash, info, filePath1)
 	assert.NoError(t, err)
 
 	// Test case 2: File with two timestamps
-	filePath2 := "/path/to/file_12:34:56_01:23:45.mp4"
+	filePath2 := "/path/to/file:12:34:56,01:23:45.mp4"
 	err = fp.SaveDuplicateFileInfoToRedis(fullHash, info, filePath2)
 	assert.NoError(t, err)
 
