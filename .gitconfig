@@ -9,8 +9,11 @@
 [gdio]
     ignore = ./.gitconfig
     ignore = ./.gitignore
+    ignore = ./docker-compose.yml
+    ignore = ./exclude_patterns.txt
     ignore = ./find_large_files_with_cache.go
     ignore = ./find_large_files_with_cache.go.sh
     ignore = ./go.mod
     ignore = ./go.sum
+    ignore = ./main.go.sh
     ignore = ./readme
