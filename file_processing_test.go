@@ -524,35 +524,67 @@ func TestFileContentVerification(t *testing.T) {
 
 	// Test fav.log
 	err = fp.saveToFile(rootDir, "fav.log", false)
-	// Debug: Check if duplicate files were properly saved
-	duplicateFiles, err := rdb.ZRange(ctx, "duplicateFiles:"+fullHash, 0, -1).Result()
 	assert.NoError(t, err)
-	t.Logf("Duplicate files for hash %s: %v", fullHash, duplicateFiles)
+
 	content, err := ioutil.ReadFile(filepath.Join(rootDir, "fav.log"))
 	assert.NoError(t, err)
-	assert.Contains(t, string(content), fmt.Sprintf("2172777224,\"./path/to/file3.mp4\""))
-	assert.Contains(t, string(content), fmt.Sprintf("2172777224,\"./path/to/file2_02:34:56_03:45:67.mp4\""))
-	assert.Contains(t, string(content), fmt.Sprintf("209720828,\"./path/to/file1_01:23:45.mp4\""))
 
-	// 测试 fav.log.sort
+	lines := strings.Split(string(content), "\n")
+	assert.Equal(t, 4, len(lines), "Expected 4 lines in fav.log (3 files + 1 empty line)")
+
+	expectedLines := []string{
+		"2172777224,\"./path/to/file2_02:34:56_03:45:67.mp4\"",
+		"2172777224,\"./path/to/file3.mp4\"",
+		"209720828,\"./path/to/file1_01:23:45.mp4\"",
+		"", // 最后一个空行
+	}
+
+	for i, expectedLine := range expectedLines {
+		assert.Equal(t, expectedLine, lines[i], fmt.Sprintf("Line %d does not match expected content", i+1))
+	}
+
+	// Test fav.log.sort
 	err = fp.saveToFile(rootDir, "fav.log.sort", true)
 	assert.NoError(t, err)
+
 	content, err = ioutil.ReadFile(filepath.Join(rootDir, "fav.log.sort"))
 	assert.NoError(t, err)
-	lines := strings.Split(string(content), "\n")
-	assert.True(t, strings.Contains(lines[0], "\"./path/to/file2_02:34:56_03:45:67.mp4\""))
-	assert.True(t, strings.Contains(lines[1], "\"./path/to/file1_01:23:45.mp4\""))
-	assert.True(t, strings.Contains(lines[2], "\"./path/to/file3.mp4\""))
 
-	// 测试 fav.log.dup
+	lines = strings.Split(string(content), "\n")
+	assert.Equal(t, 4, len(lines), "Expected 4 lines in fav.log.sort (3 files + 1 empty line)")
+
+	expectedLines = []string{
+		"\"./path/to/file2_02:34:56_03:45:67.mp4\"",
+		"\"./path/to/file1_01:23:45.mp4\"",
+		"\"./path/to/file3.mp4\"",
+		"", // 最后一个空行
+	}
+
+	for i, expectedLine := range expectedLines {
+		assert.Equal(t, expectedLine, lines[i], fmt.Sprintf("Line %d does not match expected content", i+1))
+	}
+
+	// Test fav.log.dup
 	err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx)
 	assert.NoError(t, err)
+
 	content, err = ioutil.ReadFile(filepath.Join(rootDir, "fav.log.dup"))
 	assert.NoError(t, err)
-	t.Logf("fav.log.dup content:\n%s", string(content))
 
-	expectedContent := fmt.Sprintf("Duplicate files for fullHash %s:\n\t[+] 2172777224,\"./path/to/file2_02:34:56_03:45:67.mp4\"\n\t[-] 2172777224,\"./path/to/file3.mp4\"\n\n", fullHash)
-	assert.Contains(t, string(content), expectedContent)
+	lines = strings.Split(string(content), "\n")
+	assert.True(t, len(lines) > 0, "fav.log.dup should not be empty")
+
+	expectedLines = []string{
+		fmt.Sprintf("Duplicate files for fullHash %s:", fullHash),
+		"\t[+] 2172777224,\"./path/to/file2_02:34:56_03:45:67.mp4\"",
+		"\t[-] 2172777224,\"./path/to/file3.mp4\"",
+		"", // 空行
+		"", // 文件末尾的空行
+	}
+
+	for i, expectedLine := range expectedLines {
+		assert.Equal(t, expectedLine, lines[i], fmt.Sprintf("Line %d does not match expected content", i+1))
+	}
 }
 
 func setupTestData(rdb *redis.Client, ctx context.Context, rootDir string) error {
