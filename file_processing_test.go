@@ -14,6 +14,119 @@ import (
 	"time"
 )
 
+func TestFormatTimestamp(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"1:2:3", "01:02:03"},
+		{"10:20:30", "10:20:30"},
+		{"1:2", "01:02"},
+		{"10:20", "10:20"},
+	}
+
+	for _, test := range tests {
+		result := FormatTimestamp(test.input)
+		assert.Equal(t, test.expected, result)
+	}
+}
+
+func TestTimestampToSeconds(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int
+	}{
+		{"1:2:3", 3723},
+		{"10:20:30", 37230},
+		{"1:2", 62},
+		{"10:20", 620},
+		{"invalid", 0},
+	}
+
+	for _, test := range tests {
+		result := TimestampToSeconds(test.input)
+		assert.Equal(t, test.expected, result)
+	}
+}
+
+func TestFileProcessor_SaveDuplicateFileInfoToRedis(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	ctx := context.Background()
+
+	fp := NewFileProcessor(rdb, ctx)
+
+	fullHash := "testhash"
+	info := FileInfo{
+		Size:    1000,
+		ModTime: time.Now(),
+	}
+	filePath := "/path/to/file_12:34:56.mp4"
+
+	err = fp.SaveDuplicateFileInfoToRedis(fullHash, info, filePath)
+	assert.NoError(t, err)
+
+	// Verify the data was saved correctly
+	score, err := rdb.ZScore(ctx, "duplicateFiles:"+fullHash, filePath).Result()
+	assert.NoError(t, err)
+	assert.NotZero(t, score)
+}
+
+func TestFileProcessor_ProcessFile(t *testing.T) {
+	// Create a temporary file
+	tmpfile, err := ioutil.TempFile("", "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	// Write some data
+	if _, err := tmpfile.Write([]byte("hello world")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	ctx := context.Background()
+
+	fp := NewFileProcessor(rdb, ctx)
+
+	// Mock the hash calculation functions
+	fp.calculateFileHashFunc = func(path string, limit int64) (string, error) {
+		return "mockhash", nil
+	}
+
+	err = fp.ProcessFile(tmpfile.Name())
+	assert.NoError(t, err)
+
+	// Verify the data was saved correctly
+	hashedKey := generateHash(tmpfile.Name())
+	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+	assert.NoError(t, err)
+	assert.NotNil(t, fileInfoData)
+
+	path, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
+	assert.NoError(t, err)
+	assert.Equal(t, tmpfile.Name(), path)
+}
+
 func TestProcessFile(t *testing.T) {
 	// 创建一个临时文件
 	tmpfile, err := ioutil.TempFile("", "example")
