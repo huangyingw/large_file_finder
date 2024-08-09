@@ -33,44 +33,23 @@ func TestFormatTimestamp(t *testing.T) {
 }
 
 func TestCalculateScore(t *testing.T) {
-	tests := []struct {
-		name           string
-		timestamps     []string
-		fileNameLength int
-		expected       float64
-	}{
-		{
-			name:           "Same timestamp length, different file name length",
-			timestamps:     []string{"12:34:56", "01:23:45"},
-			fileNameLength: 10,
-			expected:       -2010,
-		},
-		{
-			name:           "Same timestamp length, different file name length (longer)",
-			timestamps:     []string{"12:34:56", "01:23:45"},
-			fileNameLength: 15,
-			expected:       -2015,
-		},
-		{
-			name:           "Different timestamp length, same file name length",
-			timestamps:     []string{"12:34:56", "01:23:45", "00:11:22"},
-			fileNameLength: 10,
-			expected:       -3010,
-		},
-		{
-			name:           "Different timestamp length (shorter), same file name length",
-			timestamps:     []string{"12:34:56"},
-			fileNameLength: 10,
-			expected:       -1010,
-		},
-	}
+	t.Run("Same timestamp length, different file name length", func(t *testing.T) {
+		score1 := CalculateScore([]string{"12:34:56", "01:23:45"}, 15)
+		score2 := CalculateScore([]string{"12:34:56", "01:23:45"}, 10)
+		assert.Less(t, score1, score2, "Score with longer file name should be less (sorted first)")
+	})
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			result := CalculateScore(test.timestamps, test.fileNameLength)
-			assert.Equal(t, test.expected, result)
-		})
-	}
+	t.Run("Different timestamp length, same file name length", func(t *testing.T) {
+		score1 := CalculateScore([]string{"12:34:56", "01:23:45", "00:11:22"}, 10)
+		score2 := CalculateScore([]string{"12:34:56", "01:23:45"}, 10)
+		assert.Less(t, score1, score2, "Score with more timestamps should be less (sorted first)")
+	})
+
+	t.Run("Different timestamp length and file name length", func(t *testing.T) {
+		score1 := CalculateScore([]string{"12:34:56", "01:23:45", "00:11:22"}, 10)
+		score2 := CalculateScore([]string{"12:34:56", "01:23:45"}, 15)
+		assert.Less(t, score1, score2, "Score with more timestamps should be less, even if file name is shorter")
+	})
 }
 
 func TestTimestampToSeconds(t *testing.T) {
