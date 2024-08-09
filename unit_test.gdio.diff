@@ -6,41 +6,11 @@ new file mode 100644
 +package main
 +
 +import ()
-diff --git a/docker-compose.yml b/docker-compose.yml
-new file mode 100644
---- /dev/null
-+++ ./docker-compose.yml
-@@ -0,0 +1,12 @@
-+version: '3'
-+services:
-+  my-redis:
-+    image: redis:latest
-+    ports:
-+      - "6379:6379"
-+    volumes:
-+      - ./data:/data
-+    command: redis-server --appendonly yes --save 60 1 --loglevel notice --maxmemory 2gb --maxmemory-policy allkeys-lru
-+    environment:
-+      - TZ=Asia/Shanghai
-+    restart: always
-diff --git a/exclude_patterns.txt b/exclude_patterns.txt
-new file mode 100644
---- /dev/null
-+++ ./exclude_patterns.txt
-@@ -0,0 +1,8 @@
-+*/myproject/*
-+*/nvme0n1p2/*
-+*/nvme0n1p3/*
-+*/time_machine/*
-+*/var/lib/*
-+*/var/log/*
-+./sda1/*
-+*/.git/*
 diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,361 @@
 +// file_processing.go
 +package main
 +
@@ -55,115 +25,218 @@ new file mode 100644
 +	"log"
 +	"os"
 +	"path/filepath"
++	"regexp"
 +	"sort"
 +	"strings"
-+	"sync/atomic"
++	"time"
 +)
 +
-+// 获取文件信息
-+func getFileInfoFromRedis(rdb *redis.Client, ctx context.Context, hashedKey string) (FileInfo, error) {
-+	var fileInfo FileInfo
-+	value, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
++const (
++	ReadLimit       = 100 * 1024 // 100KB
++	FullFileReadCmd = -1
++)
++
++type FileInfo struct {
++	Size    int64
++	ModTime time.Time
++}
++
++type FileProcessor struct {
++	Rdb                   *redis.Client
++	Ctx                   context.Context
++	generateHashFunc      func(string) string                            // 新增字段
++	calculateFileHashFunc func(path string, limit int64) (string, error) // 重命名字段
++}
++
++func NewFileProcessor(Rdb *redis.Client, Ctx context.Context) *FileProcessor {
++	return &FileProcessor{
++		Rdb:              Rdb,
++		Ctx:              Ctx,
++		generateHashFunc: generateHash, // 使用默认的 generateHash 函数
++	}
++}
++
++var TimestampRegex = regexp.MustCompile(`(\d{1,2}:\d{2}(?::\d{2})?)`)
++
++func ExtractTimestamp(filePath string) string {
++	match := TimestampRegex.FindStringSubmatch(filePath)
++	if len(match) > 1 {
++		return match[1]
++	}
++	return ""
++}
++
++func CalculateScore(timestamp string, fileNameLength int) float64 {
++	timestampLength := len(timestamp)
++	return float64(-(timestampLength*1000 + fileNameLength))
++}
++
++func (fp *FileProcessor) SaveDuplicateFileInfoToRedis(fullHash string, info FileInfo, filePath string) error {
++	timestamp := ExtractTimestamp(filePath)
++	fileNameLength := len(filepath.Base(filePath))
++	score := CalculateScore(timestamp, fileNameLength)
++
++	_, err := fp.Rdb.ZAdd(fp.Ctx, "duplicateFiles:"+fullHash, &redis.Z{
++		Score:  score,
++		Member: filePath,
++	}).Result()
++
 +	if err != nil {
-+		return fileInfo, err
++		return fmt.Errorf("error adding duplicate file to Redis: %w", err)
++	}
++
++	return nil
++}
++
++// getFileInfoFromRedis retrieves file info from Redis
++func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
++	var fileInfo FileInfo
++	value, err := fp.Rdb.Get(fp.Ctx, "fileInfo:"+hashedKey).Bytes()
++	if err != nil {
++		return fileInfo, fmt.Errorf("error getting file info from Redis: %w", err)
 +	}
 +
 +	buf := bytes.NewBuffer(value)
 +	dec := gob.NewDecoder(buf)
 +	err = dec.Decode(&fileInfo)
-+	return fileInfo, err
++	if err != nil {
++		return fileInfo, fmt.Errorf("error decoding file info: %w", err)
++	}
++	return fileInfo, nil
 +}
 +
-+// 保存文件信息到文件
-+func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
-+	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
-+	var data = make(map[string]FileInfo)
++// saveToFile saves file information to a file
++func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) error {
++	iter := fp.Rdb.Scan(fp.Ctx, 0, "fileInfo:*", 0).Iterator()
++	data := make(map[string]FileInfo)
 +
-+	foundData := false
++	for iter.Next(fp.Ctx) {
++		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
 +
-+	for iter.Next(ctx) {
-+		hashedKey := iter.Val()
-+		hashedKey = strings.TrimPrefix(hashedKey, "fileInfo:")
-+
-+		originalPath, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
++		originalPath, err := fp.Rdb.Get(fp.Ctx, "hashedKeyToPath:"+hashedKey).Result()
 +		if err != nil {
++			log.Printf("Error getting original path for key %s: %v", hashedKey, err)
 +			continue
 +		}
 +
-+		fileInfo, err := getFileInfoFromRedis(rdb, ctx, hashedKey)
++		fileInfo, err := fp.getFileInfoFromRedis(hashedKey)
 +		if err != nil {
++			log.Printf("Error getting file info for key %s: %v", hashedKey, err)
 +			continue
 +		}
 +
 +		data[originalPath] = fileInfo
-+		foundData = true
 +	}
 +
-+	if !foundData {
++	if err := iter.Err(); err != nil {
++		return fmt.Errorf("error iterating over Redis keys: %w", err)
++	}
++
++	if len(data) == 0 {
 +		return nil
 +	}
 +
++	return fp.writeDataToFile(dir, filename, data, sortByModTime)
++}
++
++// writeDataToFile writes the processed data to a file
++func (fp *FileProcessor) writeDataToFile(dir, filename string, data map[string]FileInfo, sortByModTime bool) error {
 +	var lines []string
-+	var keys []string
++	keys := make([]string, 0, len(data))
 +	for k := range data {
 +		keys = append(keys, k)
 +	}
++
 +	sortKeys(keys, data, sortByModTime)
++
 +	for _, k := range keys {
-+		relativePath, _ := filepath.Rel(dir, k)
++		relativePath, err := filepath.Rel(dir, k)
++		if err != nil {
++			log.Printf("Error getting relative path for %s: %v", k, err)
++			continue
++		}
 +		line := formatFileInfoLine(data[k], relativePath, sortByModTime)
 +		lines = append(lines, line)
-+	}
-+
-+	if len(lines) == 0 {
-+		return nil
 +	}
 +
 +	return writeLinesToFile(filepath.Join(dir, filename), lines)
 +}
 +
-+// 处理文件
-+func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context, startTime int64) {
-+	defer atomic.AddInt32(&progressCounter, 1)
-+
-+
-+	hashedKey := generateHash(path)
-+
-+	// 检查Redis中是否已存在该文件的信息
-+	exists, err := rdb.Exists(ctx, "fileInfo:"+hashedKey).Result()
-+	if err != nil || exists > 0 {
-+		return
-+	}
-+
++// ProcessFile processes a single file
++func (fp *FileProcessor) ProcessFile(path string) error {
 +	info, err := os.Stat(path)
 +	if err != nil {
-+		return
++		return fmt.Errorf("error getting file info: %w", err)
 +	}
++
++	fileHash, err := fp.calculateFileHashFunc(path, ReadLimit) // 使用新的字段名
++	if err != nil {
++		return fmt.Errorf("error calculating file hash: %w", err)
++	}
++
++	fullHash, err := fp.calculateFileHashFunc(path, FullFileReadCmd) // 使用新的字段名
++	if err != nil {
++		return fmt.Errorf("error calculating full file hash: %w", err)
++	}
++
++	fileInfo := FileInfo{
++		Size:    info.Size(),
++		ModTime: info.ModTime(),
++	}
++
++	err = fp.saveFileInfoToRedis(path, fileInfo, fileHash, fullHash)
++	if err != nil {
++		return fmt.Errorf("error saving file info to Redis: %w", err)
++	}
++
++	return nil
++}
++
++// calculateFileHash calculates the hash of a file
++func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
++	f, err := os.Open(path)
++	if err != nil {
++		return "", fmt.Errorf("error opening file: %w", err)
++	}
++	defer f.Close()
++
++	h := sha512.New()
++	if limit == FullFileReadCmd {
++		if _, err := io.Copy(h, f); err != nil {
++			return "", fmt.Errorf("error reading full file: %w", err)
++		}
++	} else {
++		if _, err := io.CopyN(h, f, limit); err != nil && err != io.EOF {
++			return "", fmt.Errorf("error reading file: %w", err)
++		}
++	}
++
++	return fmt.Sprintf("%x", h.Sum(nil)), nil
++}
++
++// saveFileInfoToRedis saves file info to Redis
++func (fp *FileProcessor) saveFileInfoToRedis(path string, info FileInfo, fileHash, fullHash string) error {
++	hashedKey := fp.generateHashFunc(path)
 +
 +	var buf bytes.Buffer
 +	enc := gob.NewEncoder(&buf)
-+	if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-+		return
++	if err := enc.Encode(info); err != nil {
++		return fmt.Errorf("error encoding file info: %w", err)
 +	}
 +
-+	// 计算文件的SHA-512哈希值（只读取前4KB）
-+	fileHash, err := getFileHash(path, rdb, ctx)
++	pipe := fp.Rdb.Pipeline()
++	pipe.SetNX(fp.Ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
++	pipe.Set(fp.Ctx, "hashedKeyToPath:"+hashedKey, path, 0)
++	pipe.SAdd(fp.Ctx, "fileHashToPathSet:"+fileHash, path)
++	pipe.Set(fp.Ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0)
++	pipe.Set(fp.Ctx, "pathToHashedKey:"+path, hashedKey, 0)
++	pipe.Set(fp.Ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
++
++	_, err := pipe.Exec(fp.Ctx)
 +	if err != nil {
-+		return
++		return fmt.Errorf("error executing Redis pipeline: %w", err)
 +	}
-+
-+	// 调用saveFileInfoToRedis函数来保存文件信息到Redis，不需要完整文件的哈希值
-+	if err := saveFileInfoToRedis(rdb, ctx, hashedKey, path, buf, fileHash, ""); err != nil {
-+		return
-+	}
-+}
-+
-+// 格式化文件信息行
-+func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bool) string {
-+	if sortByModTime {
-+		return fmt.Sprintf("\"./%s\"", relativePath)
-+	}
-+	return fmt.Sprintf("%d,\"./%s\"", fileInfo.Size, relativePath)
++	return nil
 +}
 +
 +const readLimit = 100 * 1024 // 100KB
@@ -177,11 +250,11 @@ new file mode 100644
 +}
 +
 +// 处理关键词
-+func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context, rootDir string) {
++func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ctx context.Context, rootDir string) {
 +	// 对 keywordFiles 进行排序
 +	sort.Slice(keywordFiles, func(i, j int) bool {
-+		sizeI, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(keywordFiles[i])))
-+		sizeJ, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(keywordFiles[j])))
++		sizeI, _ := getFileSize(Rdb, Ctx, filepath.Join(rootDir, cleanPath(keywordFiles[i])))
++		sizeJ, _ := getFileSize(Rdb, Ctx, filepath.Join(rootDir, cleanPath(keywordFiles[j])))
 +		return sizeI > sizeJ
 +	})
 +
@@ -189,7 +262,7 @@ new file mode 100644
 +	var outputData strings.Builder
 +	outputData.WriteString(keyword + "\n")
 +	for _, filePath := range keywordFiles {
-+		fileSize, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(filePath)))
++		fileSize, _ := getFileSize(Rdb, Ctx, filepath.Join(rootDir, cleanPath(filePath)))
 +		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
 +	}
 +
@@ -216,8 +289,8 @@ new file mode 100644
 +}
 +
 +// 获取文件大小
-+func getFileSize(rdb *redis.Client, ctx context.Context, fullPath string) (int64, error) {
-+	size, err := getFileSizeFromRedis(rdb, ctx, fullPath)
++func getFileSize(Rdb *redis.Client, Ctx context.Context, fullPath string) (int64, error) {
++	size, err := getFileSizeFromRedis(Rdb, Ctx, fullPath)
 +	if err != nil {
 +		return 0, err
 +	}
@@ -225,12 +298,12 @@ new file mode 100644
 +}
 +
 +// 获取文件哈希值
-+func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix string, limit int64) (string, error) {
-+	hashedKey := generateHash(path)
++func getHash(path string, Rdb *redis.Client, Ctx context.Context, keyPrefix string, limit int64) (string, error) {
++	hashedKey := generateHash(path) // 使用全局的 generateHash 函数
 +	hashKey := keyPrefix + hashedKey
 +
 +	// 尝试从Redis获取哈希值
-+	hash, err := rdb.Get(ctx, hashKey).Result()
++	hash, err := Rdb.Get(Ctx, hashKey).Result()
 +	if err == nil && hash != "" {
 +		return hash, nil
 +	}
@@ -275,7 +348,7 @@ new file mode 100644
 +	hash = fmt.Sprintf("%x", hashBytes)
 +
 +	// 将计算出的哈希值保存到Redis
-+	err = rdb.Set(ctx, hashKey, hash, 0).Err()
++	err = Rdb.Set(Ctx, hashKey, hash, 0).Err()
 +	if err != nil {
 +		return "", err
 +	}
@@ -283,15 +356,15 @@ new file mode 100644
 +}
 +
 +// 获取文件哈希
-+func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
++func getFileHash(path string, Rdb *redis.Client, Ctx context.Context) (string, error) {
 +	const readLimit = 100 * 1024 // 100KB
-+	return getHash(path, rdb, ctx, "hashedKeyToFileHash:", readLimit)
++	return getHash(path, Rdb, Ctx, "hashedKeyToFileHash:", readLimit)
 +}
 +
 +// 获取完整文件哈希
-+func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
++func getFullFileHash(path string, Rdb *redis.Client, Ctx context.Context) (string, error) {
 +	const noLimit = -1 // No limit for full file hash
-+	hash, err := getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit)
++	hash, err := getHash(path, Rdb, Ctx, "hashedKeyToFullHash:", noLimit)
 +	if err != nil {
 +		log.Printf("Error calculating full hash for file %s: %v", path, err)
 +	} else {
@@ -299,11 +372,171 @@ new file mode 100644
 +	}
 +	return hash, err
 +}
+diff --git a/file_processing_test.go b/file_processing_test.go
+new file mode 100644
+--- /dev/null
++++ ./file_processing_test.go
+@@ -0,0 +1,155 @@
++// file_processing_test.go
++package main
++
++import (
++	"context"
++	"github.com/alicebob/miniredis/v2"
++	"github.com/go-redis/redis/v8"
++	"github.com/go-redis/redismock/v8"
++	"github.com/stretchr/testify/assert"
++	"io/ioutil"
++	"os"
++	"testing"
++	"time"
++)
++
++func TestProcessFile(t *testing.T) {
++	// 创建一个临时文件
++	tmpfile, err := ioutil.TempFile("", "example")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer os.Remove(tmpfile.Name()) // 清理
++
++	// 写入一些数据
++	if _, err := tmpfile.Write([]byte("hello world")); err != nil {
++		t.Fatal(err)
++	}
++	if err := tmpfile.Close(); err != nil {
++		t.Fatal(err)
++	}
++
++	// 创建一个 miniredis 实例
++	mr, err := miniredis.Run()
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer mr.Close()
++
++	// 创建一个真实的 Redis 客户端，连接到 miniredis
++	rdb := redis.NewClient(&redis.Options{
++		Addr: mr.Addr(),
++	})
++	ctx := context.Background()
++
++	// 创建一个 FileProcessor
++	fp := NewFileProcessor(rdb, ctx)
++
++	// 保存原始的 generateHash 函数
++	originalGenerateHash := fp.generateHashFunc
++
++	// 创建一个新的 generateHash 函数
++	fp.generateHashFunc = func(s string) string {
++		return "mockedHash"
++	}
++
++	// 在测试结束时恢复原始函数
++	defer func() { fp.generateHashFunc = originalGenerateHash }()
++
++	// 模拟 calculateFileHash 方法
++	calculateFileHashCalls := 0
++	fp.calculateFileHashFunc = func(path string, limit int64) (string, error) {
++		calculateFileHashCalls++
++		if calculateFileHashCalls == 1 {
++			return "file_hash", nil
++		}
++		return "full_hash", nil
++	}
++
++	// 处理文件
++	err = fp.ProcessFile(tmpfile.Name())
++	if err != nil {
++		t.Errorf("ProcessFile() error = %v", err)
++	}
++
++	// 验证 Redis 中的数据
++	fileInfoData, err := rdb.Get(ctx, "fileInfo:mockedHash").Bytes()
++	assert.NoError(t, err)
++
++	var storedFileInfo FileInfo
++	err = decodeGob(fileInfoData, &storedFileInfo)
++	assert.NoError(t, err)
++
++	assert.Equal(t, int64(11), storedFileInfo.Size) // "hello world" 的长度
++
++	// 验证其他 Redis 键
++	assert.Equal(t, tmpfile.Name(), rdb.Get(ctx, "hashedKeyToPath:mockedHash").Val())
++	assert.True(t, rdb.SIsMember(ctx, "fileHashToPathSet:file_hash", tmpfile.Name()).Val())
++	assert.Equal(t, "full_hash", rdb.Get(ctx, "hashedKeyToFullHash:mockedHash").Val())
++	assert.Equal(t, "mockedHash", rdb.Get(ctx, "pathToHashedKey:"+tmpfile.Name()).Val())
++	assert.Equal(t, "file_hash", rdb.Get(ctx, "hashedKeyToFileHash:mockedHash").Val())
++
++	// 验证 calculateFileHash 被调用了两次
++	assert.Equal(t, 2, calculateFileHashCalls)
++}
++
++func TestExtractTimestamp(t *testing.T) {
++	tests := []struct {
++		name     string
++		filePath string
++		want     string
++	}{
++		{"With timestamp", "/path/to/file_12:34:56.txt", "12:34:56"},
++		{"Without timestamp", "/path/to/file.txt", ""},
++		{"With date", "/path/2021-05-01/file.txt", ""},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got := ExtractTimestamp(tt.filePath)
++			assert.Equal(t, tt.want, got)
++		})
++	}
++}
++
++func TestCalculateScore(t *testing.T) {
++	tests := []struct {
++		name           string
++		timestamp      string
++		fileNameLength int
++		want           float64
++	}{
++		{"With timestamp", "12:34:56", 10, -8010},
++		{"Without timestamp", "", 10, -10},
++		{"Short timestamp", "12:34", 5, -5005},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got := CalculateScore(tt.timestamp, tt.fileNameLength)
++			assert.Equal(t, tt.want, got)
++		})
++	}
++}
++
++func TestSaveDuplicateFileInfoToRedis(t *testing.T) {
++	rdb, mock := redismock.NewClientMock()
++	ctx := context.Background()
++	fp := NewFileProcessor(rdb, ctx)
++
++	fullHash := "testhash"
++	info := FileInfo{Size: 1000, ModTime: time.Unix(1620000000, 0)}
++	filePath := "/path/to/file_12:34:56.txt"
++
++	mock.ExpectZAdd("duplicateFiles:"+fullHash, &redis.Z{
++		Score:  -8017, // 更新期望的分数
++		Member: filePath,
++	}).SetVal(1)
++
++	err := fp.SaveDuplicateFileInfoToRedis(fullHash, info, filePath)
++	assert.NoError(t, err)
++
++	assert.NoError(t, mock.ExpectationsWereMet())
++}
++
++// Add more tests for other functions...
 diff --git a/main.go b/main.go
 new file mode 100644
 --- /dev/null
 +++ ./main.go
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,258 @@
 +// main.go
 +// 此文件是Go程序的主要入口点，包含了文件处理程序的核心逻辑和初始化代码。
 +
@@ -320,100 +553,116 @@ new file mode 100644
 +	"os"
 +	"path/filepath"
 +	"regexp"
++	"runtime"
 +	"sort"
 +	"sync"
-+	"sync/atomic"
 +	"time"
 +)
 +
 +var (
-+	semaphore        = make(chan struct{}, 100)
-+	mu               sync.Mutex
-+	duplicateCounter int32
-+	progressCounter  int32
++	rootDir          string
++	redisAddr        string
++	workerCount      int
++	minSizeBytes     int64
++	deleteDuplicates bool
++	findDuplicates   bool
++	outputDuplicates bool
++	maxDuplicates    int
++	semaphore        chan struct{}
 +)
 +
++func init() {
++	flag.StringVar(&rootDir, "rootDir", "", "Root directory to start the search")
++	flag.StringVar(&redisAddr, "redisAddr", "localhost:6379", "Redis server address")
++	flag.IntVar(&workerCount, "workers", runtime.NumCPU(), "Number of worker goroutines")
++	flag.Int64Var(&minSizeBytes, "minSize", 200*1024*1024, "Minimum file size in bytes")
++	flag.BoolVar(&deleteDuplicates, "delete-duplicates", false, "Delete duplicate files")
++	flag.BoolVar(&findDuplicates, "find-duplicates", false, "Find duplicate files")
++	flag.BoolVar(&outputDuplicates, "output-duplicates", false, "Output duplicate files")
++	flag.IntVar(&maxDuplicates, "max-duplicates", 50, "Maximum number of duplicates to process")
++}
++
 +func main() {
-+	// 初始化全局计数器
-+	atomic.StoreInt32(&duplicateCounter, 0)
-+	startTime := time.Now().Unix()
++	flag.Parse()
 +
-+	// 解析命令行参数
-+	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, outputDuplicates, maxDuplicates, err := initializeApp()
-+	if err != nil {
-+		log.Println(err)
-+		return
++	if rootDir == "" {
++		log.Fatal("rootDir must be specified")
 +	}
 +
-+	log.Println("Starting to clean up old records")
-+	err = cleanUpOldRecords(rdb, ctx)
-+	if err != nil {
-+		log.Println("Error cleaning up old records:", err)
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++
++	rdb := redis.NewClient(&redis.Options{
++		Addr: redisAddr,
++	})
++	defer rdb.Close()
++
++	semaphore = make(chan struct{}, runtime.NumCPU())
++
++	fp := NewFileProcessor(rdb, ctx)
++
++	if err := cleanUpOldRecords(rdb, ctx); err != nil {
++		log.Printf("Error cleaning up old records: %v", err)
 +	}
 +
-+	// 根据参数决定是否进行重复文件查找
 +	if findDuplicates {
-+		log.Println("Finding duplicates")
-+		err = findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates) // 查找重复文件
-+		if err != nil {
-+			log.Println("Error finding duplicates:", err)
++		if err := findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates); err != nil {
++			log.Fatalf("Error finding duplicates: %v", err)
 +		}
 +		return
 +	}
 +
-+	// 根据参数决定是否输出重复文件
 +	if outputDuplicates {
-+		log.Println("Writing duplicates to file")
-+		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx) // 输出结果
-+		if err != nil {
-+			log.Println("Error writing duplicates to file:", err)
++		if err := writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx); err != nil {
++			log.Fatalf("Error writing duplicates to file: %v", err)
 +		}
-+		return // 如果进行重复查找并输出结果，则结束程序
++		return
 +	}
 +
-+	// 根据参数决定是否删除重复文件
 +	if deleteDuplicates {
-+		log.Println("Deleting duplicate files")
-+		err = deleteDuplicateFiles(rootDir, rdb, ctx)
-+		if err != nil {
-+			log.Println("Error deleting duplicate files:", err)
++		if err := deleteDuplicateFiles(rootDir, rdb, ctx); err != nil {
++			log.Fatalf("Error deleting duplicate files: %v", err)
 +		}
-+		return // 如果删除重复文件，则结束程序
++		return
 +	}
 +
-+	progressCtx, progressCancel := context.WithCancel(ctx)
-+	defer progressCancel()
++	fileChan := make(chan string, workerCount)
++	var wg sync.WaitGroup
 +
-+	// 启动进度监控 Goroutine
-+	go monitorProgress(progressCtx, &progressCounter)
++	// Start worker goroutines
++	for i := 0; i < workerCount; i++ {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			for filePath := range fileChan {
++				if err := fp.ProcessFile(filePath); err != nil {
++					log.Printf("Error processing file %s: %v", filePath, err)
++				}
++			}
++		}()
++	}
 +
-+	var stopProcessing bool
-+	workerCount := 500
-+	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
++	// Start progress monitoring
++	go monitorProgress(ctx)
 +
-+	log.Printf("Starting to walk files in directory: %s\n", rootDir)
-+	err = walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
++	// Walk through files
++	err := walkFiles(rootDir, minSizeBytes, fileChan)
++	close(fileChan)
 +	if err != nil {
-+		log.Printf("Error walking files: %s\n", err)
++		log.Printf("Error walking files: %v", err)
 +	}
 +
-+	stopFunc()
-+	poolWg.Wait()
++	wg.Wait()
 +
-+	// 此时所有任务已经完成，取消进度监控上下文
-+	progressCancel()
++	// Save results
++	if err := fp.saveToFile(rootDir, "fav.log", false); err != nil {
++		log.Printf("Error saving to fav.log: %v", err)
++	}
++	if err := fp.saveToFile(rootDir, "fav.log.sort", true); err != nil {
++		log.Printf("Error saving to fav.log.sort: %v", err)
++	}
 +
-+	log.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
-+
-+	// 文件处理完成后的保存操作
-+	log.Println("Saving data to fav.log")
-+	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
-+	log.Println("Saving data to fav.log.sort")
-+	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
-+
-+	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
-+	// favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
-+	// processFavLog(favLogPath, rootDir, rdb, ctx)
++	log.Println("Processing complete")
 +}
 +
 +func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context) {
@@ -513,90 +762,39 @@ new file mode 100644
 +}
 +
 +// walkFiles 遍历指定目录下的文件，并根据条件进行处理
-+func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Regexp, taskQueue chan<- Task, rdb *redis.Client, ctx context.Context, startTime int64) error {
++func walkFiles(rootDir string, minSizeBytes int64, fileChan chan<- string) error {
 +	return godirwalk.Walk(rootDir, &godirwalk.Options{
-+		Callback: func(osPathname string, dirent *godirwalk.Dirent) error {
-+			// 排除模式匹配
-+			for _, re := range excludeRegexps {
-+				if re.MatchString(osPathname) {
-+					return nil
-+				}
-+			}
-+
-+			fileInfo, err := os.Lstat(osPathname)
-+			if err != nil {
-+				log.Printf("Error getting file info: %s\n", err)
-+				return err
-+			}
-+
-+			// 检查文件大小是否满足最小阈值
-+			if fileInfo.Size() < minSizeBytes {
++		Callback: func(osPathname string, de *godirwalk.Dirent) error {
++			if de.IsDir() {
 +				return nil
 +			}
-+
-+			// 将任务发送到工作池
-+			taskQueue <- func() {
-+				if fileInfo.Mode().IsDir() {
-+					log.Printf("Processing directory: %s\n", osPathname)
-+					processDirectory(osPathname)
-+				} else if fileInfo.Mode().IsRegular() {
-+					log.Printf("Processing file: %s\n", osPathname)
-+					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime)
-+				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
-+					log.Printf("Processing symlink: %s\n", osPathname)
-+					processSymlink(osPathname)
-+				} else {
-+					log.Printf("Skipping unknown type: %s\n", osPathname)
-+				}
++			info, err := os.Stat(osPathname)
++			if err != nil {
++				return fmt.Errorf("error getting file info for %s: %w", osPathname, err)
++			}
++			if info.Size() >= minSizeBytes {
++				fileChan <- osPathname
 +			}
 +			return nil
 +		},
-+		Unsorted: true, // 设置为true以提高性能
++		Unsorted: true,
 +	})
 +}
 +
-+// monitorProgress 在给定的上下文中定期打印处理进度
-+func monitorProgress(ctx context.Context, progressCounter *int32) {
-+	ticker := time.NewTicker(1 * time.Second)
++func monitorProgress(ctx context.Context) {
++	ticker := time.NewTicker(5 * time.Second)
 +	defer ticker.Stop()
 +
 +	for {
 +		select {
-+		case <-ctx.Done(): // 检查上下文是否被取消
++		case <-ctx.Done():
 +			return
-+		case <-ticker.C: // 每秒触发一次
-+			processed := atomic.LoadInt32(progressCounter)
-+			log.Printf("Progress: %d files processed.\n", processed)
++		case <-ticker.C:
++			// You might want to implement a way to track progress
++			log.Println("Processing files...")
 +		}
 +	}
 +}
-diff --git a/main.go.sh b/main.go.sh
-new file mode 100755
---- /dev/null
-+++ ./main.go.sh
-@@ -0,0 +1,22 @@
-+#!/bin/zsh
-+SCRIPT=$(realpath "$0")
-+SCRIPTPATH=$(dirname "$SCRIPT")
-+cd "$SCRIPTPATH"
-+
-+
-+go mod init github.com/huangyingw/FileSorter
-+go get -u github.com/allegro/bigcache
-+go get -u github.com/go-redis/redis/v8
-+go get -u github.com/mattn/go-zglob/fastwalk
-+go get -u github.com/karrick/godirwalk
-+
-+docker-compose up -d
-+
-+# 定义路径变量，确保处理包含空格和特殊字符的情况
-+rootDir="/media/"
-+
-+go run . --rootDir="$rootDir"
-+#go run . --rootDir="$rootDir" --find-duplicates --max-duplicates=10000000000000
-+#go run . --rootDir="$rootDir" --output-duplicates
-+#go run . --rootDir="$rootDir" --delete-duplicates
-+pm-suspend
 diff --git a/redis_client.go b/redis_client.go
 new file mode 100644
 --- /dev/null
@@ -778,10 +976,8 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,524 @@
+@@ -0,0 +1,590 @@
 +// utils.go
-+// 该文件包含用于整个应用程序的通用工具函数。
-+
 +package main
 +
 +import (
@@ -797,8 +993,11 @@ new file mode 100644
 +	"regexp"
 +	"sort"
 +	"strings"
++	"sync"
 +	"time"
 +)
++
++var mu sync.Mutex
 +
 +func loadExcludePatterns(filename string) ([]string, error) {
 +	file, err := os.Open(filename)
@@ -869,12 +1068,6 @@ new file mode 100644
 +	return nil
 +}
 +
-+// FileInfo holds file information
-+type FileInfo struct {
-+	Size    int64
-+	ModTime time.Time
-+}
-+
 +type fileInfo struct {
 +	name      string
 +	path      string
@@ -889,15 +1082,12 @@ new file mode 100644
 +
 +func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
 +	fileCount := 0
-+	header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
-+	hashes := make(map[string][]fileInfo)
++	hashes := make(map[string][]fileInfo) // 添加这行
 +	for _, fullPath := range filePaths {
-+		// 确保只处理rootDir下的文件
 +		if !strings.HasPrefix(fullPath, rootDir) {
 +			continue
 +		}
 +
-+		// 检查文件是否存在
 +		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 +			continue
 +		}
@@ -952,8 +1142,8 @@ new file mode 100644
 +			fileHash:  fileHash,
 +			fullHash:  fullHash,
 +			line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
-+			header:    header,
-+			FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
++			// 删除 header 字段
++			FileInfo: FileInfo{Size: info.Size(), ModTime: info.ModTime()},
 +		}
 +		hashes[fullHash] = append(hashes[fullHash], infoStruct)
 +		fileCount++
@@ -1302,6 +1492,80 @@ new file mode 100644
 +
 +func shouldStopDuplicateFileSearch(duplicateCount int, maxDuplicateFiles int) bool {
 +	return duplicateCount >= maxDuplicateFiles
++}
++
++func saveToFile(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
++	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
++	data := make(map[string]FileInfo)
++
++	for iter.Next(ctx) {
++		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
++
++		originalPath, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
++		if err != nil {
++			log.Printf("Error getting original path for key %s: %v", hashedKey, err)
++			continue
++		}
++
++		fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
++		if err != nil {
++			log.Printf("Error getting file info for key %s: %v", hashedKey, err)
++			continue
++		}
++
++		var fileInfo FileInfo
++		buf := bytes.NewBuffer(fileInfoData)
++		dec := gob.NewDecoder(buf)
++		if err := dec.Decode(&fileInfo); err != nil {
++			log.Printf("Error decoding file info for key %s: %v", hashedKey, err)
++			continue
++		}
++
++		data[originalPath] = fileInfo
++	}
++
++	if err := iter.Err(); err != nil {
++		return fmt.Errorf("error iterating over Redis keys: %w", err)
++	}
++
++	if len(data) == 0 {
++		return nil
++	}
++
++	return writeDataToFile(rootDir, filename, data, sortByModTime)
++}
++
++func writeDataToFile(rootDir, filename string, data map[string]FileInfo, sortByModTime bool) error {
++	var lines []string
++	keys := make([]string, 0, len(data))
++	for k := range data {
++		keys = append(keys, k)
++	}
++
++	sortKeys(keys, data, sortByModTime)
++
++	for _, k := range keys {
++		relativePath, err := filepath.Rel(rootDir, k)
++		if err != nil {
++			log.Printf("Error getting relative path for %s: %v", k, err)
++			continue
++		}
++		line := formatFileInfoLine(data[k], relativePath, sortByModTime)
++		lines = append(lines, line)
++	}
++
++	return writeLinesToFile(filepath.Join(rootDir, filename), lines)
++}
++
++func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bool) string {
++	if sortByModTime {
++		return fmt.Sprintf("\"./%s\"", relativePath)
++	}
++	return fmt.Sprintf("%d,\"./%s\"", fileInfo.Size, relativePath)
++}
++
++func decodeGob(data []byte, v interface{}) error {
++	return gob.NewDecoder(bytes.NewReader(data)).Decode(v)
 +}
 diff --git a/worker_pool.go b/worker_pool.go
 new file mode 100644
