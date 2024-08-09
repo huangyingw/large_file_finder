@@ -14,9 +14,85 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
+
+func FormatTimestamp(timestamp string) string {
+	parts := strings.Split(timestamp, ":")
+	formattedParts := make([]string, len(parts))
+	for i, part := range parts {
+		num, _ := strconv.Atoi(part)
+		formattedParts[i] = fmt.Sprintf("%02d", num)
+	}
+	return strings.Join(formattedParts, ":")
+}
+
+func TimestampToSeconds(timestamp string) int {
+	parts := strings.Split(timestamp, ":")
+	var totalSeconds int
+	if len(parts) == 2 {
+		minutes, _ := strconv.Atoi(parts[0])
+		seconds, _ := strconv.Atoi(parts[1])
+		totalSeconds = minutes*60 + seconds
+	} else if len(parts) == 3 {
+		hours, _ := strconv.Atoi(parts[0])
+		minutes, _ := strconv.Atoi(parts[1])
+		seconds, _ := strconv.Atoi(parts[2])
+		totalSeconds = hours*3600 + minutes*60 + seconds
+	} else {
+		fmt.Printf("无效的时间戳格式: %s\n", timestamp)
+		return 0
+	}
+
+	fmt.Printf("转换时间戳 '%s' 为 %d 秒\n", timestamp, totalSeconds)
+	return totalSeconds
+}
+
+func ExtractTimestamps(filePath string) []string {
+	pattern := regexp.MustCompile(`[:,/](\d{1,2}(?::\d{1,2}){1,2})`)
+	matches := pattern.FindAllStringSubmatch(filePath, -1)
+
+	timestamps := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			timestamps = append(timestamps, FormatTimestamp(match[1]))
+		}
+	}
+
+	// 去重
+	uniqueTimestamps := make([]string, 0, len(timestamps))
+	seen := make(map[string]bool)
+	for _, ts := range timestamps {
+		if !seen[ts] {
+			seen[ts] = true
+			uniqueTimestamps = append(uniqueTimestamps, ts)
+		}
+	}
+
+	// 使用 TimestampToSeconds 进行排序
+	sort.Slice(uniqueTimestamps, func(i, j int) bool {
+		return TimestampToSeconds(uniqueTimestamps[i]) < TimestampToSeconds(uniqueTimestamps[j])
+	})
+
+	return uniqueTimestamps
+}
+
+type timestamp struct {
+	hour, minute, second int
+}
+
+func parseTimestamp(ts string) timestamp {
+	parts := strings.Split(ts, ":")
+	hour, _ := strconv.Atoi(parts[0])
+	minute, _ := strconv.Atoi(parts[1])
+	second := 0
+	if len(parts) > 2 {
+		second, _ = strconv.Atoi(parts[2])
+	}
+	return timestamp{hour, minute, second}
+}
 
 const (
 	ReadLimit       = 100 * 1024 // 100KB
@@ -31,37 +107,30 @@ type FileInfo struct {
 type FileProcessor struct {
 	Rdb                   *redis.Client
 	Ctx                   context.Context
-	generateHashFunc      func(string) string                            // 新增字段
-	calculateFileHashFunc func(path string, limit int64) (string, error) // 重命名字段
+	generateHashFunc      func(string) string
+	calculateFileHashFunc func(path string, limit int64) (string, error)
 }
 
 func NewFileProcessor(Rdb *redis.Client, Ctx context.Context) *FileProcessor {
 	return &FileProcessor{
 		Rdb:              Rdb,
 		Ctx:              Ctx,
-		generateHashFunc: generateHash, // 使用默认的 generateHash 函数
+		generateHashFunc: generateHash,
 	}
 }
 
 var TimestampRegex = regexp.MustCompile(`(\d{1,2}:\d{2}(?::\d{2})?)`)
 
-func ExtractTimestamp(filePath string) string {
-	match := TimestampRegex.FindStringSubmatch(filePath)
-	if len(match) > 1 {
-		return match[1]
-	}
-	return ""
-}
-
-func CalculateScore(timestamp string, fileNameLength int) float64 {
-	timestampLength := len(timestamp)
-	return float64(-(timestampLength*1000 + fileNameLength))
+// CalculateScore 计算时间戳的得分
+func CalculateScore(timestamps []string, fileNameLength int) float64 {
+	timestampCount := len(timestamps)
+	return float64(-(timestampCount*1000 + fileNameLength))
 }
 
 func (fp *FileProcessor) SaveDuplicateFileInfoToRedis(fullHash string, info FileInfo, filePath string) error {
-	timestamp := ExtractTimestamp(filePath)
+	timestamps := ExtractTimestamps(filePath)
 	fileNameLength := len(filepath.Base(filePath))
-	score := CalculateScore(timestamp, fileNameLength)
+	score := CalculateScore(timestamps, fileNameLength)
 
 	_, err := fp.Rdb.ZAdd(fp.Ctx, "duplicateFiles:"+fullHash, &redis.Z{
 		Score:  score,
