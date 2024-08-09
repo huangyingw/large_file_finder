@@ -7,10 +7,13 @@ cd "$SCRIPTPATH"
 go mod init github.com/huangyingw/FileSorter
 go mod download github.com/stretchr/testify
 go get github.com/go-redis/redismock/v8
+go get github.com/golang/mock/gomock
 go get -u github.com/allegro/bigcache
 go get -u github.com/go-redis/redis/v8
 go get -u github.com/mattn/go-zglob/fastwalk
 go get -u github.com/karrick/godirwalk
+
+go test ./... || exit 1
 
 docker-compose up -d
 
