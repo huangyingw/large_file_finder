@@ -51,7 +51,7 @@ func TestCalculateScore(t *testing.T) {
 
 	t.Run("Different timestamp length and file name length", func(t *testing.T) {
 		score1 := CalculateScore([]string{"12:34:56", "01:23:45", "00:11:22"}, 10)
-		score2 := CalculateScore([]string{"12:34:56", "01:23:45"}, 15)
+		score2 := CalculateScore([]string{"12:34:56", "01:23:45"}, 11155515)
 		assert.Less(t, score1, score2, "Score with more timestamps should be less, even if file name is shorter")
 	})
 }
