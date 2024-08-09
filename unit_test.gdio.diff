@@ -10,7 +10,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,361 @@
+@@ -0,0 +1,424 @@
 +// file_processing.go
 +package main
 +
@@ -27,9 +27,72 @@ new file mode 100644
 +	"path/filepath"
 +	"regexp"
 +	"sort"
++	"strconv"
 +	"strings"
 +	"time"
 +)
++
++// FormatTimestamp 格式化时间戳
++func FormatTimestamp(timestamp string) string {
++	parts := strings.Split(timestamp, ":")
++	formattedParts := make([]string, len(parts))
++	for i, part := range parts {
++		num, _ := strconv.Atoi(part)
++		formattedParts[i] = fmt.Sprintf("%02d", num)
++	}
++	return strings.Join(formattedParts, ":")
++}
++
++// ExtractTimestamps 从文件路径中提取时间戳
++func ExtractTimestamps(filePath string) []string {
++	pattern := regexp.MustCompile(`[:,/](\d{1,2}(?::\d{1,2}){1,2})`)
++	matches := pattern.FindAllStringSubmatch(filePath, -1)
++
++	timestamps := make([]string, 0, len(matches))
++	for _, match := range matches {
++		if len(match) > 1 {
++			timestamps = append(timestamps, FormatTimestamp(match[1]))
++		}
++	}
++
++	// 去重并排序
++	uniqueTimestamps := make([]string, 0, len(timestamps))
++	seen := make(map[string]bool)
++	for _, ts := range timestamps {
++		if !seen[ts] {
++			seen[ts] = true
++			uniqueTimestamps = append(uniqueTimestamps, ts)
++		}
++	}
++
++	sort.Slice(uniqueTimestamps, func(i, j int) bool {
++		return TimestampToSeconds(uniqueTimestamps[i]) < TimestampToSeconds(uniqueTimestamps[j])
++	})
++
++	return uniqueTimestamps
++}
++
++// TimestampToSeconds 将时间戳转换为秒数
++func TimestampToSeconds(timestamp string) int {
++	parts := strings.Split(timestamp, ":")
++	var totalSeconds int
++	if len(parts) == 2 {
++		minutes, _ := strconv.Atoi(parts[0])
++		seconds, _ := strconv.Atoi(parts[1])
++		totalSeconds = minutes*60 + seconds
++	} else if len(parts) == 3 {
++		hours, _ := strconv.Atoi(parts[0])
++		minutes, _ := strconv.Atoi(parts[1])
++		seconds, _ := strconv.Atoi(parts[2])
++		totalSeconds = hours*3600 + minutes*60 + seconds
++	} else {
++		fmt.Printf("无效的时间戳格式: %s\n", timestamp)
++		return 0
++	}
++
++	fmt.Printf("转换时间戳 '%s' 为 %d 秒\n", timestamp, totalSeconds)
++	return totalSeconds
++}
 +
 +const (
 +	ReadLimit       = 100 * 1024 // 100KB
@@ -376,7 +439,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing_test.go
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,209 @@
 +// file_processing_test.go
 +package main
 +
@@ -388,6 +451,7 @@ new file mode 100644
 +	"github.com/stretchr/testify/assert"
 +	"io/ioutil"
 +	"os"
++	"path/filepath"
 +	"testing"
 +	"time"
 +)
@@ -478,9 +542,14 @@ new file mode 100644
 +		filePath string
 +		want     string
 +	}{
-+		{"With timestamp", "/path/to/file_12:34:56.txt", "12:34:56"},
-+		{"Without timestamp", "/path/to/file.txt", ""},
-+		{"With date", "/path/2021-05-01/file.txt", ""},
++		{"Basic timestamp", "/path/to/file_12:34:56.txt", "12:34:56"},
++		{"Multiple timestamps", "/path/to/file_12:34:56,23:45:01.txt", "12:34:56"},
++		{"Timestamp in folder name", "/path/to/folder:12:34:56/file.txt", "12:34:56"},
++		{"Multiple timestamps in path", "/path:24:30,/to:1:11:27/file:02:35:52.mp4", "24:30"},
++		{"Short timestamps", "/path/to/file_02:43,07:34,10:26.mp4", "02:43"},
++		{"Many timestamps", "/path/to/file_24:30,1:11:27,1:40:56,02:35:52,02:36:03,2:39:25,2:43:06,2:48:24,2:53:16,3:08:41,3:58:08,4:00:38,5:12:14,5:24:58,5:36:54,5:41:01,6:16:21,6:20:03.mp4", "24:30"},
++		{"Timestamps in different folders", "/path/to/video/:24:30,/subfolder:1:11:27,/anotherfolder:02:35:52,/finalfile.mp4:03:45", "03:45"},
++		{"Mixed format timestamps", "/path/to/video/24:30,15:24,/subfolder:1:11:27,3:45,1:7/anotherfolder:02:35:52,/finalfile.mp4:03:45", "03:45"},
 +	}
 +
 +	for _, tt := range tests {
@@ -498,14 +567,62 @@ new file mode 100644
 +		fileNameLength int
 +		want           float64
 +	}{
-+		{"With timestamp", "12:34:56", 10, -8010},
-+		{"Without timestamp", "", 10, -10},
-+		{"Short timestamp", "12:34", 5, -5005},
++		{"Basic timestamp", "12:34:56", 10, -8010},
++		{"Short timestamp", "02:43", 15, -5015},
++		{"Long timestamp", "1:11:27", 20, -8020},
++		{"Very long timestamp", "02:35:52", 25, -8025},
++		{"No timestamp", "", 30, -30},
 +	}
 +
 +	for _, tt := range tests {
 +		t.Run(tt.name, func(t *testing.T) {
 +			got := CalculateScore(tt.timestamp, tt.fileNameLength)
++			assert.Equal(t, tt.want, got)
++		})
++	}
++}
++
++func TestExtractTimestamps(t *testing.T) {
++	tests := []struct {
++		name     string
++		filePath string
++		want     []string
++	}{
++		{
++			"Multiple timestamps",
++			"/Users/huangyingw/mini/media/usb_backup_crypt_8T_1/cartoon/dragonball/第一部/龙珠 第一部 日语配音/七龙珠146.mp4:24:30,:1:11:27,1:40:56,:02:35:52",
++			[]string{"24:30", "01:11:27", "01:40:56", "02:35:52"},
++		},
++		{
++			"Timestamps with different formats",
++			"/Users/huangyingw/mini/media/usb_backup_crypt_8T_1/cartoon/dragonball/第一部/龙珠 第一部 日语配音/七龙珠146.rmvb:24:30,1:11:27,:02:35:52",
++			[]string{"24:30", "01:11:27", "02:35:52"},
++		},
++		{
++			"Short timestamps",
++			"/Users/huangyingw/mini/media/usb_backup_crypt_8T_1/cartoon/dragonball/第一部/龙珠 第一部 日语配音/七龙珠146.mp4:02:43,07:34,10:26",
++			[]string{"02:43", "07:34", "10:26"},
++		},
++		{
++			"Many timestamps",
++			"/Users/huangyingw/mini/media/usb_backup_crypt_8T_1/cartoon/dragonball/第一部/龙珠 第一部 日语配音/七龙珠146.mp4:24:30,:1:11:27,1:40:56,:02:35:52,:02:36:03,:2:39:25,:2:43:06,:2:48:24,:2:53:16,:3:08:41,:3:58:08,:4:00:38,5:12:14,5:24:58,5:36:54,5:41:01,:6:16:21,:6:20:03",
++			[]string{"24:30", "01:11:27", "01:40:56", "02:35:52", "02:36:03", "02:39:25", "02:43:06", "02:48:24", "02:53:16", "03:08:41", "03:58:08", "04:00:38", "05:12:14", "05:24:58", "05:36:54", "05:41:01", "06:16:21", "06:20:03"},
++		},
++		{
++			"Timestamps in folder names",
++			"/Users/huangyingw/mini/media/usb_backup_crypt_8T_1/cartoon/dragonball/第一部:24:30,/龙珠 第一部 日语配音:1:11:27,/七龙珠146.mp4:1:40:56,/更多文件:02:35:52",
++			[]string{"24:30", "01:11:27", "01:40:56", "02:35:52"},
++		},
++		{
++			"Mixed format timestamps in path",
++			"/path/to/video/24:30,15:24,/subfolder:1:11:27,3:45,1:7/anotherfolder:02:35:52,/finalfile.mp4:03:45",
++			[]string{"01:07", "03:45", "15:24", "24:30", "01:11:27", "02:35:52"},
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got := ExtractTimestamps(tt.filePath)
 +			assert.Equal(t, tt.want, got)
 +		})
 +	}
