@@ -1,4 +1,5 @@
 // file_processing_test.go
+
 package main
 
 import (
@@ -28,6 +29,47 @@ func TestFormatTimestamp(t *testing.T) {
 	for _, test := range tests {
 		result := FormatTimestamp(test.input)
 		assert.Equal(t, test.expected, result)
+	}
+}
+
+func TestCalculateScore(t *testing.T) {
+	tests := []struct {
+		name           string
+		timestamps     []string
+		fileNameLength int
+		expected       float64
+	}{
+		{
+			name:           "Same timestamp length, different file name length",
+			timestamps:     []string{"12:34:56", "01:23:45"},
+			fileNameLength: 10,
+			expected:       -2010,
+		},
+		{
+			name:           "Same timestamp length, different file name length (longer)",
+			timestamps:     []string{"12:34:56", "01:23:45"},
+			fileNameLength: 15,
+			expected:       -2015,
+		},
+		{
+			name:           "Different timestamp length, same file name length",
+			timestamps:     []string{"12:34:56", "01:23:45", "00:11:22"},
+			fileNameLength: 10,
+			expected:       -3010,
+		},
+		{
+			name:           "Different timestamp length (shorter), same file name length",
+			timestamps:     []string{"12:34:56"},
+			fileNameLength: 10,
+			expected:       -1010,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := CalculateScore(test.timestamps, test.fileNameLength)
+			assert.Equal(t, test.expected, result)
+		})
 	}
 }
 
@@ -68,30 +110,57 @@ func TestFileProcessor_SaveDuplicateFileInfoToRedis(t *testing.T) {
 		Size:    1000,
 		ModTime: time.Now(),
 	}
-	filePath := "/path/to/file_12:34:56.mp4"
 
-	err = fp.SaveDuplicateFileInfoToRedis(fullHash, info, filePath)
+	// Test case 1: File with one timestamp
+	filePath1 := "/path/to/file_12:34:56.mp4"
+	err = fp.SaveDuplicateFileInfoToRedis(fullHash, info, filePath1)
 	assert.NoError(t, err)
 
-	// Verify the data was saved correctly
-	score, err := rdb.ZScore(ctx, "duplicateFiles:"+fullHash, filePath).Result()
+	// Test case 2: File with two timestamps
+	filePath2 := "/path/to/file_12:34:56_01:23:45.mp4"
+	err = fp.SaveDuplicateFileInfoToRedis(fullHash, info, filePath2)
 	assert.NoError(t, err)
-	assert.NotZero(t, score)
+
+	// Test case 3: File with no timestamp
+	filePath3 := "/path/to/file.mp4"
+	err = fp.SaveDuplicateFileInfoToRedis(fullHash, info, filePath3)
+	assert.NoError(t, err)
+
+	// Verify the data was saved correctly and in the right order
+	members, err := rdb.ZRange(ctx, "duplicateFiles:"+fullHash, 0, -1).Result()
+	assert.NoError(t, err)
+	assert.Equal(t, 3, len(members))
+	assert.Equal(t, filePath2, members[0]) // Should be first due to more timestamps
+	assert.Equal(t, filePath1, members[1])
+	assert.Equal(t, filePath3, members[2]) // Should be last due to no timestamps
 }
 
 func TestFileProcessor_ProcessFile(t *testing.T) {
-	// Create a temporary file
-	tmpfile, err := ioutil.TempFile("", "example")
+	// Create temporary files
+	tmpfile1, err := ioutil.TempFile("", "example1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpfile.Name())
+	defer os.Remove(tmpfile1.Name())
 
-	// Write some data
-	if _, err := tmpfile.Write([]byte("hello world")); err != nil {
+	tmpfile2, err := ioutil.TempFile("", "example2")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tmpfile.Close(); err != nil {
+	defer os.Remove(tmpfile2.Name())
+
+	// Write different data to the files
+	if _, err := tmpfile1.Write([]byte("hello world")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tmpfile2.Write([]byte("hello universe")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tmpfile1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpfile2.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -110,21 +179,48 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
 
 	// Mock the hash calculation functions
 	fp.calculateFileHashFunc = func(path string, limit int64) (string, error) {
-		return "mockhash", nil
+		if path == tmpfile1.Name() {
+			return "mockhash1", nil
+		}
+		return "mockhash2", nil
 	}
 
-	err = fp.ProcessFile(tmpfile.Name())
+	// Process both files
+	err = fp.ProcessFile(tmpfile1.Name())
+	assert.NoError(t, err)
+	err = fp.ProcessFile(tmpfile2.Name())
 	assert.NoError(t, err)
 
-	// Verify the data was saved correctly
-	hashedKey := generateHash(tmpfile.Name())
-	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
-	assert.NoError(t, err)
-	assert.NotNil(t, fileInfoData)
+	// Verify the data was saved correctly for both files
+	hashedKey1 := generateHash(tmpfile1.Name())
+	hashedKey2 := generateHash(tmpfile2.Name())
 
-	path, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
+	// Check file info
+	fileInfoData1, err := rdb.Get(ctx, "fileInfo:"+hashedKey1).Bytes()
 	assert.NoError(t, err)
-	assert.Equal(t, tmpfile.Name(), path)
+	assert.NotNil(t, fileInfoData1)
+
+	fileInfoData2, err := rdb.Get(ctx, "fileInfo:"+hashedKey2).Bytes()
+	assert.NoError(t, err)
+	assert.NotNil(t, fileInfoData2)
+
+	// Check paths
+	path1, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey1).Result()
+	assert.NoError(t, err)
+	assert.Equal(t, tmpfile1.Name(), path1)
+
+	path2, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey2).Result()
+	assert.NoError(t, err)
+	assert.Equal(t, tmpfile2.Name(), path2)
+
+	// Check file hashes
+	fileHash1, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey1).Result()
+	assert.NoError(t, err)
+	assert.Equal(t, "mockhash1", fileHash1)
+
+	fileHash2, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey2).Result()
+	assert.NoError(t, err)
+	assert.Equal(t, "mockhash2", fileHash2)
 }
 
 func TestProcessFile(t *testing.T) {
@@ -205,27 +301,6 @@ func TestProcessFile(t *testing.T) {
 
 	// 验证 calculateFileHash 被调用了两次
 	assert.Equal(t, 2, calculateFileHashCalls)
-}
-
-func TestCalculateScore(t *testing.T) {
-	tests := []struct {
-		name           string
-		timestamps     []string
-		fileNameLength int
-		want           float64
-	}{
-		{"Basic timestamp", []string{"12:34:56"}, 10, -1010},
-		{"Multiple timestamps", []string{"02:43", "07:34", "10:26"}, 15, -3015},
-		{"Many timestamps", []string{"24:30", "01:11:27", "01:40:56", "02:35:52"}, 20, -4020},
-		{"No timestamp", []string{}, 30, -30},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := CalculateScore(tt.timestamps, tt.fileNameLength)
-			assert.Equal(t, tt.want, got)
-		})
-	}
 }
 
 func TestExtractTimestamps(t *testing.T) {
