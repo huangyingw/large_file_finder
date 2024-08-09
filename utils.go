@@ -291,74 +291,68 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
 	for iter.Next(ctx) {
 		duplicateFilesKey := iter.Val()
-
-		// 获取 fullHash
 		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
 
-		// 获取重复文件列表，按文件名长度（score）排序
 		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
 		if err != nil {
+			log.Printf("Error getting duplicate files for key %s: %v", duplicateFilesKey, err)
 			continue
 		}
 
 		if len(duplicateFiles) > 1 {
 			header := fmt.Sprintf("Duplicate files for fullHash %s:\n", fullHash)
 			if _, err := file.WriteString(header); err != nil {
+				log.Printf("Error writing header: %v", err)
 				continue
 			}
 			for i, duplicateFile := range duplicateFiles {
-				// 获取文件信息
 				hashedKey, err := getHashedKeyFromPath(rdb, ctx, duplicateFile)
 				if err != nil {
+					log.Printf("Error getting hashed key for path %s: %v", duplicateFile, err)
 					continue
 				}
 				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
 				if err != nil {
+					log.Printf("Error getting file info for key %s: %v", hashedKey, err)
 					continue
 				}
 
-				// 解码文件信息
 				var fileInfo FileInfo
 				buf := bytes.NewBuffer(fileInfoData)
 				dec := gob.NewDecoder(buf)
 				if err := dec.Decode(&fileInfo); err != nil {
+					log.Printf("Error decoding file info: %v", err)
 					continue
 				}
 
-				// 获取相对路径
-				relativePath, err := filepath.Rel(rootDir, duplicateFile)
-				if err != nil {
-					continue
-				}
+				cleanedPath := cleanRelativePath(rootDir, duplicateFile)
 
-				// 使用 filepath.Clean 来规范化路径
-				cleanPath := filepath.Clean(relativePath)
-
-				// 根据文件是否为第一个，添加不同的前缀
 				var line string
 				if i == 0 {
-					line = fmt.Sprintf("[+] %d,\"./%s\"\n", fileInfo.Size, cleanPath)
+					line = fmt.Sprintf("\t[+] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
 				} else {
-					line = fmt.Sprintf("[-] %d,\"./%s\"\n", fileInfo.Size, cleanPath)
+					line = fmt.Sprintf("\t[-] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
 				}
 
 				if _, err := file.WriteString(line); err != nil {
+					log.Printf("Error writing line: %v", err)
 					continue
 				}
 			}
 			if _, err := file.WriteString("\n"); err != nil {
+				log.Printf("Error writing newline: %v", err)
 				continue
 			}
+		} else {
+			log.Printf("No duplicates found for hash %s", fullHash)
 		}
 	}
 
 	if err := iter.Err(); err != nil {
-		return err
+		return fmt.Errorf("error during iteration: %w", err)
 	}
 
-	// 添加日志记录
-	log.Printf("Duplicate files have been written to %s", filepath.Join(rootDir, outputFile))
-
+	log.Printf("Finished writing duplicate files to %s", outputFile)
 	return nil
 }
 
