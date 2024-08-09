@@ -10,7 +10,7 @@ diff --git a/file_processing.go b/file_processing.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing.go
-@@ -0,0 +1,430 @@
+@@ -0,0 +1,466 @@
 +// file_processing.go
 +package main
 +
@@ -134,10 +134,11 @@ new file mode 100644
 +
 +var TimestampRegex = regexp.MustCompile(`(\d{1,2}:\d{2}(?::\d{2})?)`)
 +
-+// CalculateScore 计算时间戳的得分
++const timestampWeight = 1000000000 // 使用一个非常大的数字
++
 +func CalculateScore(timestamps []string, fileNameLength int) float64 {
 +	timestampCount := len(timestamps)
-+	return float64(-(timestampCount*1000 + fileNameLength))
++	return float64(-(timestampCount*timestampWeight + fileNameLength))
 +}
 +
 +func (fp *FileProcessor) SaveDuplicateFileInfoToRedis(fullHash string, info FileInfo, filePath string) error {
@@ -205,12 +206,13 @@ new file mode 100644
 +		return nil
 +	}
 +
-+	return fp.writeDataToFile(dir, filename, data, sortByModTime)
-+}
++	// Write data to file
++	file, err := os.Create(filepath.Join(dir, filename))
++	if err != nil {
++		return fmt.Errorf("error creating file: %w", err)
++	}
++	defer file.Close()
 +
-+// writeDataToFile writes the processed data to a file
-+func (fp *FileProcessor) writeDataToFile(dir, filename string, data map[string]FileInfo, sortByModTime bool) error {
-+	var lines []string
 +	keys := make([]string, 0, len(data))
 +	for k := range data {
 +		keys = append(keys, k)
@@ -225,10 +227,12 @@ new file mode 100644
 +			continue
 +		}
 +		line := formatFileInfoLine(data[k], relativePath, sortByModTime)
-+		lines = append(lines, line)
++		if _, err := fmt.Fprintln(file, line); err != nil {
++			return fmt.Errorf("error writing to file: %w", err)
++		}
 +	}
 +
-+	return writeLinesToFile(filepath.Join(dir, filename), lines)
++	return nil
 +}
 +
 +// ProcessFile processes a single file
@@ -441,17 +445,52 @@ new file mode 100644
 +	}
 +	return hash, err
 +}
++
++func getFileInfo(rdb *redis.Client, ctx context.Context, filePath string) (FileInfo, error) {
++	hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+filePath).Result()
++	if err != nil {
++		return FileInfo{}, err
++	}
++
++	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
++	if err != nil {
++		return FileInfo{}, err
++	}
++
++	var fileInfo FileInfo
++	buf := bytes.NewBuffer(fileInfoData)
++	dec := gob.NewDecoder(buf)
++	if err := dec.Decode(&fileInfo); err != nil {
++		return FileInfo{}, err
++	}
++
++	return fileInfo, nil
++}
++
++func cleanRelativePath(rootDir, fullPath string) string {
++	rel, err := filepath.Rel(rootDir, fullPath)
++	if err != nil {
++		return fullPath
++	}
++	// 移除所有前导的 "../"
++	rel = strings.TrimPrefix(rel, strings.Repeat("../", strings.Count(rel, "../")))
++	// 确保路径以 "./" 开头
++	return "./" + rel
++}
 diff --git a/file_processing_test.go b/file_processing_test.go
 new file mode 100644
 --- /dev/null
 +++ ./file_processing_test.go
-@@ -0,0 +1,374 @@
+@@ -0,0 +1,594 @@
 +// file_processing_test.go
 +
 +package main
 +
 +import (
++	"bytes"
 +	"context"
++	"encoding/gob"
++	"fmt"
 +	"github.com/alicebob/miniredis/v2"
 +	"github.com/go-redis/redis/v8"
 +	"github.com/go-redis/redismock/v8"
@@ -459,6 +498,7 @@ new file mode 100644
 +	"io/ioutil"
 +	"os"
 +	"path/filepath" // 添加这行
++	"strings"
 +	"testing"
 +	"time"
 +)
@@ -481,44 +521,23 @@ new file mode 100644
 +}
 +
 +func TestCalculateScore(t *testing.T) {
-+	tests := []struct {
-+		name           string
-+		timestamps     []string
-+		fileNameLength int
-+		expected       float64
-+	}{
-+		{
-+			name:           "Same timestamp length, different file name length",
-+			timestamps:     []string{"12:34:56", "01:23:45"},
-+			fileNameLength: 10,
-+			expected:       -2010,
-+		},
-+		{
-+			name:           "Same timestamp length, different file name length (longer)",
-+			timestamps:     []string{"12:34:56", "01:23:45"},
-+			fileNameLength: 15,
-+			expected:       -2015,
-+		},
-+		{
-+			name:           "Different timestamp length, same file name length",
-+			timestamps:     []string{"12:34:56", "01:23:45", "00:11:22"},
-+			fileNameLength: 10,
-+			expected:       -3010,
-+		},
-+		{
-+			name:           "Different timestamp length (shorter), same file name length",
-+			timestamps:     []string{"12:34:56"},
-+			fileNameLength: 10,
-+			expected:       -1010,
-+		},
-+	}
++	t.Run("Same timestamp length, different file name length", func(t *testing.T) {
++		score1 := CalculateScore([]string{"12:34:56", "01:23:45"}, 15)
++		score2 := CalculateScore([]string{"12:34:56", "01:23:45"}, 10)
++		assert.Less(t, score1, score2, "Score with longer file name should be less (sorted first)")
++	})
 +
-+	for _, test := range tests {
-+		t.Run(test.name, func(t *testing.T) {
-+			result := CalculateScore(test.timestamps, test.fileNameLength)
-+			assert.Equal(t, test.expected, result)
-+		})
-+	}
++	t.Run("Different timestamp length, same file name length", func(t *testing.T) {
++		score1 := CalculateScore([]string{"12:34:56", "01:23:45", "00:11:22"}, 10)
++		score2 := CalculateScore([]string{"12:34:56", "01:23:45"}, 10)
++		assert.Less(t, score1, score2, "Score with more timestamps should be less (sorted first)")
++	})
++
++	t.Run("Different timestamp length and file name length", func(t *testing.T) {
++		score1 := CalculateScore([]string{"12:34:56", "01:23:45", "00:11:22"}, 10)
++		score2 := CalculateScore([]string{"12:34:56", "01:23:45"}, 15)
++		assert.Less(t, score1, score2, "Score with more timestamps should be less, even if file name is shorter")
++	})
 +}
 +
 +func TestTimestampToSeconds(t *testing.T) {
@@ -806,7 +825,7 @@ new file mode 100644
 +	info := FileInfo{Size: 1000, ModTime: time.Unix(1620000000, 0)}
 +	filePath := "/path/to/file_12:34:56.txt"
 +
-+	expectedScore := float64(-(1*1000 + len(filepath.Base(filePath)))) // 更新期望的分数计算
++	expectedScore := float64(-(1*timestampWeight + len(filepath.Base(filePath))))
 +
 +	mock.ExpectZAdd("duplicateFiles:"+fullHash, &redis.Z{
 +		Score:  expectedScore,
@@ -820,6 +839,243 @@ new file mode 100644
 +}
 +
 +// Add more tests for other functions...
++
++func TestParseTimestamp(t *testing.T) {
++	tests := []struct {
++		input    string
++		expected timestamp
++	}{
++		{"12:34", timestamp{12, 34, 0}},
++		{"01:23:45", timestamp{1, 23, 45}},
++		{"00:00:01", timestamp{0, 0, 1}},
++	}
++
++	for _, test := range tests {
++		result := parseTimestamp(test.input)
++		assert.Equal(t, test.expected, result)
++	}
++}
++
++func TestFileProcessor_GetFileInfoFromRedis(t *testing.T) {
++	mr, err := miniredis.Run()
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer mr.Close()
++
++	rdb := redis.NewClient(&redis.Options{
++		Addr: mr.Addr(),
++	})
++	ctx := context.Background()
++
++	fp := NewFileProcessor(rdb, ctx)
++
++	// Prepare test data
++	testFileInfo := FileInfo{
++		Size:    1000,
++		ModTime: time.Now(),
++	}
++	var buf bytes.Buffer
++	enc := gob.NewEncoder(&buf)
++	err = enc.Encode(testFileInfo)
++	assert.NoError(t, err)
++
++	hashedKey := "testkey"
++	err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
++	assert.NoError(t, err)
++
++	// Test getFileInfoFromRedis
++	result, err := fp.getFileInfoFromRedis(hashedKey)
++	assert.Equal(t, testFileInfo.Size, result.Size)
++	assert.WithinDuration(t, testFileInfo.ModTime, result.ModTime, time.Second)
++}
++
++func TestFileProcessor_SaveToFile(t *testing.T) {
++	mr, err := miniredis.Run()
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer mr.Close()
++
++	rdb := redis.NewClient(&redis.Options{
++		Addr: mr.Addr(),
++	})
++	ctx := context.Background()
++
++	fp := NewFileProcessor(rdb, ctx)
++
++	// Prepare test data
++	testData := map[string]FileInfo{
++		"/path/to/file1": {Size: 1000, ModTime: time.Now().Add(-1 * time.Hour)},
++		"/path/to/file2": {Size: 2000, ModTime: time.Now()},
++	}
++
++	for path, info := range testData {
++		hashedKey := generateHash(path)
++		var buf bytes.Buffer
++		enc := gob.NewEncoder(&buf)
++		err = enc.Encode(info)
++		assert.NoError(t, err)
++
++		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
++		assert.NoError(t, err)
++		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0).Err()
++		assert.NoError(t, err)
++	}
++
++	// Create a temporary directory for the test
++	tempDir, err := ioutil.TempDir("", "testdir")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer os.RemoveAll(tempDir)
++
++	// Test saveToFile
++	err = fp.saveToFile(tempDir, "testfile.txt", false)
++	assert.NoError(t, err)
++
++	// Verify the file contents
++	content, err := ioutil.ReadFile(filepath.Join(tempDir, "testfile.txt"))
++	assert.NoError(t, err)
++	assert.Contains(t, string(content), "2000,\"")
++	assert.Contains(t, string(content), "1000,\"")
++	assert.Contains(t, string(content), "file2")
++	assert.Contains(t, string(content), "file1")
++}
++
++func TestFileContentVerification(t *testing.T) {
++	// 设置测试环境
++	tempDir, err := ioutil.TempDir("", "testdir")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer os.RemoveAll(tempDir)
++
++	// 创建一个模拟的根目录结构
++	rootDir := filepath.Join(tempDir, "root")
++	err = os.MkdirAll(filepath.Join(rootDir, "path", "to"), os.ModePerm)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	mr, err := miniredis.Run()
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer mr.Close()
++
++	rdb := redis.NewClient(&redis.Options{
++		Addr: mr.Addr(),
++	})
++	ctx := context.Background()
++
++	fp := NewFileProcessor(rdb, ctx)
++
++	// 准备测试数据
++	fullHash := "793bf43bc5719d3deb836a2a8d38eeada28d457c48153b1e7d5af7ed5f38be98632dbad7d64f0f83d58619c6ef49d7565622d7b20119e7d2cb2540ece11ce119"
++
++	testData := []struct {
++		path     string
++		size     int64
++		modTime  time.Time
++		fullHash string
++	}{
++		{filepath.Join(rootDir, "path", "to", "file1_01:23:45.mp4"), 209720828, time.Now().Add(-1 * time.Hour), "unique_hash_1"},
++		{filepath.Join(rootDir, "path", "to", "file2_02:34:56_03:45:67.mp4"), 2172777224, time.Now(), fullHash},
++		{filepath.Join(rootDir, "path", "to", "file3.mp4"), 2172777224, time.Now().Add(-2 * time.Hour), fullHash},
++	}
++
++	for _, data := range testData {
++		info := FileInfo{Size: data.size, ModTime: data.modTime}
++		err = fp.SaveDuplicateFileInfoToRedis(data.fullHash, info, data.path)
++		assert.NoError(t, err)
++
++		hashedKey := generateHash(data.path)
++		var buf bytes.Buffer
++		enc := gob.NewEncoder(&buf)
++		err = enc.Encode(info)
++		assert.NoError(t, err)
++
++		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
++		assert.NoError(t, err)
++		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, data.path, 0).Err()
++		assert.NoError(t, err)
++		err = rdb.Set(ctx, "pathToHashedKey:"+data.path, hashedKey, 0).Err()
++		assert.NoError(t, err)
++		err = rdb.Set(ctx, "hashedKeyToFullHash:"+hashedKey, data.fullHash, 0).Err()
++		assert.NoError(t, err)
++	}
++
++	// Test fav.log
++	err = fp.saveToFile(rootDir, "fav.log", false)
++	// Debug: Check if duplicate files were properly saved
++	duplicateFiles, err := rdb.ZRange(ctx, "duplicateFiles:"+fullHash, 0, -1).Result()
++	assert.NoError(t, err)
++	t.Logf("Duplicate files for hash %s: %v", fullHash, duplicateFiles)
++	content, err := ioutil.ReadFile(filepath.Join(rootDir, "fav.log"))
++	assert.NoError(t, err)
++	assert.Contains(t, string(content), fmt.Sprintf("2172777224,\"./path/to/file3.mp4\""))
++	assert.Contains(t, string(content), fmt.Sprintf("2172777224,\"./path/to/file2_02:34:56_03:45:67.mp4\""))
++	assert.Contains(t, string(content), fmt.Sprintf("209720828,\"./path/to/file1_01:23:45.mp4\""))
++
++	// 测试 fav.log.sort
++	err = fp.saveToFile(rootDir, "fav.log.sort", true)
++	assert.NoError(t, err)
++	content, err = ioutil.ReadFile(filepath.Join(rootDir, "fav.log.sort"))
++	assert.NoError(t, err)
++	lines := strings.Split(string(content), "\n")
++	assert.True(t, strings.Contains(lines[0], "\"./path/to/file2_02:34:56_03:45:67.mp4\""))
++	assert.True(t, strings.Contains(lines[1], "\"./path/to/file1_01:23:45.mp4\""))
++	assert.True(t, strings.Contains(lines[2], "\"./path/to/file3.mp4\""))
++
++	// 测试 fav.log.dup
++	err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx)
++	assert.NoError(t, err)
++	content, err = ioutil.ReadFile(filepath.Join(rootDir, "fav.log.dup"))
++	assert.NoError(t, err)
++	t.Logf("fav.log.dup content:\n%s", string(content))
++
++	expectedContent := fmt.Sprintf("Duplicate files for fullHash %s:\n\t[+] 2172777224,\"./path/to/file2_02:34:56_03:45:67.mp4\"\n\t[-] 2172777224,\"./path/to/file3.mp4\"\n\n", fullHash)
++	assert.Contains(t, string(content), expectedContent)
++}
++
++func setupTestData(rdb *redis.Client, ctx context.Context, rootDir string) error {
++	testData := []struct {
++		path     string
++		size     int64
++		modTime  time.Time
++		fullHash string
++	}{
++		{"/path/to/file1_01:23:45.mp4", 1000, time.Now().Add(-1 * time.Hour), "hash1"},
++		{"/path/to/file2_02:34:56_03:45:67.mp4", 2000, time.Now(), "hash1"},
++		{"/path/to/file3.mp4", 3000, time.Now().Add(-2 * time.Hour), "hash1"},
++	}
++
++	for _, data := range testData {
++		hashedKey := generateHash(data.path)
++		fileInfo := FileInfo{Size: data.size, ModTime: data.modTime}
++
++		var buf bytes.Buffer
++		enc := gob.NewEncoder(&buf)
++		if err := enc.Encode(fileInfo); err != nil {
++			return err
++		}
++
++		pipe := rdb.Pipeline()
++		pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
++		pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, data.path, 0)
++		pipe.Set(ctx, "pathToHashedKey:"+data.path, hashedKey, 0)
++		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, data.fullHash, 0)
++		pipe.ZAdd(ctx, "duplicateFiles:"+data.fullHash, &redis.Z{Score: float64(-data.size), Member: data.path})
++
++		_, err := pipe.Exec(ctx)
++		if err != nil {
++			return err
++		}
++	}
++
++	return nil
++}
 diff --git a/main.go b/main.go
 new file mode 100644
 --- /dev/null
@@ -1264,7 +1520,7 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,590 @@
+@@ -0,0 +1,584 @@
 +// utils.go
 +package main
 +
@@ -1558,74 +1814,68 @@ new file mode 100644
 +	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
 +	for iter.Next(ctx) {
 +		duplicateFilesKey := iter.Val()
-+
-+		// 获取 fullHash
 +		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
 +
-+		// 获取重复文件列表，按文件名长度（score）排序
 +		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
 +		if err != nil {
++			log.Printf("Error getting duplicate files for key %s: %v", duplicateFilesKey, err)
 +			continue
 +		}
 +
 +		if len(duplicateFiles) > 1 {
 +			header := fmt.Sprintf("Duplicate files for fullHash %s:\n", fullHash)
 +			if _, err := file.WriteString(header); err != nil {
++				log.Printf("Error writing header: %v", err)
 +				continue
 +			}
 +			for i, duplicateFile := range duplicateFiles {
-+				// 获取文件信息
 +				hashedKey, err := getHashedKeyFromPath(rdb, ctx, duplicateFile)
 +				if err != nil {
++					log.Printf("Error getting hashed key for path %s: %v", duplicateFile, err)
 +					continue
 +				}
 +				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
 +				if err != nil {
++					log.Printf("Error getting file info for key %s: %v", hashedKey, err)
 +					continue
 +				}
 +
-+				// 解码文件信息
 +				var fileInfo FileInfo
 +				buf := bytes.NewBuffer(fileInfoData)
 +				dec := gob.NewDecoder(buf)
 +				if err := dec.Decode(&fileInfo); err != nil {
++					log.Printf("Error decoding file info: %v", err)
 +					continue
 +				}
 +
-+				// 获取相对路径
-+				relativePath, err := filepath.Rel(rootDir, duplicateFile)
-+				if err != nil {
-+					continue
-+				}
++				cleanedPath := cleanRelativePath(rootDir, duplicateFile)
 +
-+				// 使用 filepath.Clean 来规范化路径
-+				cleanPath := filepath.Clean(relativePath)
-+
-+				// 根据文件是否为第一个，添加不同的前缀
 +				var line string
 +				if i == 0 {
-+					line = fmt.Sprintf("[+] %d,\"./%s\"\n", fileInfo.Size, cleanPath)
++					line = fmt.Sprintf("\t[+] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
 +				} else {
-+					line = fmt.Sprintf("[-] %d,\"./%s\"\n", fileInfo.Size, cleanPath)
++					line = fmt.Sprintf("\t[-] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
 +				}
 +
 +				if _, err := file.WriteString(line); err != nil {
++					log.Printf("Error writing line: %v", err)
 +					continue
 +				}
 +			}
 +			if _, err := file.WriteString("\n"); err != nil {
++				log.Printf("Error writing newline: %v", err)
 +				continue
 +			}
++		} else {
++			log.Printf("No duplicates found for hash %s", fullHash)
 +		}
 +	}
 +
 +	if err := iter.Err(); err != nil {
-+		return err
++		return fmt.Errorf("error during iteration: %w", err)
 +	}
 +
-+	// 添加日志记录
-+	log.Printf("Duplicate files have been written to %s", filepath.Join(rootDir, outputFile))
-+
++	log.Printf("Finished writing duplicate files to %s", outputFile)
 +	return nil
 +}
 +
