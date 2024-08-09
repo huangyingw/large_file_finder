@@ -121,10 +121,11 @@ func NewFileProcessor(Rdb *redis.Client, Ctx context.Context) *FileProcessor {
 
 var TimestampRegex = regexp.MustCompile(`(\d{1,2}:\d{2}(?::\d{2})?)`)
 
-// CalculateScore 计算时间戳的得分
+const timestampWeight = 1000000000 // 使用一个非常大的数字
+
 func CalculateScore(timestamps []string, fileNameLength int) float64 {
 	timestampCount := len(timestamps)
-	return float64(-(timestampCount*1000 + fileNameLength))
+	return float64(-(timestampCount*timestampWeight + fileNameLength))
 }
 
 func (fp *FileProcessor) SaveDuplicateFileInfoToRedis(fullHash string, info FileInfo, filePath string) error {
@@ -192,12 +193,13 @@ func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) er
 		return nil
 	}
 
-	return fp.writeDataToFile(dir, filename, data, sortByModTime)
-}
+	// Write data to file
+	file, err := os.Create(filepath.Join(dir, filename))
+	if err != nil {
+		return fmt.Errorf("error creating file: %w", err)
+	}
+	defer file.Close()
 
-// writeDataToFile writes the processed data to a file
-func (fp *FileProcessor) writeDataToFile(dir, filename string, data map[string]FileInfo, sortByModTime bool) error {
-	var lines []string
 	keys := make([]string, 0, len(data))
 	for k := range data {
 		keys = append(keys, k)
@@ -212,10 +214,12 @@ func (fp *FileProcessor) writeDataToFile(dir, filename string, data map[string]F
 			continue
 		}
 		line := formatFileInfoLine(data[k], relativePath, sortByModTime)
-		lines = append(lines, line)
+		if _, err := fmt.Fprintln(file, line); err != nil {
+			return fmt.Errorf("error writing to file: %w", err)
+		}
 	}
 
-	return writeLinesToFile(filepath.Join(dir, filename), lines)
+	return nil
 }
 
 // ProcessFile processes a single file
@@ -427,4 +431,36 @@ func getFullFileHash(path string, Rdb *redis.Client, Ctx context.Context) (strin
 		log.Printf("Full hash for file %s: %s", path, hash)
 	}
 	return hash, err
+}
+
+func getFileInfo(rdb *redis.Client, ctx context.Context, filePath string) (FileInfo, error) {
+	hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+filePath).Result()
+	if err != nil {
+		return FileInfo{}, err
+	}
+
+	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+	if err != nil {
+		return FileInfo{}, err
+	}
+
+	var fileInfo FileInfo
+	buf := bytes.NewBuffer(fileInfoData)
+	dec := gob.NewDecoder(buf)
+	if err := dec.Decode(&fileInfo); err != nil {
+		return FileInfo{}, err
+	}
+
+	return fileInfo, nil
+}
+
+func cleanRelativePath(rootDir, fullPath string) string {
+	rel, err := filepath.Rel(rootDir, fullPath)
+	if err != nil {
+		return fullPath
+	}
+	// 移除所有前导的 "../"
+	rel = strings.TrimPrefix(rel, strings.Repeat("../", strings.Count(rel, "../")))
+	// 确保路径以 "./" 开头
+	return "./" + rel
 }
