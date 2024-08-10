@@ -137,7 +137,10 @@ func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir, outputFile string, r
 		duplicateFilesKey := iter.Val()
 		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
 
-		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
+		duplicateFiles, err := rdb.ZRangeByScore(ctx, duplicateFilesKey, &redis.ZRangeBy{
+			Min: "-inf",
+			Max: "+inf",
+		}).Result()
 		if err != nil {
 			log.Printf("Error getting duplicate files for key %s: %v", duplicateFilesKey, err)
 			continue
