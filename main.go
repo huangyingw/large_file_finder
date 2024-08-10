@@ -74,7 +74,7 @@ func main() {
 	}
 
 	if outputDuplicates {
-		if err := writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx); err != nil {
+		if err := fp.WriteDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx); err != nil {
 			log.Fatalf("Error writing duplicates to file: %v", err)
 		}
 		return
