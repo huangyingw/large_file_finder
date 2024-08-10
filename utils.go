@@ -43,6 +43,9 @@ func sortKeys(keys []string, data map[string]FileInfo, sortByModTime bool) {
 		})
 	} else {
 		sort.Slice(keys, func(i, j int) bool {
+			if data[keys[i]].Size == data[keys[j]].Size {
+				return keys[i] < keys[j]
+			}
 			return data[keys[i]].Size > data[keys[j]].Size
 		})
 	}
@@ -306,7 +309,8 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 				continue
 			}
 			for i, duplicateFile := range duplicateFiles {
-				hashedKey, err := getHashedKeyFromPath(rdb, ctx, duplicateFile)
+				fp := NewFileProcessor(rdb, ctx)
+				hashedKey, err := fp.getHashedKeyFromPath(duplicateFile)
 				if err != nil {
 					log.Printf("Error getting hashed key for path %s: %v", duplicateFile, err)
 					continue
@@ -326,22 +330,16 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 				}
 
 				cleanedPath := cleanRelativePath(rootDir, duplicateFile)
-
 				var line string
 				if i == 0 {
 					line = fmt.Sprintf("\t[+] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
 				} else {
 					line = fmt.Sprintf("\t[-] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
 				}
-
 				if _, err := file.WriteString(line); err != nil {
 					log.Printf("Error writing line: %v", err)
 					continue
 				}
-			}
-			if _, err := file.WriteString("\n"); err != nil {
-				log.Printf("Error writing newline: %v", err)
-				continue
 			}
 		} else {
 			log.Printf("No duplicates found for hash %s", fullHash)
@@ -352,13 +350,12 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 		return fmt.Errorf("error during iteration: %w", err)
 	}
 
-	log.Printf("Finished writing duplicate files to %s", outputFile)
 	return nil
 }
 
 func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, fullPath string) (int64, error) {
-	// 首先从 fullPath 获取 hashedKey
-	hashedKey, err := getHashedKeyFromPath(rdb, ctx, fullPath)
+	fp := NewFileProcessor(rdb, ctx)
+	hashedKey, err := fp.getHashedKeyFromPath(fullPath)
 	if err != nil {
 		return 0, fmt.Errorf("error getting hashed key for %s: %w", fullPath, err)
 	}
@@ -377,11 +374,6 @@ func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, fullPath strin
 	}
 
 	return fileInfo.Size, nil
-}
-
-func getHashedKeyFromPath(rdb *redis.Client, ctx context.Context, path string) (string, error) {
-	hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
-	return hashedKey, err
 }
 
 // extractFileName extracts the file name from a given file path.
@@ -574,11 +566,12 @@ func writeDataToFile(rootDir, filename string, data map[string]FileInfo, sortByM
 
 func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bool) string {
 	if sortByModTime {
-		return fmt.Sprintf("\"./%s\"", relativePath)
+		return fmt.Sprintf("\"./%s\"\n", relativePath) // 添加换行符
 	}
-	return fmt.Sprintf("%d,\"./%s\"", fileInfo.Size, relativePath)
+	return fmt.Sprintf("%d,\"./%s\"\n", fileInfo.Size, relativePath) // 添加换行符
 }
 
+// decodeGob decodes gob-encoded data into the provided interface
 func decodeGob(data []byte, v interface{}) error {
 	return gob.NewDecoder(bytes.NewReader(data)).Decode(v)
 }
