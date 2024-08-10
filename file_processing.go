@@ -8,6 +8,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"github.com/go-redis/redis/v8"
+	"github.com/spf13/afero"
 	"io"
 	"log"
 	"os"
@@ -46,7 +47,6 @@ func TimestampToSeconds(timestamp string) int {
 		return 0
 	}
 
-	fmt.Printf("转换时间戳 '%s' 为 %d 秒\n", timestamp, totalSeconds)
 	return totalSeconds
 }
 
@@ -61,7 +61,6 @@ func ExtractTimestamps(filePath string) []string {
 		}
 	}
 
-	// 去重
 	uniqueTimestamps := make([]string, 0, len(timestamps))
 	seen := make(map[string]bool)
 	for _, ts := range timestamps {
@@ -71,7 +70,6 @@ func ExtractTimestamps(filePath string) []string {
 		}
 	}
 
-	// 使用 TimestampToSeconds 进行排序
 	sort.Slice(uniqueTimestamps, func(i, j int) bool {
 		return TimestampToSeconds(uniqueTimestamps[i]) < TimestampToSeconds(uniqueTimestamps[j])
 	})
@@ -105,47 +103,86 @@ type FileInfo struct {
 }
 
 type FileProcessor struct {
-	Rdb                   *redis.Client
-	Ctx                   context.Context
-	generateHashFunc      func(string) string
-	calculateFileHashFunc func(path string, limit int64) (string, error)
+	Rdb                           *redis.Client
+	Ctx                           context.Context
+	generateHashFunc              func(string) string
+	calculateFileHashFunc         func(path string, limit int64) (string, error)
+	fs                            afero.Fs
+	saveToFileFunc                func(dir, filename string, sortByModTime bool) error
+	writeDuplicateFilesToFileFunc func(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error
 }
 
 func NewFileProcessor(Rdb *redis.Client, Ctx context.Context) *FileProcessor {
-	return &FileProcessor{
+	fp := &FileProcessor{
 		Rdb:              Rdb,
 		Ctx:              Ctx,
 		generateHashFunc: generateHash,
+		fs:               afero.NewOsFs(),
 	}
+	fp.saveToFileFunc = fp.saveToFile
+	fp.writeDuplicateFilesToFileFunc = writeDuplicateFilesToFile
+	fp.calculateFileHashFunc = fp.calculateFileHash
+	return fp
 }
 
-var TimestampRegex = regexp.MustCompile(`(\d{1,2}:\d{2}(?::\d{2})?)`)
-
-const timestampWeight = 1000000000 // 使用一个非常大的数字
-
-func CalculateScore(timestamps []string, fileNameLength int) float64 {
-	timestampCount := len(timestamps)
-	return float64(-(timestampCount*timestampWeight + fileNameLength))
-}
-
-func (fp *FileProcessor) SaveDuplicateFileInfoToRedis(fullHash string, info FileInfo, filePath string) error {
-	timestamps := ExtractTimestamps(filePath)
-	fileNameLength := len(filepath.Base(filePath))
-	score := CalculateScore(timestamps, fileNameLength)
-
-	_, err := fp.Rdb.ZAdd(fp.Ctx, "duplicateFiles:"+fullHash, &redis.Z{
-		Score:  score,
-		Member: filePath,
-	}).Result()
-
+func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir, outputFile string, rdb *redis.Client, ctx context.Context) error {
+	file, err := fp.fs.Create(filepath.Join(rootDir, outputFile))
 	if err != nil {
-		return fmt.Errorf("error adding duplicate file to Redis: %w", err)
+		return fmt.Errorf("Error creating output file: %s", err)
+	}
+	defer file.Close()
+
+	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
+	for iter.Next(ctx) {
+		duplicateFilesKey := iter.Val()
+		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
+
+		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
+		if err != nil {
+			log.Printf("Error getting duplicate files for key %s: %v", duplicateFilesKey, err)
+			continue
+		}
+
+		if len(duplicateFiles) > 1 {
+			header := fmt.Sprintf("Duplicate files for fullHash %s:\n", fullHash)
+			if _, err := file.WriteString(header); err != nil {
+				log.Printf("Error writing header: %v", err)
+				continue
+			}
+			for i, duplicateFile := range duplicateFiles {
+				hashedKey, err := fp.getHashedKeyFromPath(duplicateFile)
+				if err != nil {
+					log.Printf("Error getting hashed key for path %s: %v", duplicateFile, err)
+					continue
+				}
+				fileInfo, err := fp.getFileInfoFromRedis(hashedKey)
+				if err != nil {
+					log.Printf("Error getting file info for key %s: %v", hashedKey, err)
+					continue
+				}
+
+				cleanedPath := cleanRelativePath(rootDir, duplicateFile)
+				var line string
+				if i == 0 {
+					line = fmt.Sprintf("[+] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
+				} else {
+					line = fmt.Sprintf("[-] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
+				}
+				if _, err := file.WriteString(line); err != nil {
+					log.Printf("Error writing line: %v", err)
+					continue
+				}
+			}
+			// 在每组重复文件的末尾添加一个制表符
+			if _, err := file.WriteString("\t"); err != nil {
+				log.Printf("Error writing separator: %v", err)
+			}
+		}
 	}
 
 	return nil
 }
 
-// getFileInfoFromRedis retrieves file info from Redis
 func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
 	var fileInfo FileInfo
 	value, err := fp.Rdb.Get(fp.Ctx, "fileInfo:"+hashedKey).Bytes()
@@ -162,7 +199,6 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
 	return fileInfo, nil
 }
 
-// saveToFile saves file information to a file
 func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) error {
 	iter := fp.Rdb.Scan(fp.Ctx, 0, "fileInfo:*", 0).Iterator()
 	data := make(map[string]FileInfo)
@@ -193,8 +229,7 @@ func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) er
 		return nil
 	}
 
-	// Write data to file
-	file, err := os.Create(filepath.Join(dir, filename))
+	file, err := fp.fs.Create(filepath.Join(dir, filename))
 	if err != nil {
 		return fmt.Errorf("error creating file: %w", err)
 	}
@@ -214,7 +249,7 @@ func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) er
 			continue
 		}
 		line := formatFileInfoLine(data[k], relativePath, sortByModTime)
-		if _, err := fmt.Fprintln(file, line); err != nil {
+		if _, err := fmt.Fprint(file, line); err != nil {
 			return fmt.Errorf("error writing to file: %w", err)
 		}
 	}
@@ -222,19 +257,18 @@ func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) er
 	return nil
 }
 
-// ProcessFile processes a single file
 func (fp *FileProcessor) ProcessFile(path string) error {
-	info, err := os.Stat(path)
+	info, err := fp.fs.Stat(path)
 	if err != nil {
 		return fmt.Errorf("error getting file info: %w", err)
 	}
 
-	fileHash, err := fp.calculateFileHashFunc(path, ReadLimit) // 使用新的字段名
+	fileHash, err := fp.calculateFileHashFunc(path, ReadLimit)
 	if err != nil {
 		return fmt.Errorf("error calculating file hash: %w", err)
 	}
 
-	fullHash, err := fp.calculateFileHashFunc(path, FullFileReadCmd) // 使用新的字段名
+	fullHash, err := fp.calculateFileHashFunc(path, FullFileReadCmd)
 	if err != nil {
 		return fmt.Errorf("error calculating full file hash: %w", err)
 	}
@@ -252,9 +286,8 @@ func (fp *FileProcessor) ProcessFile(path string) error {
 	return nil
 }
 
-// calculateFileHash calculates the hash of a file
 func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
-	f, err := os.Open(path)
+	f, err := fp.fs.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("error opening file: %w", err)
 	}
@@ -274,7 +307,6 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
-// saveFileInfoToRedis saves file info to Redis
 func (fp *FileProcessor) saveFileInfoToRedis(path string, info FileInfo, fileHash, fullHash string) error {
 	hashedKey := fp.generateHashFunc(path)
 
@@ -454,13 +486,38 @@ func getFileInfo(rdb *redis.Client, ctx context.Context, filePath string) (FileI
 	return fileInfo, nil
 }
 
+const timestampWeight = 1000000000 // 使用一个非常大的数字
+
+func CalculateScore(timestamps []string, fileNameLength int) float64 {
+	timestampCount := len(timestamps)
+	return float64(-(timestampCount*timestampWeight + fileNameLength))
+}
+
 func cleanRelativePath(rootDir, fullPath string) string {
 	rel, err := filepath.Rel(rootDir, fullPath)
 	if err != nil {
 		return fullPath
 	}
-	// 移除所有前导的 "../"
-	rel = strings.TrimPrefix(rel, strings.Repeat("../", strings.Count(rel, "../")))
-	// 确保路径以 "./" 开头
 	return "./" + rel
+}
+
+func (fp *FileProcessor) SaveDuplicateFileInfoToRedis(fullHash string, info FileInfo, filePath string) error {
+	timestamps := ExtractTimestamps(filePath)
+	fileNameLength := len(filepath.Base(filePath))
+	score := CalculateScore(timestamps, fileNameLength)
+
+	_, err := fp.Rdb.ZAdd(fp.Ctx, "duplicateFiles:"+fullHash, &redis.Z{
+		Score:  score,
+		Member: filePath,
+	}).Result()
+
+	if err != nil {
+		return fmt.Errorf("error adding duplicate file to Redis: %w", err)
+	}
+
+	return nil
+}
+
+func (fp *FileProcessor) getHashedKeyFromPath(path string) (string, error) {
+	return fp.Rdb.Get(fp.Ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
 }
