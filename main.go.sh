@@ -10,6 +10,7 @@ go test ./... || exit 1
 #go get -u github.com/allegro/bigcache
 #go get -u github.com/go-redis/redis/v8
 #go get -u github.com/karrick/godirwalk
+#go get github.com/spf13/afero
 #go get -u github.com/mattn/go-zglob/fastwalk
 #go get github.com/alicebob/miniredis/v2
 #go get github.com/stretchr/testify/assert@v1.9.0
