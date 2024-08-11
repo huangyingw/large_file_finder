@@ -35,27 +35,18 @@ func extractTimestamp(filePath string) string {
 }
 
 // 将重复文件的信息存储到 Redis
-func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHash string, info fileInfo) error {
-	// 提取文件路径中的时间戳
-	timestamp := extractTimestamp(info.path)
-	timestampLength := len(timestamp)
-	fileNameLength := len(filepath.Base(info.path))
+func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHash string, info FileInfo) error {
+	timestamps := ExtractTimestamps(info.Path)
+	fileNameLength := len(filepath.Base(info.Path))
+	score := CalculateScore(timestamps, fileNameLength)
 
-	// 计算综合分数
-	// 使用负值排序，确保时间戳长度优先，文件名长度其次
-	combinedScore := float64(-(timestampLength*1000000 + fileNameLength))
+	_, err := rdb.ZAdd(ctx, "duplicateFiles:"+fullHash, &redis.Z{
+		Score:  score,
+		Member: info.Path,
+	}).Result()
 
-	// 使用管道批量处理 Redis 命令
-	pipe := rdb.Pipeline()
-
-	// 将路径添加到有序集合 duplicateFiles:<fullHash> 中，并使用综合分数
-	pipe.ZAdd(ctx, "duplicateFiles:"+fullHash, &redis.Z{
-		Score:  combinedScore, // 综合分数
-		Member: info.path,
-	})
-
-	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("error executing pipeline for duplicate file: %s: %w", info.path, err)
+	if err != nil {
+		return fmt.Errorf("error adding duplicate file to Redis: %w", err)
 	}
 
 	return nil
@@ -84,7 +75,6 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey strin
 		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
 	}
 
-	// 添加日志
 	return nil
 }
 
@@ -93,11 +83,8 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context) error {
 	iter := rdb.Scan(ctx, 0, "pathToHashedKey:*", 0).Iterator()
 	for iter.Next(ctx) {
 		pathToHashKey := iter.Val()
-
-		// 解析出文件路径
 		filePath := strings.TrimPrefix(pathToHashKey, "pathToHashedKey:")
 
-		// 检查文件是否存在
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			err := cleanUpRecordsByFilePath(rdb, ctx, filePath)
 			if err != nil {
@@ -115,19 +102,16 @@ func cleanUpOldRecords(rdb *redis.Client, ctx context.Context) error {
 }
 
 func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath string) error {
-	// 获取 hashedKey
 	hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+filePath).Result()
 	if err != nil && err != redis.Nil {
 		return fmt.Errorf("error retrieving hashedKey for path %s: %v", filePath, err)
 	}
 
-	// 获取 fileHash
 	fileHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
 	if err != nil {
 		return fmt.Errorf("error retrieving fileHash for key %s: %v", hashedKey, err)
 	}
 
-	// 获取 fullHash
 	fullHash, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
 	if err != nil && err != redis.Nil {
 		return fmt.Errorf("error retrieving fullHash for key %s: %v", hashedKey, err)
