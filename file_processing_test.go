@@ -15,6 +15,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath" // 添加这行
+	"strings"
 	"testing"
 	"time"
 )
@@ -61,11 +62,11 @@ func TestTimestampToSeconds(t *testing.T) {
 		input    string
 		expected int
 	}{
-		{"1:2:3", 3723},
-		{"10:20:30", 37230},
-		{"1:2", 62},
-		{"10:20", 620},
-		{"invalid", 0},
+		{"1:2:3", 3723},     // 1小时2分3秒 -> 3723秒
+		{"10:20:30", 37230}, // 10小时20分30秒 -> 37230秒
+		{"1:2", 62},         // 1分2秒 -> 62秒
+		{"10:20", 620},      // 10分20秒 -> 620秒
+		{"invalid", 0},      // 无效格式 -> 0秒
 	}
 
 	for _, test := range tests {
@@ -401,62 +402,9 @@ func TestFileProcessor_GetFileInfoFromRedis(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test getFileInfoFromRedis
-	result, err := fp.getFileInfoFromRedis(hashedKey)
+	result, err := fp.fileInfoRetriever.getFileInfoFromRedis(hashedKey)
 	assert.Equal(t, testFileInfo.Size, result.Size)
 	assert.WithinDuration(t, testFileInfo.ModTime, result.ModTime, time.Second)
-}
-
-func TestFileProcessor_SaveToFile(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mr.Close()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr: mr.Addr(),
-	})
-	ctx := context.Background()
-
-	fp := NewFileProcessor(rdb, ctx)
-
-	// Prepare test data
-	testData := map[string]FileInfo{
-		"/path/to/file1": {Size: 1000, ModTime: time.Now().Add(-1 * time.Hour)},
-		"/path/to/file2": {Size: 2000, ModTime: time.Now()},
-	}
-
-	for path, info := range testData {
-		hashedKey := generateHash(path)
-		var buf bytes.Buffer
-		enc := gob.NewEncoder(&buf)
-		err = enc.Encode(info)
-		assert.NoError(t, err)
-
-		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
-		assert.NoError(t, err)
-		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0).Err()
-		assert.NoError(t, err)
-	}
-
-	// Create a temporary directory for the test
-	tempDir, err := ioutil.TempDir("", "testdir")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Test saveToFile
-	err = fp.saveToFile(tempDir, "testfile.txt", false)
-	assert.NoError(t, err)
-
-	// Verify the file contents
-	content, err := ioutil.ReadFile(filepath.Join(tempDir, "testfile.txt"))
-	assert.NoError(t, err)
-	assert.Contains(t, string(content), "2000,\"")
-	assert.Contains(t, string(content), "1000,\"")
-	assert.Contains(t, string(content), "file2")
-	assert.Contains(t, string(content), "file1")
 }
 
 func TestFileContentVerification(t *testing.T) {
@@ -527,23 +475,24 @@ func TestFileContentVerification(t *testing.T) {
 	content, err := afero.ReadFile(fs, filepath.Join(tempDir, "fav.log"))
 	assert.NoError(t, err)
 
-	expectedContent := `2172777224,"./path/to/file2_02:34:56_03:45:67.mp4"
-2172777224,"./path/to/file3.mp4"
-209720828,"./path/to/file1_01:23:45.mp4"
+	// 修改预期的内容格式
+	expectedContent := `2172777224,./path/to/file2_02:34:56_03:45:67.mp4
+2172777224,./path/to/file3.mp4
+209720828,./path/to/file1_01:23:45.mp4
 `
 	assert.Equal(t, expectedContent, string(content), "fav.log content does not match expected")
 
-	// Test fav.log.sort
+	// 修改预期的排序内容格式
+	expectedSortedContent := `./path/to/file2_02:34:56_03:45:67.mp4
+./path/to/file1_01:23:45.mp4
+./path/to/file3.mp4
+`
+	// 测试 fav.log.sort
 	err = fp.saveToFile(tempDir, "fav.log.sort", true)
 	assert.NoError(t, err)
 
 	content, err = afero.ReadFile(fs, filepath.Join(tempDir, "fav.log.sort"))
 	assert.NoError(t, err)
-
-	expectedSortedContent := `"./path/to/file2_02:34:56_03:45:67.mp4"
-"./path/to/file1_01:23:45.mp4"
-"./path/to/file3.mp4"
-`
 	assert.Equal(t, expectedSortedContent, string(content), "fav.log.sort content does not match expected")
 
 	// Test WriteDuplicateFilesToFile method
@@ -556,7 +505,8 @@ func TestFileContentVerification(t *testing.T) {
 	expectedDupContent := fmt.Sprintf(`Duplicate files for fullHash %s:
 [+] 2172777224,"./path/to/file2_02:34:56_03:45:67.mp4"
 [-] 2172777224,"./path/to/file3.mp4"
-	`, fullHash)
+
+`, fullHash)
 
 	assert.Equal(t, expectedDupContent, string(content), "fav.log.dup content does not match expected")
 }
@@ -634,7 +584,7 @@ func TestGetFileInfoFromRedis(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test getFileInfoFromRedis
-	retrievedInfo, err := fp.getFileInfoFromRedis(hashedKey)
+	retrievedInfo, err := fp.fileInfoRetriever.getFileInfoFromRedis(hashedKey)
 	assert.NoError(t, err)
 	assert.Equal(t, testInfo.Size, retrievedInfo.Size)
 	assert.Equal(t, testInfo.ModTime.Unix(), retrievedInfo.ModTime.Unix())
@@ -801,4 +751,237 @@ func TestProcessFileBoundary(t *testing.T) {
 	fullHash, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
 	assert.NoError(t, err)
 	assert.Equal(t, "full_hash_large_file", fullHash)
+}
+
+func TestSaveToFileTimeSort(t *testing.T) {
+	// 设置测试数据
+	now := time.Now()
+	data := map[string]FileInfo{
+		"/path/to/file1": {Size: 1000, ModTime: now.Add(-1 * time.Hour)},
+		"/path/to/file2": {Size: 2000, ModTime: now},
+		"/path/to/file3": {Size: 1500, ModTime: now.Add(-2 * time.Hour)},
+	}
+
+	// 创建临时目录
+	tempDir, err := ioutil.TempDir("", "test")
+	assert.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	// 保存文件
+	err = writeDataToFile(tempDir, "fav.log.sort", data, true)
+	assert.NoError(t, err)
+
+	// 读取并验证文件内容
+	content, err := ioutil.ReadFile(filepath.Join(tempDir, "fav.log.sort"))
+	assert.NoError(t, err)
+
+	lines := strings.Split(string(content), "\n")
+
+	// 修改预期的输出格式
+	expectedLines := []string{
+		"./path/to/file2",
+		"./path/to/file1",
+		"./path/to/file3",
+		"", // 空行
+	}
+
+	assert.Equal(t, len(expectedLines), len(lines), "Number of lines should match")
+
+	for i, expectedFile := range expectedLines[:len(expectedLines)-1] { // 忽略最后一个空行
+		assert.Contains(t, lines[i], expectedFile,
+			fmt.Sprintf("Line %d should contain %s", i+1, expectedFile))
+	}
+}
+
+func TestFileProcessor_SaveToFile(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	ctx := context.Background()
+
+	fp := NewFileProcessor(rdb, ctx)
+
+	// Prepare test data
+	testData := map[string]FileInfo{
+		"/path/to/file1": {Size: 1000, ModTime: time.Now().Add(-1 * time.Hour)},
+		"/path/to/file2": {Size: 2000, ModTime: time.Now()},
+	}
+
+	for path, info := range testData {
+		hashedKey := generateHash(path)
+		var buf bytes.Buffer
+		enc := gob.NewEncoder(&buf)
+		err = enc.Encode(info)
+		assert.NoError(t, err)
+
+		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
+		assert.NoError(t, err)
+		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0).Err()
+		assert.NoError(t, err)
+	}
+
+	// Create a temporary directory for the test
+	tempDir, err := ioutil.TempDir("", "testdir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Test saveToFile
+	err = fp.saveToFile(tempDir, "testfile.txt", false)
+	assert.NoError(t, err)
+
+	// Verify the file contents
+	content, err := ioutil.ReadFile(filepath.Join(tempDir, "testfile.txt"))
+	assert.NoError(t, err)
+	assert.Contains(t, string(content), "2000,./path/to/file2")
+	assert.Contains(t, string(content), "1000,./path/to/file1")
+	assert.Contains(t, string(content), "file2")
+	assert.Contains(t, string(content), "file1")
+}
+
+func TestSaveToFileSizeSort(t *testing.T) {
+	// 设置测试环境
+	mr, err := miniredis.Run()
+	assert.NoError(t, err)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	ctx := context.Background()
+
+	fp := NewFileProcessor(rdb, ctx)
+
+	// 准备测试数据
+	testData := map[string]FileInfo{
+		"/path/to/file1": {Size: 1000, ModTime: time.Now().Add(-1 * time.Hour)},
+		"/path/to/file2": {Size: 2000, ModTime: time.Now()},
+		"/path/to/file3": {Size: 1500, ModTime: time.Now().Add(-2 * time.Hour)},
+	}
+
+	// 设置 Redis 数据
+	for path, info := range testData {
+		hashedKey := generateHash(path)
+		var buf bytes.Buffer
+		enc := gob.NewEncoder(&buf)
+		err = enc.Encode(info)
+		assert.NoError(t, err)
+
+		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
+		assert.NoError(t, err)
+		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0).Err()
+		assert.NoError(t, err)
+	}
+
+	// 创建临时目录
+	tempDir, err := ioutil.TempDir("", "testdir")
+	assert.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	// 测试 saveToFile
+	err = fp.saveToFile(tempDir, "testfile.txt", false)
+	assert.NoError(t, err)
+
+	// 验证文件内容
+	content, err := ioutil.ReadFile(filepath.Join(tempDir, "testfile.txt"))
+	assert.NoError(t, err)
+
+	assert.Contains(t, string(content), "2000,./path/to/file2")
+	assert.Contains(t, string(content), "1500,./path/to/file3")
+	assert.Contains(t, string(content), "1000,./path/to/file1")
+}
+
+type MockFileInfoRetriever struct {
+	mockData map[string]FileInfo
+}
+
+func (m *MockFileInfoRetriever) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
+	if info, ok := m.mockData[hashedKey]; ok {
+		return info, nil
+	}
+	return FileInfo{}, fmt.Errorf("mock: file info not found")
+}
+
+func TestWriteDuplicateFilesToFile(t *testing.T) {
+	// 1. 设置测试环境
+	mr, err := miniredis.Run()
+	assert.NoError(t, err)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	ctx := context.Background()
+
+	// 2. 创建模拟的 FileInfoRetriever
+	mockRetriever := &MockFileInfoRetriever{
+		mockData: map[string]FileInfo{
+			"hash1": {Size: 1000, ModTime: time.Now()},
+			"hash2": {Size: 2000, ModTime: time.Now()},
+			"hash3": {Size: 3000, ModTime: time.Now()},
+		},
+	}
+
+	// 3. 创建 FileProcessor 实例
+	fp := NewFileProcessor(rdb, ctx)
+	fp.fileInfoRetriever = mockRetriever
+
+	// 4. 模拟 Redis 中的数据
+	fullHash := "testhash"
+	duplicateFilesKey := "duplicateFiles:" + fullHash
+	hashedKeys := map[string]string{
+		"/path/to/file1": "hash1",
+		"/path/to/file2": "hash2",
+		"/path/to/file3": "hash3",
+	}
+
+	for path, hash := range hashedKeys {
+		rdb.Set(ctx, "pathToHashedKey:"+path, hash, 0)
+		rdb.Set(ctx, "fileInfo:"+hash, mockFileInfoBytes(mockRetriever.mockData[hash]), 0)
+	}
+
+	// 5. 添加重复文件数据到 Redis
+	_, err = rdb.ZAdd(ctx, duplicateFilesKey,
+		&redis.Z{Score: -3, Member: "/path/to/file1"},
+		&redis.Z{Score: -2, Member: "/path/to/file2"},
+		&redis.Z{Score: -1, Member: "/path/to/file3"},
+	).Result()
+	assert.NoError(t, err)
+
+	// 6. 创建临时目录
+	tempDir, err := ioutil.TempDir("", "test")
+	assert.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	// 7. 执行测试函数
+	err = fp.WriteDuplicateFilesToFile(tempDir, "fav.log.dup", rdb, ctx)
+	assert.NoError(t, err)
+
+	// 8. 读取并验证文件内容
+	content, err := ioutil.ReadFile(filepath.Join(tempDir, "fav.log.dup"))
+	assert.NoError(t, err)
+
+	expectedContent := fmt.Sprintf(`Duplicate files for fullHash %s:
+[+] 1000,"./path/to/file1"
+[-] 2000,"./path/to/file2"
+[-] 3000,"./path/to/file3"
+
+`, fullHash)
+
+	assert.Equal(t, expectedContent, string(content))
+}
+
+// 辅助函数：将 FileInfo 转换为字节数组
+func mockFileInfoBytes(info FileInfo) []byte {
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	enc.Encode(info)
+	return buf.Bytes()
 }
