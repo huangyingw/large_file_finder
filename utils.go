@@ -44,7 +44,7 @@ func sortKeys(keys []string, data map[string]FileInfo, sortByModTime bool) {
 	} else {
 		sort.Slice(keys, func(i, j int) bool {
 			if data[keys[i]].Size == data[keys[j]].Size {
-				return keys[i] < keys[j]
+				return keys[i] < keys[j] // 如果大小相同，按路径字母顺序排序
 			}
 			return data[keys[i]].Size > data[keys[j]].Size
 		})
@@ -181,7 +181,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			if !processedFullHashes[fullHash] {
 				for _, info := range infos {
 					log.Printf("Saving duplicate file info to Redis for file: %s", info.path)
-					err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
+					err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info.FileInfo)
 					if err != nil {
 						log.Printf("Error saving duplicate file info to Redis for file: %s, error: %v", info.path, err)
 						saveErr = err
@@ -502,9 +502,9 @@ func shouldStopDuplicateFileSearch(duplicateCount int, maxDuplicateFiles int) bo
 }
 
 func saveToFile(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
-	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
 	data := make(map[string]FileInfo)
 
+	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
 	for iter.Next(ctx) {
 		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
 
@@ -528,6 +528,7 @@ func saveToFile(rootDir, filename string, sortByModTime bool, rdb *redis.Client,
 			continue
 		}
 
+		fileInfo.Path = originalPath // 设置 Path 字段
 		data[originalPath] = fileInfo
 	}
 
@@ -535,15 +536,22 @@ func saveToFile(rootDir, filename string, sortByModTime bool, rdb *redis.Client,
 		return fmt.Errorf("error iterating over Redis keys: %w", err)
 	}
 
-	if len(data) == 0 {
-		return nil
-	}
-
 	return writeDataToFile(rootDir, filename, data, sortByModTime)
 }
 
 func writeDataToFile(rootDir, filename string, data map[string]FileInfo, sortByModTime bool) error {
-	var lines []string
+	outputPath := filepath.Join(rootDir, filename)
+	outputDir := filepath.Dir(outputPath)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("error creating output directory: %w", err)
+	}
+
+	file, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("error creating file: %w", err)
+	}
+	defer file.Close()
+
 	keys := make([]string, 0, len(data))
 	for k := range data {
 		keys = append(keys, k)
@@ -552,23 +560,22 @@ func writeDataToFile(rootDir, filename string, data map[string]FileInfo, sortByM
 	sortKeys(keys, data, sortByModTime)
 
 	for _, k := range keys {
-		relativePath, err := filepath.Rel(rootDir, k)
-		if err != nil {
-			log.Printf("Error getting relative path for %s: %v", k, err)
-			continue
+		fileInfo := data[k]
+		cleanedPath := cleanRelativePath(rootDir, k) // 使用 k 而不是 fileInfo.Path
+		line := formatFileInfoLine(fileInfo, cleanedPath, sortByModTime)
+		if _, err := fmt.Fprint(file, line); err != nil {
+			return fmt.Errorf("error writing to file: %w", err)
 		}
-		line := formatFileInfoLine(data[k], relativePath, sortByModTime)
-		lines = append(lines, line)
 	}
 
-	return writeLinesToFile(filepath.Join(rootDir, filename), lines)
+	return nil
 }
 
 func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bool) string {
 	if sortByModTime {
-		return fmt.Sprintf("\"./%s\"\n", relativePath) // 添加换行符
+		return fmt.Sprintf("%s\n", relativePath)
 	}
-	return fmt.Sprintf("%d,\"./%s\"\n", fileInfo.Size, relativePath) // 添加换行符
+	return fmt.Sprintf("%d,%s\n", fileInfo.Size, relativePath)
 }
 
 // decodeGob decodes gob-encoded data into the provided interface
