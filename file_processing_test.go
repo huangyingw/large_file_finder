@@ -531,44 +531,6 @@ func testWriteDuplicateFilesToFile(t *testing.T, fp *FileProcessor, fs afero.Fs,
 	assert.Equal(t, expectedDupContent, string(content), "fav.log.dup content does not match expected")
 }
 
-func setupTestData(rdb *redis.Client, ctx context.Context, rootDir string) error {
-	testData := []struct {
-		path     string
-		size     int64
-		modTime  time.Time
-		fullHash string
-	}{
-		{"/path/to/file1_01:23:45.mp4", 1000, time.Now().Add(-1 * time.Hour), "hash1"},
-		{"/path/to/file2_02:34:56_03:45:67.mp4", 2000, time.Now(), "hash1"},
-		{"/path/to/file3.mp4", 3000, time.Now().Add(-2 * time.Hour), "hash1"},
-	}
-
-	for _, data := range testData {
-		hashedKey := generateHash(data.path)
-		fileInfo := FileInfo{Size: data.size, ModTime: data.modTime}
-
-		var buf bytes.Buffer
-		enc := gob.NewEncoder(&buf)
-		if err := enc.Encode(fileInfo); err != nil {
-			return err
-		}
-
-		pipe := rdb.Pipeline()
-		pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
-		pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, data.path, 0)
-		pipe.Set(ctx, "pathToHashedKey:"+data.path, hashedKey, 0)
-		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, data.fullHash, 0)
-		pipe.ZAdd(ctx, "duplicateFiles:"+data.fullHash, &redis.Z{Score: float64(-data.size), Member: data.path})
-
-		_, err := pipe.Exec(ctx)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func TestGetFileInfoFromRedis(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {
