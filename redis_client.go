@@ -5,13 +5,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/gob"
 	"encoding/hex"
 	"fmt"
 	"github.com/go-redis/redis/v8"
 	"log"
 	"os"
-	"path/filepath" // 添加导入
-	"regexp"
+	"path/filepath"
 	"strings"
 )
 
@@ -19,23 +19,40 @@ import (
 func generateHash(s string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(s))
-	hash := hex.EncodeToString(hasher.Sum(nil))
-	return hash
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-// 使用给定的正则表达式匹配时间戳
-func extractTimestamp(filePath string) string {
-	// 匹配冒号或逗号后的 MM:SS 或 H:MM:SS 格式的时间戳
-	re := regexp.MustCompile(`[:,/](\d{1,2}:\d{2}(?::\d{2})?)`)
-	match := re.FindStringSubmatch(filePath)
-	if len(match) > 1 {
-		return match[1]
+func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, path string, info FileInfo, fileHash, fullHash string) error {
+	hashedKey := generateHash(path)
+
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(info); err != nil {
+		return fmt.Errorf("error encoding file info: %w", err)
 	}
-	return ""
+
+	normalizedPath := filepath.Clean(path)
+
+	pipe := rdb.Pipeline()
+
+	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
+	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, normalizedPath, 0)
+	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, normalizedPath)
+	if fullHash != "" {
+		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0)
+	}
+	pipe.Set(ctx, "pathToHashedKey:"+normalizedPath, hashedKey, 0)
+	pipe.Set(ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
+	}
+
+	return nil
 }
 
 // 将重复文件的信息存储到 Redis
-func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHash string, info FileInfo) error {
+func SaveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHash string, info FileInfo) error {
 	timestamps := ExtractTimestamps(info.Path)
 	fileNameLength := len(filepath.Base(info.Path))
 	score := CalculateScore(timestamps, fileNameLength)
@@ -52,33 +69,7 @@ func saveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
 	return nil
 }
 
-func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, hashedKey string, path string, buf bytes.Buffer, fileHash string, fullHash string) error {
-	// 规范化路径
-	normalizedPath := filepath.Clean(path)
-
-	// 使用管道批量处理Redis命令
-	pipe := rdb.Pipeline()
-
-	// 这里我们添加命令到管道，但不立即检查错误
-	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
-	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, normalizedPath, 0)
-	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, normalizedPath) // 将文件路径存储为集合
-	if fullHash != "" {
-		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0) // 存储完整文件哈希值
-	}
-	// 存储从路径到hashedKey的映射
-	pipe.Set(ctx, "pathToHashedKey:"+normalizedPath, hashedKey, 0)
-	// 存储hashedKey到fileHash的映射
-	pipe.Set(ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
-
-	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
-	}
-
-	return nil
-}
-
-func cleanUpOldRecords(rdb *redis.Client, ctx context.Context) error {
+func CleanUpOldRecords(rdb *redis.Client, ctx context.Context) error {
 	log.Println("Starting to clean up old records")
 	iter := rdb.Scan(ctx, 0, "pathToHashedKey:*", 0).Iterator()
 	for iter.Next(ctx) {
