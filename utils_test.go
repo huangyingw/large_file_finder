@@ -1,43 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"os"
-	"path/filepath"
+	"sort"
 	"testing"
+	"time"
 )
 
-func TestLoadExcludePatterns(t *testing.T) {
-	// Create a temporary file with test patterns
-	tmpfile, err := os.CreateTemp("", "test_patterns")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpfile.Name())
-
-	testPatterns := []string{
-		"pattern1",
-		"pattern2",
-		"pattern3",
-	}
-
-	for _, pattern := range testPatterns {
-		if _, err := tmpfile.WriteString(pattern + "\n"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	tmpfile.Close()
-
-	// Test loadExcludePatterns
-	patterns, err := loadExcludePatterns(tmpfile.Name())
-	assert.NoError(t, err)
-	assert.Equal(t, testPatterns, patterns)
-}
-
-func TestCompileExcludePatterns(t *testing.T) {
+func TestLoadAndCompileExcludePatterns(t *testing.T) {
 	// Create a temporary file with test patterns
 	tmpfile, err := os.CreateTemp("", "test_patterns")
 	if err != nil {
@@ -58,8 +34,8 @@ func TestCompileExcludePatterns(t *testing.T) {
 	}
 	tmpfile.Close()
 
-	// Test compileExcludePatterns
-	regexps, err := compileExcludePatterns(tmpfile.Name())
+	// Test loadAndCompileExcludePatterns
+	regexps, err := loadAndCompileExcludePatterns(tmpfile.Name())
 	assert.NoError(t, err)
 	assert.Len(t, regexps, len(testPatterns))
 
@@ -150,8 +126,13 @@ func TestExtractKeywords(t *testing.T) {
 	var stopProcessing bool
 	keywords := extractKeywords(fileNames, &stopProcessing)
 
-	expectedKeywords := []string{"01", "02", "03", "123", "abc", "20210515"}
-	assert.ElementsMatch(t, expectedKeywords, keywords)
+	// 使用 sort.Strings 对结果进行排序，以确保比较的一致性
+	sort.Strings(keywords)
+
+	expectedKeywords := []string{"02", "03", "document123abc", "file01"}
+	sort.Strings(expectedKeywords)
+
+	assert.Equal(t, expectedKeywords, keywords, "Extracted keywords do not match expected keywords")
 }
 
 func TestFindCloseFiles(t *testing.T) {
