@@ -5,14 +5,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha512"
 	"encoding/gob"
 	"fmt"
 	"github.com/go-redis/redis/v8"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +23,111 @@ import (
 
 var mu sync.Mutex
 
-func loadExcludePatterns(filename string) ([]string, error) {
+func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
+	return calculateFileHash(path, -1)
+}
+
+func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
+	return calculateFileHash(path, 100*1024) // 100KB
+}
+
+func calculateFileHash(path string, limit int64) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("error opening file: %w", err)
+	}
+	defer f.Close()
+
+	h := sha512.New()
+	if limit == -1 {
+		if _, err := io.Copy(h, f); err != nil {
+			return "", fmt.Errorf("error reading full file: %w", err)
+		}
+	} else {
+		if _, err := io.CopyN(h, f, limit); err != nil && err != io.EOF {
+			return "", fmt.Errorf("error reading file: %w", err)
+		}
+	}
+
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+func ExtractTimestamps(filePath string) []string {
+	pattern := regexp.MustCompile(`[:,/](\d{1,2}(?::\d{1,2}){1,2})`)
+	matches := pattern.FindAllStringSubmatch(filePath, -1)
+
+	timestamps := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			timestamps = append(timestamps, FormatTimestamp(match[1]))
+		}
+	}
+
+	uniqueTimestamps := make([]string, 0, len(timestamps))
+	seen := make(map[string]bool)
+	for _, ts := range timestamps {
+		if !seen[ts] {
+			seen[ts] = true
+			uniqueTimestamps = append(uniqueTimestamps, ts)
+		}
+	}
+
+	sort.Slice(uniqueTimestamps, func(i, j int) bool {
+		return TimestampToSeconds(uniqueTimestamps[i]) < TimestampToSeconds(uniqueTimestamps[j])
+	})
+
+	return uniqueTimestamps
+}
+
+func cleanRelativePath(rootDir, fullPath string) string {
+	rootDir, _ = filepath.Abs(rootDir)
+	fullPath, _ = filepath.Abs(fullPath)
+
+	rel, err := filepath.Rel(rootDir, fullPath)
+	if err != nil {
+		return fullPath
+	}
+
+	rel = strings.TrimPrefix(rel, "./")
+	for strings.HasPrefix(rel, "../") {
+		rel = strings.TrimPrefix(rel, "../")
+	}
+
+	if !strings.HasPrefix(rel, "./") {
+		rel = "./" + rel
+	}
+
+	return filepath.ToSlash(rel)
+}
+
+func FormatTimestamp(timestamp string) string {
+	parts := strings.Split(timestamp, ":")
+	formattedParts := make([]string, len(parts))
+	for i, part := range parts {
+		num, _ := strconv.Atoi(part)
+		formattedParts[i] = fmt.Sprintf("%02d", num)
+	}
+	return strings.Join(formattedParts, ":")
+}
+
+func TimestampToSeconds(timestamp string) int {
+	parts := strings.Split(timestamp, ":")
+	var totalSeconds int
+	if len(parts) == 2 {
+		minutes, _ := strconv.Atoi(parts[0])
+		seconds, _ := strconv.Atoi(parts[1])
+		totalSeconds = minutes*60 + seconds
+	} else if len(parts) == 3 {
+		hours, _ := strconv.Atoi(parts[0])
+		minutes, _ := strconv.Atoi(parts[1])
+		seconds, _ := strconv.Atoi(parts[2])
+		totalSeconds = hours*3600 + minutes*60 + seconds
+	}
+	return totalSeconds
+}
+
+// 合并 loadExcludePatterns 和 compileExcludePatterns
+func loadAndCompileExcludePatterns(filename string) ([]*regexp.Regexp, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -30,10 +137,21 @@ func loadExcludePatterns(filename string) ([]string, error) {
 	var patterns []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		pattern := scanner.Text()
-		patterns = append(patterns, pattern)
+		patterns = append(patterns, scanner.Text())
 	}
-	return patterns, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	excludeRegexps := make([]*regexp.Regexp, len(patterns))
+	for i, pattern := range patterns {
+		regexPattern := strings.Replace(pattern, "*", ".*", -1)
+		excludeRegexps[i], err = regexp.Compile(regexPattern)
+		if err != nil {
+			return nil, fmt.Errorf("Invalid regex pattern '%s': %v", regexPattern, err)
+		}
+	}
+	return excludeRegexps, nil
 }
 
 func sortKeys(keys []string, data map[string]FileInfo, sortByModTime bool) {
@@ -49,23 +167,6 @@ func sortKeys(keys []string, data map[string]FileInfo, sortByModTime bool) {
 			return data[keys[i]].Size > data[keys[j]].Size
 		})
 	}
-}
-
-func compileExcludePatterns(filename string) ([]*regexp.Regexp, error) {
-	excludePatterns, err := loadExcludePatterns(filename)
-	if err != nil {
-		return nil, err
-	}
-
-	excludeRegexps := make([]*regexp.Regexp, len(excludePatterns))
-	for i, pattern := range excludePatterns {
-		regexPattern := strings.Replace(pattern, "*", ".*", -1)
-		excludeRegexps[i], err = regexp.Compile(regexPattern)
-		if err != nil {
-			return nil, fmt.Errorf("Invalid regex pattern '%s': %v", regexPattern, err)
-		}
-	}
-	return excludeRegexps, nil
 }
 
 func performSaveOperation(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) {
@@ -384,7 +485,7 @@ func extractFileName(filePath string) string {
 	return strings.ToLower(filepath.Base(filePath))
 }
 
-var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
+var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?)|[a-z]+|[0-9]+)\b`)
 
 func extractKeywords(fileNames []string, stopProcessing *bool) []string {
 	workerCount := 100
