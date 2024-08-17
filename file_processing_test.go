@@ -78,6 +78,7 @@ func createTestData(rdb *redis.Client, ctx context.Context, fs afero.Fs, rootDir
 
 	return nil
 }
+
 func TestFormatTimestamp(t *testing.T) {
 	tests := []struct {
 		input    string
