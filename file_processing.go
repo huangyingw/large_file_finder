@@ -13,65 +13,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
-
-// Add this new function
-func cleanRelativePath(rootDir, fullPath string) string {
-	rootDir, _ = filepath.Abs(rootDir)
-	fullPath, _ = filepath.Abs(fullPath)
-
-	rel, err := filepath.Rel(rootDir, fullPath)
-	if err != nil {
-		return fullPath
-	}
-
-	// 移除任何 "./" 或 "../" 前缀
-	rel = strings.TrimPrefix(rel, "./")
-	for strings.HasPrefix(rel, "../") {
-		rel = strings.TrimPrefix(rel, "../")
-	}
-
-	// 确保路径以 "./" 开头
-	if !strings.HasPrefix(rel, "./") {
-		rel = "./" + rel
-	}
-
-	return filepath.ToSlash(rel)
-}
-
-func FormatTimestamp(timestamp string) string {
-	parts := strings.Split(timestamp, ":")
-	formattedParts := make([]string, len(parts))
-	for i, part := range parts {
-		num, _ := strconv.Atoi(part)
-		formattedParts[i] = fmt.Sprintf("%02d", num)
-	}
-	return strings.Join(formattedParts, ":")
-}
-
-func TimestampToSeconds(timestamp string) int {
-	parts := strings.Split(timestamp, ":")
-	var totalSeconds int
-	if len(parts) == 2 {
-		minutes, _ := strconv.Atoi(parts[0])
-		seconds, _ := strconv.Atoi(parts[1])
-		totalSeconds = minutes*60 + seconds
-	} else if len(parts) == 3 {
-		hours, _ := strconv.Atoi(parts[0])
-		minutes, _ := strconv.Atoi(parts[1])
-		seconds, _ := strconv.Atoi(parts[2])
-		totalSeconds = hours*3600 + minutes*60 + seconds
-	} else {
-		return 0
-	}
-
-	return totalSeconds
-}
 
 type FileProcessor struct {
 	Rdb                     *redis.Client
@@ -195,33 +141,6 @@ func (fp *FileProcessor) ProcessFile(path string) error {
 	log.Printf("Saved file info to Redis")
 
 	return nil
-}
-
-func ExtractTimestamps(filePath string) []string {
-	pattern := regexp.MustCompile(`[:,/](\d{1,2}(?::\d{1,2}){1,2})`)
-	matches := pattern.FindAllStringSubmatch(filePath, -1)
-
-	timestamps := make([]string, 0, len(matches))
-	for _, match := range matches {
-		if len(match) > 1 {
-			timestamps = append(timestamps, FormatTimestamp(match[1]))
-		}
-	}
-
-	uniqueTimestamps := make([]string, 0, len(timestamps))
-	seen := make(map[string]bool)
-	for _, ts := range timestamps {
-		if !seen[ts] {
-			seen[ts] = true
-			uniqueTimestamps = append(uniqueTimestamps, ts)
-		}
-	}
-
-	sort.Slice(uniqueTimestamps, func(i, j int) bool {
-		return TimestampToSeconds(uniqueTimestamps[i]) < TimestampToSeconds(uniqueTimestamps[j])
-	})
-
-	return uniqueTimestamps
 }
 
 type timestamp struct {
@@ -371,8 +290,8 @@ func processSymlink(path string) {
 func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ctx context.Context, rootDir string) {
 	// 对 keywordFiles 进行排序
 	sort.Slice(keywordFiles, func(i, j int) bool {
-		sizeI, _ := getFileSize(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, keywordFiles[i])))
-		sizeJ, _ := getFileSize(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, keywordFiles[j])))
+		sizeI, _ := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, keywordFiles[i])))
+		sizeJ, _ := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, keywordFiles[j])))
 		return sizeI > sizeJ
 	})
 
@@ -380,7 +299,7 @@ func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ct
 	var outputData strings.Builder
 	outputData.WriteString(keyword + "\n")
 	for _, filePath := range keywordFiles {
-		fileSize, _ := getFileSize(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, filePath)))
+		fileSize, _ := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, filePath)))
 		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
 	}
 
@@ -395,91 +314,6 @@ func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ct
 	_, err = outputFile.WriteString(outputData.String())
 	if err != nil {
 	}
-}
-
-// 获取文件大小
-func getFileSize(Rdb *redis.Client, Ctx context.Context, fullPath string) (int64, error) {
-	size, err := getFileSizeFromRedis(Rdb, Ctx, fullPath)
-	if err != nil {
-		return 0, err
-	}
-	return size, nil
-}
-
-// 获取文件哈希值
-func getHash(path string, Rdb *redis.Client, Ctx context.Context, keyPrefix string, limit int64) (string, error) {
-	hashedKey := generateHash(path) // 使用全局的 generateHash 函数
-	hashKey := keyPrefix + hashedKey
-
-	// 尝试从Redis获取哈希值
-	hash, err := Rdb.Get(Ctx, hashKey).Result()
-	if err == nil && hash != "" {
-		return hash, nil
-	}
-
-	if err != nil && err != redis.Nil {
-		return "", err
-	}
-
-	// 计算哈希值
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	hasher := sha512.New()
-
-	if limit > 0 {
-		// 只读取前 limit 字节
-		reader := io.LimitReader(file, limit)
-		if _, err := io.Copy(hasher, reader); err != nil {
-			return "", err
-		}
-	} else {
-		// 读取整个文件
-		buf := make([]byte, 4*1024*1024) // 每次读取 4MB 数据
-		for {
-			n, err := file.Read(buf)
-			if err != nil && err != io.EOF {
-				return "", err
-			}
-			if n == 0 {
-				break
-			}
-			if _, err := hasher.Write(buf[:n]); err != nil {
-				return "", err
-			}
-		}
-	}
-
-	hashBytes := hasher.Sum(nil)
-	hash = fmt.Sprintf("%x", hashBytes)
-
-	// 将计算出的哈希值保存到Redis
-	err = Rdb.Set(Ctx, hashKey, hash, 0).Err()
-	if err != nil {
-		return "", err
-	}
-	return hash, nil
-}
-
-// 获取文件哈希
-func getFileHash(path string, Rdb *redis.Client, Ctx context.Context) (string, error) {
-	const readLimit = 100 * 1024 // 100KB
-	return getHash(path, Rdb, Ctx, "hashedKeyToFileHash:", readLimit)
-}
-
-// 获取完整文件哈希
-func getFullFileHash(path string, Rdb *redis.Client, Ctx context.Context) (string, error) {
-	const noLimit = -1 // No limit for full file hash
-	hash, err := getHash(path, Rdb, Ctx, "hashedKeyToFullHash:", noLimit)
-	if err != nil {
-		log.Printf("Error calculating full hash for file %s: %v", path, err)
-	} else {
-		log.Printf("Full hash for file %s: %s", path, hash)
-	}
-	return hash, err
 }
 
 func getFileInfo(rdb *redis.Client, ctx context.Context, filePath string) (FileInfo, error) {
