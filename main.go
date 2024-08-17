@@ -214,7 +214,10 @@ func initializeApp() (string, int64, []*regexp.Regexp, *redis.Client, context.Co
 	// 拼接当前目录和文件名
 	excludePatternsFilePath := filepath.Join(currentDir, "exclude_patterns.txt")
 
-	excludeRegexps, _ := compileExcludePatterns(excludePatternsFilePath)
+	excludeRegexps, err := loadAndCompileExcludePatterns(excludePatternsFilePath)
+	if err != nil {
+		log.Printf("Error loading exclude patterns: %v", err)
+	}
 
 	// 创建 Redis 客户端
 	ctx := context.Background()
