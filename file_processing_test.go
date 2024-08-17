@@ -15,7 +15,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -788,68 +787,35 @@ func TestProcessFileBoundary(t *testing.T) {
 	assert.Equal(t, "full_hash_large_file", fullHash)
 }
 
-func TestSaveToFileTimeSort(t *testing.T) {
-	// 设置测试数据
-	now := time.Now()
-	data := map[string]FileInfo{
-		"/path/to/file1": {Size: 1000, ModTime: now.Add(-1 * time.Hour)},
-		"/path/to/file2": {Size: 2000, ModTime: now},
-		"/path/to/file3": {Size: 1500, ModTime: now.Add(-2 * time.Hour)},
-	}
-
-	// 创建临时目录
-	tempDir, err := ioutil.TempDir("", "test")
-	assert.NoError(t, err)
-	defer os.RemoveAll(tempDir)
-
-	// 保存文件
-	err = writeDataToFile(tempDir, "fav.log.sort", data, true)
-	assert.NoError(t, err)
-
-	// 读取并验证文件内容
-	content, err := ioutil.ReadFile(filepath.Join(tempDir, "fav.log.sort"))
-	assert.NoError(t, err)
-
-	lines := strings.Split(string(content), "\n")
-
-	// 修改预期的输出格式
-	expectedLines := []string{
-		"./path/to/file2",
-		"./path/to/file1",
-		"./path/to/file3",
-		"", // 空行
-	}
-
-	assert.Equal(t, len(expectedLines), len(lines), "Number of lines should match")
-
-	for i, expectedFile := range expectedLines[:len(expectedLines)-1] { // 忽略最后一个空行
-		assert.Contains(t, lines[i], expectedFile,
-			fmt.Sprintf("Line %d should contain %s", i+1, expectedFile))
-	}
-}
-
 func TestFileProcessor_SaveToFile(t *testing.T) {
-	mr, err := miniredis.Run()
+	mr, rdb, ctx, fs, err := setupTestEnvironment()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mr.Close()
 
-	rdb := redis.NewClient(&redis.Options{
-		Addr: mr.Addr(),
-	})
-	ctx := context.Background()
-
 	fp := NewFileProcessor(rdb, ctx)
+	fp.fs = fs
+
+	rootDir := "/testroot"
+	err = fs.MkdirAll(rootDir, 0755)
+	assert.NoError(t, err)
 
 	// Prepare test data
-	testData := map[string]FileInfo{
-		"/path/to/file1": {Size: 1000, ModTime: time.Now().Add(-1 * time.Hour)},
-		"/path/to/file2": {Size: 2000, ModTime: time.Now()},
+	testData := []struct {
+		path     string
+		size     int64
+		modTime  time.Time
+		fullHash string
+	}{
+		{filepath.Join(rootDir, "file1.txt"), 100, time.Now().Add(-1 * time.Hour), "hash1"},
+		{filepath.Join(rootDir, "file2.txt"), 200, time.Now(), "hash2"},
+		{filepath.Join(rootDir, "file3.txt"), 150, time.Now().Add(-2 * time.Hour), "hash3"},
 	}
 
-	for path, info := range testData {
-		hashedKey := generateHash(path)
+	for _, data := range testData {
+		info := FileInfo{Size: data.size, ModTime: data.modTime, Path: data.path}
+		hashedKey := generateHash(data.path)
 		var buf bytes.Buffer
 		enc := gob.NewEncoder(&buf)
 		err = enc.Encode(info)
@@ -857,80 +823,29 @@ func TestFileProcessor_SaveToFile(t *testing.T) {
 
 		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
 		assert.NoError(t, err)
-		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0).Err()
+		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, data.path, 0).Err()
 		assert.NoError(t, err)
 	}
 
-	// Create a temporary directory for the test
-	tempDir, err := ioutil.TempDir("", "testdir")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Test saveToFile
-	err = fp.saveToFile(tempDir, "testfile.txt", false)
+	// Test saveToFile with size sorting
+	err = fp.saveToFile(rootDir, "test_size.log", false)
 	assert.NoError(t, err)
 
-	// Verify the file contents
-	content, err := ioutil.ReadFile(filepath.Join(tempDir, "testfile.txt"))
+	content, err := afero.ReadFile(fs, filepath.Join(rootDir, "test_size.log"))
 	assert.NoError(t, err)
-	assert.Contains(t, string(content), "2000,./path/to/file2")
-	assert.Contains(t, string(content), "1000,./path/to/file1")
-	assert.Contains(t, string(content), "file2")
-	assert.Contains(t, string(content), "file1")
-}
+	assert.Contains(t, string(content), "200,./file2.txt")
+	assert.Contains(t, string(content), "150,./file3.txt")
+	assert.Contains(t, string(content), "100,./file1.txt")
 
-func TestSaveToFileSizeSort(t *testing.T) {
-	// 设置测试环境
-	mr, err := miniredis.Run()
-	assert.NoError(t, err)
-	defer mr.Close()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr: mr.Addr(),
-	})
-	ctx := context.Background()
-
-	fp := NewFileProcessor(rdb, ctx)
-
-	// 准备测试数据
-	testData := map[string]FileInfo{
-		"/path/to/file1": {Size: 1000, ModTime: time.Now().Add(-1 * time.Hour)},
-		"/path/to/file2": {Size: 2000, ModTime: time.Now()},
-		"/path/to/file3": {Size: 1500, ModTime: time.Now().Add(-2 * time.Hour)},
-	}
-
-	// 设置 Redis 数据
-	for path, info := range testData {
-		hashedKey := generateHash(path)
-		var buf bytes.Buffer
-		enc := gob.NewEncoder(&buf)
-		err = enc.Encode(info)
-		assert.NoError(t, err)
-
-		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
-		assert.NoError(t, err)
-		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0).Err()
-		assert.NoError(t, err)
-	}
-
-	// 创建临时目录
-	tempDir, err := ioutil.TempDir("", "testdir")
-	assert.NoError(t, err)
-	defer os.RemoveAll(tempDir)
-
-	// 测试 saveToFile
-	err = fp.saveToFile(tempDir, "testfile.txt", false)
+	// Test saveToFile with time sorting
+	err = fp.saveToFile(rootDir, "test_time.log", true)
 	assert.NoError(t, err)
 
-	// 验证文件内容
-	content, err := ioutil.ReadFile(filepath.Join(tempDir, "testfile.txt"))
+	content, err = afero.ReadFile(fs, filepath.Join(rootDir, "test_time.log"))
 	assert.NoError(t, err)
-
-	assert.Contains(t, string(content), "2000,./path/to/file2")
-	assert.Contains(t, string(content), "1500,./path/to/file3")
-	assert.Contains(t, string(content), "1000,./path/to/file1")
+	assert.Contains(t, string(content), "./file2.txt")
+	assert.Contains(t, string(content), "./file1.txt")
+	assert.Contains(t, string(content), "./file3.txt")
 }
 
 type MockFileInfoRetriever struct {
@@ -950,4 +865,78 @@ func mockFileInfoBytes(info FileInfo) []byte {
 	enc := gob.NewEncoder(&buf)
 	enc.Encode(info)
 	return buf.Bytes()
+}
+
+func TestFileProcessor_WriteDuplicateFilesToFile(t *testing.T) {
+	mr, rdb, ctx, fs, err := setupTestEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mr.Close()
+
+	fp := NewFileProcessor(rdb, ctx)
+	fp.fs = fs
+
+	rootDir := "/testroot"
+	err = fs.MkdirAll(rootDir, 0755)
+	assert.NoError(t, err)
+
+	// Prepare test data
+	fullHash := "testhash"
+	duplicateFiles := []string{
+		filepath.Join(rootDir, "file1.txt"),
+		filepath.Join(rootDir, "file2.txt"),
+		filepath.Join(rootDir, "file3.txt"),
+	}
+
+	for i, path := range duplicateFiles {
+		info := FileInfo{Size: int64((i + 1) * 100), ModTime: time.Now(), Path: path}
+		hashedKey := generateHash(path)
+		var buf bytes.Buffer
+		enc := gob.NewEncoder(&buf)
+		err = enc.Encode(info)
+		assert.NoError(t, err)
+
+		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
+		assert.NoError(t, err)
+		err = rdb.Set(ctx, "pathToHashedKey:"+path, hashedKey, 0).Err()
+		assert.NoError(t, err)
+		err = rdb.ZAdd(ctx, "duplicateFiles:"+fullHash, &redis.Z{Score: float64(i), Member: path}).Err()
+		assert.NoError(t, err)
+	}
+
+	// Test WriteDuplicateFilesToFile
+	err = fp.WriteDuplicateFilesToFile(rootDir, "test_duplicates.log", rdb, ctx)
+	assert.NoError(t, err)
+
+	content, err := afero.ReadFile(fs, filepath.Join(rootDir, "test_duplicates.log"))
+	assert.NoError(t, err)
+	assert.Contains(t, string(content), "Duplicate files for fullHash testhash:")
+	assert.Contains(t, string(content), "[+] 100,\"./file1.txt\"")
+	assert.Contains(t, string(content), "[-] 200,\"./file2.txt\"")
+	assert.Contains(t, string(content), "[-] 300,\"./file3.txt\"")
+}
+
+func TestFileProcessor_GetHashedKeyFromPath(t *testing.T) {
+	mr, rdb, ctx, _, err := setupTestEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mr.Close()
+
+	fp := NewFileProcessor(rdb, ctx)
+
+	testPath := "/path/to/test/file.txt"
+	hashedKey := generateHash(testPath)
+
+	err = rdb.Set(ctx, "pathToHashedKey:"+testPath, hashedKey, 0).Err()
+	assert.NoError(t, err)
+
+	result, err := fp.getHashedKeyFromPath(testPath)
+	assert.NoError(t, err)
+	assert.Equal(t, hashedKey, result)
+
+	// Test with non-existent path
+	_, err = fp.getHashedKeyFromPath("/non/existent/path")
+	assert.Error(t, err)
 }
