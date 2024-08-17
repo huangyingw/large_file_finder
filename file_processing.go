@@ -81,7 +81,6 @@ type FileProcessor struct {
 	saveFileInfoToRedisFunc func(*redis.Client, context.Context, string, FileInfo, string, string) error
 	fs                      afero.Fs
 	fileInfoRetriever       FileInfoRetriever
-	saveToFileFunc          func(dir, filename string, sortByModTime bool) error
 }
 
 func NewFileProcessor(Rdb *redis.Client, Ctx context.Context) *FileProcessor {
@@ -93,9 +92,71 @@ func NewFileProcessor(Rdb *redis.Client, Ctx context.Context) *FileProcessor {
 		fileInfoRetriever:       &RedisFileInfoRetriever{Rdb: Rdb, Ctx: Ctx},
 		saveFileInfoToRedisFunc: saveFileInfoToRedis,
 	}
-	fp.saveToFileFunc = fp.saveToFile
 	fp.calculateFileHashFunc = fp.calculateFileHash
 	return fp
+}
+
+// 修改 saveToFile 方法
+func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) error {
+	outputPath := filepath.Join(dir, filename)
+	outputDir := filepath.Dir(outputPath)
+	if err := fp.fs.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("error creating output directory: %w", err)
+	}
+
+	// 从 Redis 获取数据
+	iter := fp.Rdb.Scan(fp.Ctx, 0, "fileInfo:*", 0).Iterator()
+	data := make(map[string]FileInfo)
+
+	for iter.Next(fp.Ctx) {
+		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
+
+		originalPath, err := fp.Rdb.Get(fp.Ctx, "hashedKeyToPath:"+hashedKey).Result()
+		if err != nil {
+			log.Printf("Error getting original path for key %s: %v", hashedKey, err)
+			continue
+		}
+
+		fileInfo, err := fp.getFileInfoFromRedis(hashedKey)
+		if err != nil {
+			log.Printf("Error getting file info for key %s: %v", hashedKey, err)
+			continue
+		}
+
+		data[originalPath] = fileInfo
+	}
+
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("error iterating over Redis keys: %w", err)
+	}
+
+	if len(data) == 0 {
+		return nil
+	}
+
+	file, err := fp.fs.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("error creating file: %w", err)
+	}
+	defer file.Close()
+
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+
+	sortKeys(keys, data, sortByModTime)
+
+	for _, k := range keys {
+		fileInfo := data[k]
+		cleanedPath := cleanRelativePath(dir, k)
+		line := formatFileInfoLine(fileInfo, cleanedPath, sortByModTime)
+		if _, err := fmt.Fprint(file, line); err != nil {
+			return fmt.Errorf("error writing to file: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (fp *FileProcessor) ProcessFile(path string) error {
@@ -196,7 +257,7 @@ type FileInfoRetriever interface {
 func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
 	outputPath := filepath.Join(rootDir, outputFile)
 	outputDir := filepath.Dir(outputPath)
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := fp.fs.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("error creating output directory: %w", err)
 	}
 	file, err := fp.fs.Create(outputPath)
@@ -273,65 +334,6 @@ func (r *RedisFileInfoRetriever) getFileInfoFromRedis(hashedKey string) (FileInf
 		return fileInfo, fmt.Errorf("error decoding file info: %w", err)
 	}
 	return fileInfo, nil
-}
-
-func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) error {
-	outputPath := filepath.Join(dir, filename)
-	outputDir := filepath.Dir(outputPath)
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return fmt.Errorf("error creating output directory: %w", err)
-	}
-	iter := fp.Rdb.Scan(fp.Ctx, 0, "fileInfo:*", 0).Iterator()
-	data := make(map[string]FileInfo)
-
-	for iter.Next(fp.Ctx) {
-		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
-
-		originalPath, err := fp.Rdb.Get(fp.Ctx, "hashedKeyToPath:"+hashedKey).Result()
-		if err != nil {
-			log.Printf("Error getting original path for key %s: %v", hashedKey, err)
-			continue
-		}
-
-		fileInfo, err := fp.getFileInfoFromRedis(hashedKey)
-		if err != nil {
-			log.Printf("Error getting file info for key %s: %v", hashedKey, err)
-			continue
-		}
-
-		data[originalPath] = fileInfo
-	}
-
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("error iterating over Redis keys: %w", err)
-	}
-
-	if len(data) == 0 {
-		return nil
-	}
-
-	file, err := fp.fs.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("error creating file: %w", err)
-	}
-	defer file.Close()
-
-	keys := make([]string, 0, len(data))
-	for k := range data {
-		keys = append(keys, k)
-	}
-
-	sortKeys(keys, data, sortByModTime)
-
-	for _, k := range keys {
-		cleanedPath := cleanRelativePath(dir, k)
-		line := formatFileInfoLine(data[k], cleanedPath, sortByModTime)
-		if _, err := fmt.Fprint(file, line); err != nil {
-			return fmt.Errorf("error writing to file: %w", err)
-		}
-	}
-
-	return nil
 }
 
 func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
