@@ -4,6 +4,7 @@ SCRIPTPATH=$(dirname "$SCRIPT")
 cd "$SCRIPTPATH"
 
 go test ./... || exit 1
+go test ./... -cover
 
 #go mod init github.com/huangyingw/FileSorter
 #go mod download github.com/stretchr/testify
