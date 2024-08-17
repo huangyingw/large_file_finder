@@ -152,8 +152,11 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			continue
 		}
 
-		// 调用saveFileInfoToRedis函数来保存文件信息到Redis
-		if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, fileHash, fullHash); err != nil {
+		if err := saveFileInfoToRedis(rdb, ctx, fullPath, FileInfo{
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+			Path:    fullPath,
+		}, fileHash, fullHash); err != nil {
 			<-semaphore // 释放信号量
 			continue
 		}
@@ -181,7 +184,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			if !processedFullHashes[fullHash] {
 				for _, info := range infos {
 					log.Printf("Saving duplicate file info to Redis for file: %s", info.path)
-					err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info.FileInfo)
+					err := SaveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info.FileInfo)
 					if err != nil {
 						log.Printf("Error saving duplicate file info to Redis for file: %s, error: %v", info.path, err)
 						saveErr = err
