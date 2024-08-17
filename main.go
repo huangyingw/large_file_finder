@@ -62,7 +62,8 @@ func main() {
 
 	fp := NewFileProcessor(rdb, ctx)
 
-	if err := cleanUpOldRecords(rdb, ctx); err != nil {
+	// 调用 redis_client.go 中的 CleanUpOldRecords
+	if err := CleanUpOldRecords(rdb, ctx); err != nil {
 		log.Printf("Error cleaning up old records: %v", err)
 	}
 
