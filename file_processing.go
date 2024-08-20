@@ -8,119 +8,272 @@ import (
 	"encoding/gob"
 	"fmt"
 	"github.com/go-redis/redis/v8"
+	"github.com/spf13/afero"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
-	"sync/atomic"
+	"time"
 )
 
-// 获取文件信息
-func getFileInfoFromRedis(rdb *redis.Client, ctx context.Context, hashedKey string) (FileInfo, error) {
-	var fileInfo FileInfo
-	value, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+type FileProcessor struct {
+	Rdb                     *redis.Client
+	Ctx                     context.Context
+	generateHashFunc        func(string) string
+	calculateFileHashFunc   func(path string, limit int64) (string, error)
+	saveFileInfoToRedisFunc func(*redis.Client, context.Context, string, FileInfo, string, string) error
+	fs                      afero.Fs
+	fileInfoRetriever       FileInfoRetriever
+}
+
+func NewFileProcessor(Rdb *redis.Client, Ctx context.Context) *FileProcessor {
+	fp := &FileProcessor{
+		Rdb:                     Rdb,
+		Ctx:                     Ctx,
+		generateHashFunc:        generateHash,
+		fs:                      afero.NewOsFs(),
+		fileInfoRetriever:       &RedisFileInfoRetriever{Rdb: Rdb, Ctx: Ctx},
+		saveFileInfoToRedisFunc: saveFileInfoToRedis,
+	}
+	fp.calculateFileHashFunc = fp.calculateFileHash
+	return fp
+}
+
+// 修改 saveToFile 方法
+func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) error {
+	outputPath := filepath.Join(dir, filename)
+	outputDir := filepath.Dir(outputPath)
+	if err := fp.fs.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("error creating output directory: %w", err)
+	}
+
+	// 从 Redis 获取数据
+	iter := fp.Rdb.Scan(fp.Ctx, 0, "fileInfo:*", 0).Iterator()
+	data := make(map[string]FileInfo)
+
+	for iter.Next(fp.Ctx) {
+		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
+
+		originalPath, err := fp.Rdb.Get(fp.Ctx, "hashedKeyToPath:"+hashedKey).Result()
+		if err != nil {
+			log.Printf("Error getting original path for key %s: %v", hashedKey, err)
+			continue
+		}
+
+		fileInfo, err := fp.getFileInfoFromRedis(hashedKey)
+		if err != nil {
+			log.Printf("Error getting file info for key %s: %v", hashedKey, err)
+			continue
+		}
+
+		data[originalPath] = fileInfo
+	}
+
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("error iterating over Redis keys: %w", err)
+	}
+
+	if len(data) == 0 {
+		return nil
+	}
+
+	file, err := fp.fs.Create(outputPath)
 	if err != nil {
-		return fileInfo, err
+		return fmt.Errorf("error creating file: %w", err)
+	}
+	defer file.Close()
+
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+
+	sortKeys(keys, data, sortByModTime)
+
+	for _, k := range keys {
+		fileInfo := data[k]
+		cleanedPath := cleanRelativePath(dir, k)
+		line := formatFileInfoLine(fileInfo, cleanedPath, sortByModTime)
+		if _, err := fmt.Fprint(file, line); err != nil {
+			return fmt.Errorf("error writing to file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (fp *FileProcessor) ProcessFile(path string) error {
+	log.Printf("Processing file: %s", path)
+
+	info, err := fp.fs.Stat(path)
+	if err != nil {
+		return fmt.Errorf("error getting file info: %w", err)
+	}
+
+	fileHash, err := fp.calculateFileHashFunc(path, ReadLimit)
+	if err != nil {
+		return fmt.Errorf("error calculating file hash: %w", err)
+	}
+	log.Printf("Calculated file hash: %s", fileHash)
+
+	fullHash, err := fp.calculateFileHashFunc(path, FullFileReadCmd)
+	if err != nil {
+		return fmt.Errorf("error calculating full file hash: %w", err)
+	}
+	log.Printf("Calculated full hash: %s", fullHash)
+
+	hashedKey := fp.generateHashFunc(path)
+	log.Printf("Generated hashed key: %s", hashedKey)
+
+	fileInfo := FileInfo{
+		Size:    info.Size(),
+		ModTime: info.ModTime(),
+		Path:    path,
+	}
+
+	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, path, fileInfo, fileHash, fullHash)
+	if err != nil {
+		return fmt.Errorf("error saving file info to Redis: %w", err)
+	}
+	log.Printf("Saved file info to Redis")
+
+	return nil
+}
+
+type timestamp struct {
+	hour, minute, second int
+}
+
+func parseTimestamp(ts string) timestamp {
+	parts := strings.Split(ts, ":")
+	hour, _ := strconv.Atoi(parts[0])
+	minute, _ := strconv.Atoi(parts[1])
+	second := 0
+	if len(parts) > 2 {
+		second, _ = strconv.Atoi(parts[2])
+	}
+	return timestamp{hour, minute, second}
+}
+
+const (
+	ReadLimit       = 100 * 1024 // 100KB
+	FullFileReadCmd = -1
+)
+
+type FileInfo struct {
+	Size    int64
+	ModTime time.Time
+	Path    string // 新增 Path 字段
+}
+
+type FileInfoRetriever interface {
+	getFileInfoFromRedis(hashedKey string) (FileInfo, error)
+}
+
+func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
+	outputPath := filepath.Join(rootDir, outputFile)
+	outputDir := filepath.Dir(outputPath)
+	if err := fp.fs.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("error creating output directory: %w", err)
+	}
+	file, err := fp.fs.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("error creating file: %w", err)
+	}
+	defer file.Close()
+	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
+	for iter.Next(ctx) {
+		duplicateFilesKey := iter.Val()
+		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
+		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
+		if err != nil {
+			log.Printf("Error getting duplicate files for key %s: %v", duplicateFilesKey, err)
+			continue
+		}
+		if len(duplicateFiles) > 1 {
+			fmt.Fprintf(file, "Duplicate files for fullHash %s:\n", fullHash)
+			for i, duplicateFile := range duplicateFiles {
+				hashedKey, err := fp.getHashedKeyFromPath(duplicateFile)
+				if err != nil {
+					log.Printf("Error getting hashed key for path %s: %v", duplicateFile, err)
+					continue
+				}
+				fileInfo, err := fp.getFileInfoFromRedis(hashedKey)
+				if err != nil {
+					log.Printf("Error getting file info for key %s: %v", hashedKey, err)
+					continue
+				}
+				cleanedPath := cleanRelativePath(rootDir, duplicateFile)
+				var line string
+				if i == 0 {
+					line = fmt.Sprintf("[+] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
+				} else {
+					line = fmt.Sprintf("[-] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
+				}
+				if _, err := file.WriteString(line); err != nil {
+					log.Printf("Error writing line: %v", err)
+					continue
+				}
+			}
+			// Add a single newline after each group of duplicate files
+			if _, err := file.WriteString("\n"); err != nil {
+				log.Printf("Error writing newline: %v", err)
+			}
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("error during iteration: %w", err)
+	}
+	return nil
+}
+
+func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
+	return fp.fileInfoRetriever.getFileInfoFromRedis(hashedKey)
+}
+
+type RedisFileInfoRetriever struct {
+	Rdb *redis.Client
+	Ctx context.Context
+}
+
+func (r *RedisFileInfoRetriever) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
+	var fileInfo FileInfo
+	value, err := r.Rdb.Get(r.Ctx, "fileInfo:"+hashedKey).Bytes()
+	if err != nil {
+		return fileInfo, fmt.Errorf("error getting file info from Redis: %w", err)
 	}
 
 	buf := bytes.NewBuffer(value)
 	dec := gob.NewDecoder(buf)
 	err = dec.Decode(&fileInfo)
-	return fileInfo, err
-}
-
-// 保存文件信息到文件
-func saveToFile(dir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
-	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
-	var data = make(map[string]FileInfo)
-
-	foundData := false
-
-	for iter.Next(ctx) {
-		hashedKey := iter.Val()
-		hashedKey = strings.TrimPrefix(hashedKey, "fileInfo:")
-
-		originalPath, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
-		if err != nil {
-			continue
-		}
-
-		fileInfo, err := getFileInfoFromRedis(rdb, ctx, hashedKey)
-		if err != nil {
-			continue
-		}
-
-		data[originalPath] = fileInfo
-		foundData = true
-	}
-
-	if !foundData {
-		return nil
-	}
-
-	var lines []string
-	var keys []string
-	for k := range data {
-		keys = append(keys, k)
-	}
-	sortKeys(keys, data, sortByModTime)
-	for _, k := range keys {
-		relativePath, _ := filepath.Rel(dir, k)
-		line := formatFileInfoLine(data[k], relativePath, sortByModTime)
-		lines = append(lines, line)
-	}
-
-	if len(lines) == 0 {
-		return nil
-	}
-
-	return writeLinesToFile(filepath.Join(dir, filename), lines)
-}
-
-// 处理文件
-func processFile(path string, typ os.FileMode, rdb *redis.Client, ctx context.Context, startTime int64) {
-	defer atomic.AddInt32(&progressCounter, 1)
-
-
-	hashedKey := generateHash(path)
-
-	// 检查Redis中是否已存在该文件的信息
-	exists, err := rdb.Exists(ctx, "fileInfo:"+hashedKey).Result()
-	if err != nil || exists > 0 {
-		return
-	}
-
-	info, err := os.Stat(path)
 	if err != nil {
-		return
+		return fileInfo, fmt.Errorf("error decoding file info: %w", err)
 	}
-
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-		return
-	}
-
-	// 计算文件的SHA-512哈希值（只读取前4KB）
-	fileHash, err := getFileHash(path, rdb, ctx)
-	if err != nil {
-		return
-	}
-
-	// 调用saveFileInfoToRedis函数来保存文件信息到Redis，不需要完整文件的哈希值
-	if err := saveFileInfoToRedis(rdb, ctx, hashedKey, path, buf, fileHash, ""); err != nil {
-		return
-	}
+	return fileInfo, nil
 }
 
-// 格式化文件信息行
-func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bool) string {
-	if sortByModTime {
-		return fmt.Sprintf("\"./%s\"", relativePath)
+func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
+	f, err := fp.fs.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("error opening file: %w", err)
 	}
-	return fmt.Sprintf("%d,\"./%s\"", fileInfo.Size, relativePath)
+	defer f.Close()
+
+	h := sha512.New()
+	if limit == FullFileReadCmd {
+		if _, err := io.Copy(h, f); err != nil {
+			return "", fmt.Errorf("error reading full file: %w", err)
+		}
+	} else {
+		if _, err := io.CopyN(h, f, limit); err != nil && err != io.EOF {
+			return "", fmt.Errorf("error reading file: %w", err)
+		}
+	}
+
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 const readLimit = 100 * 1024 // 100KB
@@ -134,11 +287,11 @@ func processSymlink(path string) {
 }
 
 // 处理关键词
-func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ctx context.Context, rootDir string) {
+func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ctx context.Context, rootDir string) {
 	// 对 keywordFiles 进行排序
 	sort.Slice(keywordFiles, func(i, j int) bool {
-		sizeI, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(keywordFiles[i])))
-		sizeJ, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(keywordFiles[j])))
+		sizeI, _ := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, keywordFiles[i])))
+		sizeJ, _ := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, keywordFiles[j])))
 		return sizeI > sizeJ
 	})
 
@@ -146,7 +299,7 @@ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ct
 	var outputData strings.Builder
 	outputData.WriteString(keyword + "\n")
 	for _, filePath := range keywordFiles {
-		fileSize, _ := getFileSize(rdb, ctx, filepath.Join(rootDir, cleanPath(filePath)))
+		fileSize, _ := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, filePath)))
 		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
 	}
 
@@ -163,96 +316,34 @@ func processKeyword(keyword string, keywordFiles []string, rdb *redis.Client, ct
 	}
 }
 
-// 清理和标准化路径
-func cleanPath(path string) string {
-	path = strings.Trim(path, `"`)
-	if strings.HasPrefix(path, "./") {
-		path = strings.TrimPrefix(path, "./")
+func getFileInfo(rdb *redis.Client, ctx context.Context, filePath string) (FileInfo, error) {
+	hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+filePath).Result()
+	if err != nil {
+		return FileInfo{}, err
 	}
-	return path
+
+	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+	if err != nil {
+		return FileInfo{}, err
+	}
+
+	var fileInfo FileInfo
+	buf := bytes.NewBuffer(fileInfoData)
+	dec := gob.NewDecoder(buf)
+	if err := dec.Decode(&fileInfo); err != nil {
+		return FileInfo{}, err
+	}
+
+	return fileInfo, nil
 }
 
-// 获取文件大小
-func getFileSize(rdb *redis.Client, ctx context.Context, fullPath string) (int64, error) {
-	size, err := getFileSizeFromRedis(rdb, ctx, fullPath)
-	if err != nil {
-		return 0, err
-	}
-	return size, nil
+const timestampWeight = 1000000000 // 使用一个非常大的数字
+
+func CalculateScore(timestamps []string, fileNameLength int) float64 {
+	timestampCount := len(timestamps)
+	return float64(-(timestampCount*timestampWeight + fileNameLength))
 }
 
-// 获取文件哈希值
-func getHash(path string, rdb *redis.Client, ctx context.Context, keyPrefix string, limit int64) (string, error) {
-	hashedKey := generateHash(path)
-	hashKey := keyPrefix + hashedKey
-
-	// 尝试从Redis获取哈希值
-	hash, err := rdb.Get(ctx, hashKey).Result()
-	if err == nil && hash != "" {
-		return hash, nil
-	}
-
-	if err != nil && err != redis.Nil {
-		return "", err
-	}
-
-	// 计算哈希值
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	hasher := sha512.New()
-
-	if limit > 0 {
-		// 只读取前 limit 字节
-		reader := io.LimitReader(file, limit)
-		if _, err := io.Copy(hasher, reader); err != nil {
-			return "", err
-		}
-	} else {
-		// 读取整个文件
-		buf := make([]byte, 4*1024*1024) // 每次读取 4MB 数据
-		for {
-			n, err := file.Read(buf)
-			if err != nil && err != io.EOF {
-				return "", err
-			}
-			if n == 0 {
-				break
-			}
-			if _, err := hasher.Write(buf[:n]); err != nil {
-				return "", err
-			}
-		}
-	}
-
-	hashBytes := hasher.Sum(nil)
-	hash = fmt.Sprintf("%x", hashBytes)
-
-	// 将计算出的哈希值保存到Redis
-	err = rdb.Set(ctx, hashKey, hash, 0).Err()
-	if err != nil {
-		return "", err
-	}
-	return hash, nil
-}
-
-// 获取文件哈希
-func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
-	const readLimit = 100 * 1024 // 100KB
-	return getHash(path, rdb, ctx, "hashedKeyToFileHash:", readLimit)
-}
-
-// 获取完整文件哈希
-func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
-	const noLimit = -1 // No limit for full file hash
-	hash, err := getHash(path, rdb, ctx, "hashedKeyToFullHash:", noLimit)
-	if err != nil {
-		log.Printf("Error calculating full hash for file %s: %v", path, err)
-	} else {
-		log.Printf("Full hash for file %s: %s", path, hash)
-	}
-	return hash, err
+func (fp *FileProcessor) getHashedKeyFromPath(path string) (string, error) {
+	return fp.Rdb.Get(fp.Ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
 }

@@ -14,100 +14,117 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 var (
-	semaphore        = make(chan struct{}, 100)
-	mu               sync.Mutex
-	duplicateCounter int32
-	progressCounter  int32
+	rootDir          string
+	redisAddr        string
+	workerCount      int
+	minSizeBytes     int64
+	deleteDuplicates bool
+	findDuplicates   bool
+	outputDuplicates bool
+	maxDuplicates    int
+	semaphore        chan struct{}
 )
 
+func init() {
+	flag.StringVar(&rootDir, "rootDir", "", "Root directory to start the search")
+	flag.StringVar(&redisAddr, "redisAddr", "localhost:6379", "Redis server address")
+	flag.IntVar(&workerCount, "workers", runtime.NumCPU(), "Number of worker goroutines")
+	flag.Int64Var(&minSizeBytes, "minSize", 200*1024*1024, "Minimum file size in bytes")
+	flag.BoolVar(&deleteDuplicates, "delete-duplicates", false, "Delete duplicate files")
+	flag.BoolVar(&findDuplicates, "find-duplicates", false, "Find duplicate files")
+	flag.BoolVar(&outputDuplicates, "output-duplicates", false, "Output duplicate files")
+	flag.IntVar(&maxDuplicates, "max-duplicates", 50, "Maximum number of duplicates to process")
+}
+
 func main() {
-	// 初始化全局计数器
-	atomic.StoreInt32(&duplicateCounter, 0)
-	startTime := time.Now().Unix()
+	flag.Parse()
 
-	// 解析命令行参数
-	rootDir, minSizeBytes, excludeRegexps, rdb, ctx, deleteDuplicates, findDuplicates, outputDuplicates, maxDuplicates, err := initializeApp()
-	if err != nil {
-		log.Println(err)
-		return
+	if rootDir == "" {
+		log.Fatal("rootDir must be specified")
 	}
 
-	log.Println("Starting to clean up old records")
-	err = cleanUpOldRecords(rdb, ctx)
-	if err != nil {
-		log.Println("Error cleaning up old records:", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer rdb.Close()
+
+	semaphore = make(chan struct{}, runtime.NumCPU())
+
+	fp := NewFileProcessor(rdb, ctx)
+
+	// 调用 redis_client.go 中的 CleanUpOldRecords
+	if err := CleanUpOldRecords(rdb, ctx); err != nil {
+		log.Printf("Error cleaning up old records: %v", err)
 	}
 
-	// 根据参数决定是否进行重复文件查找
 	if findDuplicates {
-		log.Println("Finding duplicates")
-		err = findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates) // 查找重复文件
-		if err != nil {
-			log.Println("Error finding duplicates:", err)
+		if err := findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates); err != nil {
+			log.Fatalf("Error finding duplicates: %v", err)
 		}
 		return
 	}
 
-	// 根据参数决定是否输出重复文件
 	if outputDuplicates {
-		log.Println("Writing duplicates to file")
-		err = writeDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx) // 输出结果
-		if err != nil {
-			log.Println("Error writing duplicates to file:", err)
+		if err := fp.WriteDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx); err != nil {
+			log.Fatalf("Error writing duplicates to file: %v", err)
 		}
-		return // 如果进行重复查找并输出结果，则结束程序
+		return
 	}
 
-	// 根据参数决定是否删除重复文件
 	if deleteDuplicates {
-		log.Println("Deleting duplicate files")
-		err = deleteDuplicateFiles(rootDir, rdb, ctx)
-		if err != nil {
-			log.Println("Error deleting duplicate files:", err)
+		if err := deleteDuplicateFiles(rootDir, rdb, ctx); err != nil {
+			log.Fatalf("Error deleting duplicate files: %v", err)
 		}
-		return // 如果删除重复文件，则结束程序
+		return
 	}
 
-	progressCtx, progressCancel := context.WithCancel(ctx)
-	defer progressCancel()
+	fileChan := make(chan string, workerCount)
+	var wg sync.WaitGroup
 
-	// 启动进度监控 Goroutine
-	go monitorProgress(progressCtx, &progressCounter)
+	// Start worker goroutines
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for filePath := range fileChan {
+				if err := fp.ProcessFile(filePath); err != nil {
+					log.Printf("Error processing file %s: %v", filePath, err)
+				}
+			}
+		}()
+	}
 
-	var stopProcessing bool
-	workerCount := 500
-	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
+	// Start progress monitoring
+	go monitorProgress(ctx)
 
-	log.Printf("Starting to walk files in directory: %s\n", rootDir)
-	err = walkFiles(rootDir, minSizeBytes, excludeRegexps, taskQueue, rdb, ctx, startTime)
+	// Walk through files
+	err := walkFiles(rootDir, minSizeBytes, fileChan)
+	close(fileChan)
 	if err != nil {
-		log.Printf("Error walking files: %s\n", err)
+		log.Printf("Error walking files: %v", err)
 	}
 
-	stopFunc()
-	poolWg.Wait()
+	wg.Wait()
 
-	// 此时所有任务已经完成，取消进度监控上下文
-	progressCancel()
+	// Save results
+	if err := fp.saveToFile(rootDir, "fav.log", false); err != nil {
+		log.Printf("Error saving to fav.log: %v", err)
+	}
+	if err := fp.saveToFile(rootDir, "fav.log.sort", true); err != nil {
+		log.Printf("Error saving to fav.log.sort: %v", err)
+	}
 
-	log.Printf("Final progress: %d files processed.\n", atomic.LoadInt32(&progressCounter))
-
-	// 文件处理完成后的保存操作
-	log.Println("Saving data to fav.log")
-	performSaveOperation(rootDir, "fav.log", false, rdb, ctx)
-	log.Println("Saving data to fav.log.sort")
-	performSaveOperation(rootDir, "fav.log.sort", true, rdb, ctx)
-
-	// 新增逻辑：处理 fav.log 文件，类似于 find_sort_similar_filenames 函数的操作
-	// favLogPath := filepath.Join(rootDir, "fav.log") // 假设 fav.log 在 rootDir 目录下
-	// processFavLog(favLogPath, rootDir, rdb, ctx)
+	log.Println("Processing complete")
 }
 
 func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context) {
@@ -197,7 +214,10 @@ func initializeApp() (string, int64, []*regexp.Regexp, *redis.Client, context.Co
 	// 拼接当前目录和文件名
 	excludePatternsFilePath := filepath.Join(currentDir, "exclude_patterns.txt")
 
-	excludeRegexps, _ := compileExcludePatterns(excludePatternsFilePath)
+	excludeRegexps, err := loadAndCompileExcludePatterns(excludePatternsFilePath)
+	if err != nil {
+		log.Printf("Error loading exclude patterns: %v", err)
+	}
 
 	// 创建 Redis 客户端
 	ctx := context.Background()
@@ -207,60 +227,36 @@ func initializeApp() (string, int64, []*regexp.Regexp, *redis.Client, context.Co
 }
 
 // walkFiles 遍历指定目录下的文件，并根据条件进行处理
-func walkFiles(rootDir string, minSizeBytes int64, excludeRegexps []*regexp.Regexp, taskQueue chan<- Task, rdb *redis.Client, ctx context.Context, startTime int64) error {
+func walkFiles(rootDir string, minSizeBytes int64, fileChan chan<- string) error {
 	return godirwalk.Walk(rootDir, &godirwalk.Options{
-		Callback: func(osPathname string, dirent *godirwalk.Dirent) error {
-			// 排除模式匹配
-			for _, re := range excludeRegexps {
-				if re.MatchString(osPathname) {
-					return nil
-				}
-			}
-
-			fileInfo, err := os.Lstat(osPathname)
-			if err != nil {
-				log.Printf("Error getting file info: %s\n", err)
-				return err
-			}
-
-			// 检查文件大小是否满足最小阈值
-			if fileInfo.Size() < minSizeBytes {
+		Callback: func(osPathname string, de *godirwalk.Dirent) error {
+			if de.IsDir() {
 				return nil
 			}
-
-			// 将任务发送到工作池
-			taskQueue <- func() {
-				if fileInfo.Mode().IsDir() {
-					log.Printf("Processing directory: %s\n", osPathname)
-					processDirectory(osPathname)
-				} else if fileInfo.Mode().IsRegular() {
-					log.Printf("Processing file: %s\n", osPathname)
-					processFile(osPathname, fileInfo.Mode(), rdb, ctx, startTime)
-				} else if fileInfo.Mode()&os.ModeSymlink != 0 {
-					log.Printf("Processing symlink: %s\n", osPathname)
-					processSymlink(osPathname)
-				} else {
-					log.Printf("Skipping unknown type: %s\n", osPathname)
-				}
+			info, err := os.Stat(osPathname)
+			if err != nil {
+				return fmt.Errorf("error getting file info for %s: %w", osPathname, err)
+			}
+			if info.Size() >= minSizeBytes {
+				fileChan <- osPathname
 			}
 			return nil
 		},
-		Unsorted: true, // 设置为true以提高性能
+		Unsorted: true,
 	})
 }
 
-// monitorProgress 在给定的上下文中定期打印处理进度
-func monitorProgress(ctx context.Context, progressCounter *int32) {
-	ticker := time.NewTicker(1 * time.Second)
+func monitorProgress(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ctx.Done(): // 检查上下文是否被取消
+		case <-ctx.Done():
 			return
-		case <-ticker.C: // 每秒触发一次
-			processed := atomic.LoadInt32(progressCounter)
-			log.Printf("Progress: %d files processed.\n", processed)
+		case <-ticker.C:
+			// You might want to implement a way to track progress
+			log.Println("Processing files...")
 		}
 	}
 }

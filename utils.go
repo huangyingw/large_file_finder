@@ -1,25 +1,133 @@
 // utils.go
-// 该文件包含用于整个应用程序的通用工具函数。
-
 package main
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha512"
 	"encoding/gob"
 	"fmt"
 	"github.com/go-redis/redis/v8"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-func loadExcludePatterns(filename string) ([]string, error) {
+var mu sync.Mutex
+
+func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
+	return calculateFileHash(path, -1)
+}
+
+func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
+	return calculateFileHash(path, 100*1024) // 100KB
+}
+
+func calculateFileHash(path string, limit int64) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("error opening file: %w", err)
+	}
+	defer f.Close()
+
+	h := sha512.New()
+	if limit == -1 {
+		if _, err := io.Copy(h, f); err != nil {
+			return "", fmt.Errorf("error reading full file: %w", err)
+		}
+	} else {
+		if _, err := io.CopyN(h, f, limit); err != nil && err != io.EOF {
+			return "", fmt.Errorf("error reading file: %w", err)
+		}
+	}
+
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+func ExtractTimestamps(filePath string) []string {
+	pattern := regexp.MustCompile(`[:,/](\d{1,2}(?::\d{1,2}){1,2})`)
+	matches := pattern.FindAllStringSubmatch(filePath, -1)
+
+	timestamps := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			timestamps = append(timestamps, FormatTimestamp(match[1]))
+		}
+	}
+
+	uniqueTimestamps := make([]string, 0, len(timestamps))
+	seen := make(map[string]bool)
+	for _, ts := range timestamps {
+		if !seen[ts] {
+			seen[ts] = true
+			uniqueTimestamps = append(uniqueTimestamps, ts)
+		}
+	}
+
+	sort.Slice(uniqueTimestamps, func(i, j int) bool {
+		return TimestampToSeconds(uniqueTimestamps[i]) < TimestampToSeconds(uniqueTimestamps[j])
+	})
+
+	return uniqueTimestamps
+}
+
+func cleanRelativePath(rootDir, fullPath string) string {
+	rootDir, _ = filepath.Abs(rootDir)
+	fullPath, _ = filepath.Abs(fullPath)
+
+	rel, err := filepath.Rel(rootDir, fullPath)
+	if err != nil {
+		return fullPath
+	}
+
+	rel = strings.TrimPrefix(rel, "./")
+	for strings.HasPrefix(rel, "../") {
+		rel = strings.TrimPrefix(rel, "../")
+	}
+
+	if !strings.HasPrefix(rel, "./") {
+		rel = "./" + rel
+	}
+
+	return filepath.ToSlash(rel)
+}
+
+func FormatTimestamp(timestamp string) string {
+	parts := strings.Split(timestamp, ":")
+	formattedParts := make([]string, len(parts))
+	for i, part := range parts {
+		num, _ := strconv.Atoi(part)
+		formattedParts[i] = fmt.Sprintf("%02d", num)
+	}
+	return strings.Join(formattedParts, ":")
+}
+
+func TimestampToSeconds(timestamp string) int {
+	parts := strings.Split(timestamp, ":")
+	var totalSeconds int
+	if len(parts) == 2 {
+		minutes, _ := strconv.Atoi(parts[0])
+		seconds, _ := strconv.Atoi(parts[1])
+		totalSeconds = minutes*60 + seconds
+	} else if len(parts) == 3 {
+		hours, _ := strconv.Atoi(parts[0])
+		minutes, _ := strconv.Atoi(parts[1])
+		seconds, _ := strconv.Atoi(parts[2])
+		totalSeconds = hours*3600 + minutes*60 + seconds
+	}
+	return totalSeconds
+}
+
+// 合并 loadExcludePatterns 和 compileExcludePatterns
+func loadAndCompileExcludePatterns(filename string) ([]*regexp.Regexp, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -29,10 +137,21 @@ func loadExcludePatterns(filename string) ([]string, error) {
 	var patterns []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		pattern := scanner.Text()
-		patterns = append(patterns, pattern)
+		patterns = append(patterns, scanner.Text())
 	}
-	return patterns, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	excludeRegexps := make([]*regexp.Regexp, len(patterns))
+	for i, pattern := range patterns {
+		regexPattern := strings.Replace(pattern, "*", ".*", -1)
+		excludeRegexps[i], err = regexp.Compile(regexPattern)
+		if err != nil {
+			return nil, fmt.Errorf("Invalid regex pattern '%s': %v", regexPattern, err)
+		}
+	}
+	return excludeRegexps, nil
 }
 
 func sortKeys(keys []string, data map[string]FileInfo, sortByModTime bool) {
@@ -42,26 +161,12 @@ func sortKeys(keys []string, data map[string]FileInfo, sortByModTime bool) {
 		})
 	} else {
 		sort.Slice(keys, func(i, j int) bool {
+			if data[keys[i]].Size == data[keys[j]].Size {
+				return keys[i] < keys[j] // 如果大小相同，按路径字母顺序排序
+			}
 			return data[keys[i]].Size > data[keys[j]].Size
 		})
 	}
-}
-
-func compileExcludePatterns(filename string) ([]*regexp.Regexp, error) {
-	excludePatterns, err := loadExcludePatterns(filename)
-	if err != nil {
-		return nil, err
-	}
-
-	excludeRegexps := make([]*regexp.Regexp, len(excludePatterns))
-	for i, pattern := range excludePatterns {
-		regexPattern := strings.Replace(pattern, "*", ".*", -1)
-		excludeRegexps[i], err = regexp.Compile(regexPattern)
-		if err != nil {
-			return nil, fmt.Errorf("Invalid regex pattern '%s': %v", regexPattern, err)
-		}
-	}
-	return excludeRegexps, nil
 }
 
 func performSaveOperation(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) {
@@ -88,12 +193,6 @@ func writeLinesToFile(filename string, lines []string) error {
 	return nil
 }
 
-// FileInfo holds file information
-type FileInfo struct {
-	Size    int64
-	ModTime time.Time
-}
-
 type fileInfo struct {
 	name      string
 	path      string
@@ -108,15 +207,12 @@ type fileInfo struct {
 
 func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
 	fileCount := 0
-	header := fmt.Sprintf("Duplicate files for hash %s:", fileHash)
-	hashes := make(map[string][]fileInfo)
+	hashes := make(map[string][]fileInfo) // 添加这行
 	for _, fullPath := range filePaths {
-		// 确保只处理rootDir下的文件
 		if !strings.HasPrefix(fullPath, rootDir) {
 			continue
 		}
 
-		// 检查文件是否存在
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			continue
 		}
@@ -157,8 +253,11 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			continue
 		}
 
-		// 调用saveFileInfoToRedis函数来保存文件信息到Redis
-		if err := saveFileInfoToRedis(rdb, ctx, generateHash(fullPath), fullPath, buf, fileHash, fullHash); err != nil {
+		if err := saveFileInfoToRedis(rdb, ctx, fullPath, FileInfo{
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+			Path:    fullPath,
+		}, fileHash, fullHash); err != nil {
 			<-semaphore // 释放信号量
 			continue
 		}
@@ -171,8 +270,8 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			fileHash:  fileHash,
 			fullHash:  fullHash,
 			line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
-			header:    header,
-			FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
+			// 删除 header 字段
+			FileInfo: FileInfo{Size: info.Size(), ModTime: info.ModTime()},
 		}
 		hashes[fullHash] = append(hashes[fullHash], infoStruct)
 		fileCount++
@@ -186,7 +285,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			if !processedFullHashes[fullHash] {
 				for _, info := range infos {
 					log.Printf("Saving duplicate file info to Redis for file: %s", info.path)
-					err := saveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info)
+					err := SaveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info.FileInfo)
 					if err != nil {
 						log.Printf("Error saving duplicate file info to Redis for file: %s, error: %v", info.path, err)
 						saveErr = err
@@ -299,80 +398,68 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
 	for iter.Next(ctx) {
 		duplicateFilesKey := iter.Val()
-
-		// 获取 fullHash
 		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
 
-		// 获取重复文件列表，按文件名长度（score）排序
 		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
 		if err != nil {
+			log.Printf("Error getting duplicate files for key %s: %v", duplicateFilesKey, err)
 			continue
 		}
 
 		if len(duplicateFiles) > 1 {
 			header := fmt.Sprintf("Duplicate files for fullHash %s:\n", fullHash)
 			if _, err := file.WriteString(header); err != nil {
+				log.Printf("Error writing header: %v", err)
 				continue
 			}
 			for i, duplicateFile := range duplicateFiles {
-				// 获取文件信息
-				hashedKey, err := getHashedKeyFromPath(rdb, ctx, duplicateFile)
+				fp := NewFileProcessor(rdb, ctx)
+				hashedKey, err := fp.getHashedKeyFromPath(duplicateFile)
 				if err != nil {
+					log.Printf("Error getting hashed key for path %s: %v", duplicateFile, err)
 					continue
 				}
 				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
 				if err != nil {
+					log.Printf("Error getting file info for key %s: %v", hashedKey, err)
 					continue
 				}
 
-				// 解码文件信息
 				var fileInfo FileInfo
 				buf := bytes.NewBuffer(fileInfoData)
 				dec := gob.NewDecoder(buf)
 				if err := dec.Decode(&fileInfo); err != nil {
+					log.Printf("Error decoding file info: %v", err)
 					continue
 				}
 
-				// 获取相对路径
-				relativePath, err := filepath.Rel(rootDir, duplicateFile)
-				if err != nil {
-					continue
-				}
-
-				// 使用 filepath.Clean 来规范化路径
-				cleanPath := filepath.Clean(relativePath)
-
-				// 根据文件是否为第一个，添加不同的前缀
+				cleanedPath := cleanRelativePath(rootDir, duplicateFile)
 				var line string
 				if i == 0 {
-					line = fmt.Sprintf("[+] %d,\"./%s\"\n", fileInfo.Size, cleanPath)
+					line = fmt.Sprintf("\t[+] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
 				} else {
-					line = fmt.Sprintf("[-] %d,\"./%s\"\n", fileInfo.Size, cleanPath)
+					line = fmt.Sprintf("\t[-] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
 				}
-
 				if _, err := file.WriteString(line); err != nil {
+					log.Printf("Error writing line: %v", err)
 					continue
 				}
 			}
-			if _, err := file.WriteString("\n"); err != nil {
-				continue
-			}
+		} else {
+			log.Printf("No duplicates found for hash %s", fullHash)
 		}
 	}
 
 	if err := iter.Err(); err != nil {
-		return err
+		return fmt.Errorf("error during iteration: %w", err)
 	}
-
-	// 添加日志记录
-	log.Printf("Duplicate files have been written to %s", filepath.Join(rootDir, outputFile))
 
 	return nil
 }
 
 func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, fullPath string) (int64, error) {
-	// 首先从 fullPath 获取 hashedKey
-	hashedKey, err := getHashedKeyFromPath(rdb, ctx, fullPath)
+	fp := NewFileProcessor(rdb, ctx)
+	hashedKey, err := fp.getHashedKeyFromPath(fullPath)
 	if err != nil {
 		return 0, fmt.Errorf("error getting hashed key for %s: %w", fullPath, err)
 	}
@@ -393,17 +480,12 @@ func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, fullPath strin
 	return fileInfo.Size, nil
 }
 
-func getHashedKeyFromPath(rdb *redis.Client, ctx context.Context, path string) (string, error) {
-	hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
-	return hashedKey, err
-}
-
 // extractFileName extracts the file name from a given file path.
 func extractFileName(filePath string) string {
 	return strings.ToLower(filepath.Base(filePath))
 }
 
-var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?))\b`)
+var pattern = regexp.MustCompile(`\b(?:\d{2}\.\d{2}\.\d{2}|(?:\d+|[a-z]+(?:\d+[a-z]*)?)|[a-z]+|[0-9]+)\b`)
 
 func extractKeywords(fileNames []string, stopProcessing *bool) []string {
 	workerCount := 100
@@ -521,4 +603,86 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
 
 func shouldStopDuplicateFileSearch(duplicateCount int, maxDuplicateFiles int) bool {
 	return duplicateCount >= maxDuplicateFiles
+}
+
+func saveToFile(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
+	data := make(map[string]FileInfo)
+
+	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
+	for iter.Next(ctx) {
+		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
+
+		originalPath, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
+		if err != nil {
+			log.Printf("Error getting original path for key %s: %v", hashedKey, err)
+			continue
+		}
+
+		fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+		if err != nil {
+			log.Printf("Error getting file info for key %s: %v", hashedKey, err)
+			continue
+		}
+
+		var fileInfo FileInfo
+		buf := bytes.NewBuffer(fileInfoData)
+		dec := gob.NewDecoder(buf)
+		if err := dec.Decode(&fileInfo); err != nil {
+			log.Printf("Error decoding file info for key %s: %v", hashedKey, err)
+			continue
+		}
+
+		fileInfo.Path = originalPath // 设置 Path 字段
+		data[originalPath] = fileInfo
+	}
+
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("error iterating over Redis keys: %w", err)
+	}
+
+	return writeDataToFile(rootDir, filename, data, sortByModTime)
+}
+
+func writeDataToFile(rootDir, filename string, data map[string]FileInfo, sortByModTime bool) error {
+	outputPath := filepath.Join(rootDir, filename)
+	outputDir := filepath.Dir(outputPath)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("error creating output directory: %w", err)
+	}
+
+	file, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("error creating file: %w", err)
+	}
+	defer file.Close()
+
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+
+	sortKeys(keys, data, sortByModTime)
+
+	for _, k := range keys {
+		fileInfo := data[k]
+		cleanedPath := cleanRelativePath(rootDir, k) // 使用 k 而不是 fileInfo.Path
+		line := formatFileInfoLine(fileInfo, cleanedPath, sortByModTime)
+		if _, err := fmt.Fprint(file, line); err != nil {
+			return fmt.Errorf("error writing to file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bool) string {
+	if sortByModTime {
+		return fmt.Sprintf("%s\n", relativePath)
+	}
+	return fmt.Sprintf("%d,%s\n", fileInfo.Size, relativePath)
+}
+
+// decodeGob decodes gob-encoded data into the provided interface
+func decodeGob(data []byte, v interface{}) error {
+	return gob.NewDecoder(bytes.NewReader(data)).Decode(v)
 }
