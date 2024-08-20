@@ -1,8 +1,10 @@
+*/.git/*
 */myproject/*
 */nvme0n1p2/*
 */nvme0n1p3/*
+*/snapraid.content
+*/snapraid.parity
 */time_machine/*
 */var/lib/*
 */var/log/*
 ./sda1/*
-*/.git/*
