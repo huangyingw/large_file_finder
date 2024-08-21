@@ -257,7 +257,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
 			Path:    fullPath,
-		}, fileHash, fullHash); err != nil {
+		}, fileHash, fullHash, true); err != nil {
 			<-semaphore // 释放信号量
 			continue
 		}
