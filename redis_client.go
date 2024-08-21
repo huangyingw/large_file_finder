@@ -47,7 +47,8 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, path string, in
 		}
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil {
+	_, err := pipe.Exec(ctx)
+	if err != nil {
 		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
 	}
 
