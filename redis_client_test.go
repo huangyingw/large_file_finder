@@ -36,7 +36,7 @@ func TestSaveFileInfoToRedis(t *testing.T) {
 	testFileHash := "testfilehash"
 	testFullHash := "testfullhash"
 
-	err = saveFileInfoToRedis(rdb, ctx, testPath, testInfo, testFileHash, testFullHash)
+	err = saveFileInfoToRedis(rdb, ctx, testPath, testInfo, testFileHash, testFullHash, true)
 	assert.NoError(t, err)
 
 	// Verify the data was saved correctly
