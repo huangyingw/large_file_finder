@@ -34,18 +34,18 @@ func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, e
 func calculateFileHash(path string, limit int64) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("error opening file: %w", err)
+		return "", fmt.Errorf("error opening file %q: %w", path, err)
 	}
 	defer f.Close()
 
 	h := sha512.New()
 	if limit == -1 {
 		if _, err := io.Copy(h, f); err != nil {
-			return "", fmt.Errorf("error reading full file: %w", err)
+			return "", fmt.Errorf("error reading full file %q: %w", path, err)
 		}
 	} else {
 		if _, err := io.CopyN(h, f, limit); err != nil && err != io.EOF {
-			return "", fmt.Errorf("error reading file: %w", err)
+			return "", fmt.Errorf("error reading file %q: %w", path, err)
 		}
 	}
 
@@ -677,9 +677,9 @@ func writeDataToFile(rootDir, filename string, data map[string]FileInfo, sortByM
 
 func formatFileInfoLine(fileInfo FileInfo, relativePath string, sortByModTime bool) string {
 	if sortByModTime {
-		return fmt.Sprintf("%s\n", relativePath)
+		return fmt.Sprintf("\"%s\"\n", relativePath)
 	}
-	return fmt.Sprintf("%d,%s\n", fileInfo.Size, relativePath)
+	return fmt.Sprintf("%d,\"%s\"\n", fileInfo.Size, relativePath)
 }
 
 // decodeGob decodes gob-encoded data into the provided interface
