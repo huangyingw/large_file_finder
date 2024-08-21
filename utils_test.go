@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/gob"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"io/ioutil"
+	"log"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,43 +66,6 @@ func TestSortKeys(t *testing.T) {
 	assert.Equal(t, []string{"file2", "file1", "file3"}, keys)
 }
 
-func TestGetFileSizeFromRedis(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mr.Close()
-
-	rdb := redis.NewClient(&redis.Options{
-		Addr: mr.Addr(),
-	})
-	ctx := context.Background()
-
-	// Prepare test data
-	testPath := "/path/to/testfile.txt"
-	testSize := int64(1024)
-	testInfo := FileInfo{
-		Size:    testSize,
-		ModTime: time.Now(),
-	}
-
-	hashedKey := generateHash(testPath)
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	err = enc.Encode(testInfo)
-	assert.NoError(t, err)
-
-	err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
-	assert.NoError(t, err)
-	err = rdb.Set(ctx, "pathToHashedKey:"+testPath, hashedKey, 0).Err()
-	assert.NoError(t, err)
-
-	// Test getFileSizeFromRedis
-	size, err := getFileSizeFromRedis(rdb, ctx, testPath)
-	assert.NoError(t, err)
-	assert.Equal(t, testSize, size)
-}
-
 func TestExtractFileName(t *testing.T) {
 	testCases := []struct {
 		input    string
@@ -148,4 +115,180 @@ func TestFindCloseFiles(t *testing.T) {
 	}
 
 	assert.Equal(t, expected, result)
+}
+
+func TestWalkFiles(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "test_walk_files")
+	assert.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	dirs := []string{
+		"dir1",
+		"dir with spaces",
+		filepath.Join("dir2", "subdir"),
+		"dir3",
+	}
+	for _, dir := range dirs {
+		err := os.MkdirAll(filepath.Join(tempDir, dir), 0755)
+		assert.NoError(t, err)
+	}
+
+	files := map[string]int64{
+		filepath.Join("dir1", "file1.txt"):                       100,
+		filepath.Join("dir with spaces", "file with spaces.txt"): 200,
+		filepath.Join("dir2", "sub dir", "file3_特殊字符.txt"):       300,
+		filepath.Join("dir3", "file4!@#$%.txt"):                  400,
+		filepath.Join("dir3", "small_file.txt"):                  50,
+	}
+	for file, size := range files {
+        fullPath := filepath.Join(tempDir, file)
+        err := os.MkdirAll(filepath.Dir(fullPath), 0755)
+        assert.NoError(t, err)
+        err = ioutil.WriteFile(fullPath, make([]byte, size), 0644)
+		assert.NoError(t, err)
+	}
+
+	err = os.Symlink(filepath.Join(tempDir, "dir2"), filepath.Join(tempDir, "symlink dir"))
+	assert.NoError(t, err)
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	fileChan := make(chan string, 10)
+	go func() {
+		err := walkFiles(tempDir, 100, fileChan)
+		assert.NoError(t, err)
+		close(fileChan)
+	}()
+
+	var result []string
+	for file := range fileChan {
+		result = append(result, file)
+	}
+
+	expected := []string{
+		filepath.Join("dir1", "file1.txt"),
+		filepath.Join("dir with spaces", "file with spaces.txt"),
+		filepath.Join("dir2", "sub dir", "file3_特殊字符.txt"),
+		filepath.Join("dir3", "file4!@#$%.txt"),
+	}
+
+	// 使用 filepath.ToSlash 来标准化路径
+	for i, path := range result {
+		result[i] = filepath.ToSlash(path)
+	}
+	for i, path := range expected {
+		expected[i] = filepath.ToSlash(path)
+	}
+
+	// 排序结果和期望值，以确保比较的一致性
+	sort.Strings(result)
+	sort.Strings(expected)
+
+	assert.Equal(t, expected, result)
+
+	logOutput := logBuf.String()
+	assert.Contains(t, logOutput, "Skipping symlink:")
+	assert.NotContains(t, logOutput, "no such file or directory")
+	assert.Equal(t, 1, strings.Count(logOutput, "Skipping symlink:"), "Symlink should be logged only once")
+
+	for _, file := range result {
+		assert.NotContains(t, file, "symlink dir", "Symlink should be skipped")
+	}
+}
+
+func TestFormatFileInfoLine(t *testing.T) {
+	testCases := []struct {
+		name           string
+		fileInfo       FileInfo
+		relativePath   string
+		sortByModTime  bool
+		expectedOutput string
+	}{
+		{
+			name:           "Normal path",
+			fileInfo:       FileInfo{Size: 1000},
+			relativePath:   "./normal/path.txt",
+			sortByModTime:  false,
+			expectedOutput: "1000,\"./normal/path.txt\"\n",
+		},
+		{
+			name:           "Path with spaces",
+			fileInfo:       FileInfo{Size: 2000},
+			relativePath:   "./path with spaces/file.txt",
+			sortByModTime:  false,
+			expectedOutput: "2000,\"./path with spaces/file.txt\"\n",
+		},
+		{
+			name:           "Path with special characters",
+			fileInfo:       FileInfo{Size: 3000},
+			relativePath:   "./special_字符/file!@#.txt",
+			sortByModTime:  false,
+			expectedOutput: "3000,\"./special_字符/file!@#.txt\"\n",
+		},
+		{
+			name:           "Sort by mod time",
+			fileInfo:       FileInfo{Size: 4000},
+			relativePath:   "./mod_time/file.txt",
+			sortByModTime:  true,
+			expectedOutput: "\"./mod_time/file.txt\"\n",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			output := formatFileInfoLine(tc.fileInfo, tc.relativePath, tc.sortByModTime)
+			assert.Equal(t, tc.expectedOutput, output)
+		})
+	}
+}
+
+func TestGetFileSizeFromRedis(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	ctx := context.Background()
+
+	tempDir, err := ioutil.TempDir("", "test_redis_file_size")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	specialFiles := []struct {
+		name    string
+		content string
+	}{
+		{"normal_file.txt", "content1"},
+		{"file with spaces.txt", "content2"},
+		{"file_with_特殊字符.txt", "content3"},
+		{"file!@#$%^&*().txt", "content4"},
+	}
+
+	for _, sf := range specialFiles {
+		filePath := filepath.Join(tempDir, sf.name)
+		err := ioutil.WriteFile(filePath, []byte(sf.content), 0644)
+		require.NoError(t, err)
+
+		info, err := os.Stat(filePath)
+		require.NoError(t, err)
+
+		fileInfo := FileInfo{
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+			Path:    filePath,
+		}
+
+		err = saveFileInfoToRedis(rdb, ctx, filePath, fileInfo, "dummyhash", "dummyfullhash", true)
+		require.NoError(t, err)
+
+		t.Run("GetSize_"+sf.name, func(t *testing.T) {
+			size, err := getFileSizeFromRedis(rdb, ctx, filePath)
+			assert.NoError(t, err)
+			assert.Equal(t, int64(len(sf.content)), size)
+		})
+	}
 }
