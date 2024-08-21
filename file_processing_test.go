@@ -36,6 +36,10 @@ func setupTestEnvironment(t *testing.T) (*miniredis.Miniredis, *redis.Client, co
 	return mr, rdb, ctx, fs, fp
 }
 
+func cleanupRedis(mr *miniredis.Miniredis) {
+	mr.FlushAll()
+}
+
 func TestProcessFile(t *testing.T) {
 	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
 	defer mr.Close()
@@ -297,9 +301,9 @@ func TestFileProcessor_SaveToFile(t *testing.T) {
 
 	content, err := afero.ReadFile(fs, filepath.Join(rootDir, "test_size.log"))
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "200,./file2.txt")
-	assert.Contains(t, string(content), "150,./file3.txt")
-	assert.Contains(t, string(content), "100,./file1.txt")
+	assert.Contains(t, string(content), "200,\"./file2.txt\"")
+	assert.Contains(t, string(content), "150,\"./file3.txt\"")
+	assert.Contains(t, string(content), "100,\"./file1.txt\"")
 
 	// Test saveToFile with time sorting
 	err = fp.saveToFile(rootDir, "test_time.log", true)
@@ -310,55 +314,6 @@ func TestFileProcessor_SaveToFile(t *testing.T) {
 	assert.Contains(t, string(content), "./file2.txt")
 	assert.Contains(t, string(content), "./file1.txt")
 	assert.Contains(t, string(content), "./file3.txt")
-}
-
-func TestFileProcessor_WriteDuplicateFilesToFile(t *testing.T) {
-	mr, rdb, ctx, fs, fp := setupTestEnvironment(t) // 确保传递 t
-	defer mr.Close()
-
-	// 使用 TempDir 并避免错误的类型赋值
-	tempDir, err := afero.TempDir(fs, "", "test")
-	require.NoError(t, err)
-	defer fs.RemoveAll(tempDir)
-
-	fullHash := "testhash"
-	_, err = rdb.ZAdd(ctx, "duplicateFiles:"+fullHash,
-		&redis.Z{Score: 1, Member: "/path/to/file1"},
-		&redis.Z{Score: 2, Member: "/path/to/file2"},
-		&redis.Z{Score: 3, Member: "/path/to/file3"},
-	).Result()
-	require.NoError(t, err)
-
-	// 模拟文件信息
-	for i, path := range []string{"/path/to/file1", "/path/to/file2", "/path/to/file3"} {
-		hashedKey := fmt.Sprintf("hashedKey%d", i+1)
-		info := FileInfo{Size: int64((i + 1) * 1000), ModTime: time.Now()}
-		var buf bytes.Buffer
-		enc := gob.NewEncoder(&buf)
-		err = enc.Encode(info)
-		require.NoError(t, err)
-		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
-		require.NoError(t, err)
-		err = rdb.Set(ctx, "pathToHashedKey:"+path, hashedKey, 0).Err()
-		require.NoError(t, err)
-	}
-
-	// 执行测试函数
-	err = fp.WriteDuplicateFilesToFile(tempDir, "fav.log.dup", rdb, ctx)
-	require.NoError(t, err)
-
-	// 读取并验证文件内容
-	content, err := afero.ReadFile(fs, filepath.Join(tempDir, "fav.log.dup"))
-	require.NoError(t, err)
-
-	expectedContent := fmt.Sprintf(`Duplicate files for fullHash %s:
-[+] 1000,"./path/to/file1"
-[-] 2000,"./path/to/file2"
-[-] 3000,"./path/to/file3"
-
-`, fullHash)
-
-	assert.Equal(t, expectedContent, string(content))
 }
 
 // Update the mockSaveFileInfoToRedis function definition
@@ -623,20 +578,19 @@ func testSaveToFile(t *testing.T, fp *FileProcessor, fs afero.Fs, tempDir, filen
 
 	var expectedContent string
 	if sortByModTime {
-		expectedContent = `./path/to/file2_02:34:56_03:45:67.mp4
-./path/to/file1_01:23:45.mp4
-./path/to/file3.mp4
+		expectedContent = `"./path/to/file2_02:34:56_03:45:67.mp4"
+"./path/to/file1_01:23:45.mp4"
+"./path/to/file3.mp4"
 `
 	} else {
-		expectedContent = `2172777224,./path/to/file2_02:34:56_03:45:67.mp4
-2172777224,./path/to/file3.mp4
-209720828,./path/to/file1_01:23:45.mp4
+		expectedContent = `2172777224,"./path/to/file2_02:34:56_03:45:67.mp4"
+2172777224,"./path/to/file3.mp4"
+209720828,"./path/to/file1_01:23:45.mp4"
 `
 	}
 
-	if string(content) != expectedContent {
-		return fmt.Errorf("%s content does not match expected", filename)
-	}
+	assert.Equal(t, expectedContent, string(content), "File content does not match expected")
+
 	return nil
 }
 
@@ -668,12 +622,6 @@ func TestFileContentVerification(t *testing.T) {
 	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
 	defer mr.Close()
 
-	// 确保 fp 被正确初始化
-	if fp == nil {
-		fp = NewFileProcessor(rdb, ctx)
-		fp.fs = fs
-	}
-
 	tempDir, err := afero.TempDir(fs, "", "testdir")
 	require.NoError(t, err, "Failed to create temp directory")
 	defer fs.RemoveAll(tempDir)
@@ -695,17 +643,20 @@ func TestFileContentVerification(t *testing.T) {
 	err = setupTestFiles(t, fp, rdb, ctx, fs, testData)
 	require.NoError(t, err, "Failed to setup test files")
 
-	// 测试 saveToFile 方法 (fav.log)
-	err = testSaveToFile(t, fp, fs, tempDir, "fav.log", false)
-	require.NoError(t, err, "Failed to test saveToFile for fav.log")
+	t.Run("Test saveToFile (fav.log)", func(t *testing.T) {
+		err := testSaveToFile(t, fp, fs, tempDir, "fav.log", false)
+		require.NoError(t, err, "Failed to test saveToFile for fav.log")
+	})
 
-	// 测试 saveToFile 方法 (fav.log.sort)
-	err = testSaveToFile(t, fp, fs, tempDir, "fav.log.sort", true)
-	require.NoError(t, err, "Failed to test saveToFile for fav.log.sort")
+	t.Run("Test saveToFile (fav.log.sort)", func(t *testing.T) {
+		err := testSaveToFile(t, fp, fs, tempDir, "fav.log.sort", true)
+		require.NoError(t, err, "Failed to test saveToFile for fav.log.sort")
+	})
 
-	// 测试 WriteDuplicateFilesToFile 方法
-	err = testWriteDuplicateFilesToFile(t, fp, fs, rdb, ctx, tempDir, fullHash)
-	require.NoError(t, err, "Failed to test WriteDuplicateFilesToFile")
+	t.Run("Test WriteDuplicateFilesToFile", func(t *testing.T) {
+		err := testWriteDuplicateFilesToFile(t, fp, fs, rdb, ctx, tempDir, fullHash)
+		require.NoError(t, err, "Failed to test WriteDuplicateFilesToFile")
+	})
 }
 
 func TestGetFileInfoFromRedis(t *testing.T) {
@@ -926,4 +877,200 @@ func mockFileInfoBytes(info FileInfo) []byte {
 	enc := gob.NewEncoder(&buf)
 	enc.Encode(info)
 	return buf.Bytes()
+}
+
+func TestFileOperationsWithSpecialChars(t *testing.T) {
+	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
+	defer mr.Close()
+
+	tempDir, err := ioutil.TempDir("", "test_special_chars")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	specialFiles := []struct {
+		name    string
+		content string
+	}{
+		{"file with spaces.txt", "content1"},
+		{"file_with_特殊字符.txt", "content2"},
+		{"file!@#$%^&*().txt", "content3"},
+		{"áéíóú.txt", "content4"},
+	}
+
+	for _, sf := range specialFiles {
+		sf := sf // capture range variable
+		t.Run(sf.name, func(t *testing.T) {
+			cleanupRedis(mr) // 清理 Redis 数据
+
+			filePath := filepath.Join(tempDir, sf.name)
+			err := afero.WriteFile(fs, filePath, []byte(sf.content), 0644)
+			require.NoError(t, err)
+
+			t.Run("FileSize", func(t *testing.T) {
+				info, err := fs.Stat(filePath)
+				assert.NoError(t, err)
+				assert.Equal(t, int64(len(sf.content)), info.Size())
+			})
+
+			t.Run("FileHash", func(t *testing.T) {
+				hash, err := fp.calculateFileHashFunc(filePath, -1)
+				assert.NoError(t, err)
+				assert.NotEmpty(t, hash)
+				assert.Regexp(t, "^[0-9a-f]+$", hash)
+			})
+
+			t.Run("ProcessFileWithHash", func(t *testing.T) {
+				cleanupRedis(mr) // 清理 Redis 数据
+				err := fp.ProcessFile(filePath, true)
+				assert.NoError(t, err)
+
+				hashedKey := generateHash(filePath)
+
+				// Verify file info
+				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+				require.NoError(t, err)
+				assert.NotNil(t, fileInfoData)
+
+				var storedFileInfo FileInfo
+				err = gob.NewDecoder(bytes.NewReader(fileInfoData)).Decode(&storedFileInfo)
+				require.NoError(t, err)
+				assert.Equal(t, int64(len(sf.content)), storedFileInfo.Size)
+
+				// Verify path data
+				pathValue, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
+				require.NoError(t, err)
+				assert.Equal(t, filePath, pathValue)
+
+				// Verify hash data
+				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+				assert.NoError(t, err)
+				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+				assert.NoError(t, err)
+			})
+
+			t.Run("ProcessFileWithoutHash", func(t *testing.T) {
+				cleanupRedis(mr) // 清理 Redis 数据
+				err := fp.ProcessFile(filePath, false)
+				assert.NoError(t, err)
+
+				hashedKey := generateHash(filePath)
+
+				// Verify file info exists
+				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+				assert.NoError(t, err)
+				assert.NotNil(t, fileInfoData)
+
+				var storedFileInfo FileInfo
+				err = gob.NewDecoder(bytes.NewReader(fileInfoData)).Decode(&storedFileInfo)
+				require.NoError(t, err)
+				assert.Equal(t, int64(len(sf.content)), storedFileInfo.Size)
+
+				// Verify path data exists
+				pathValue, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
+				assert.NoError(t, err)
+				assert.Equal(t, filePath, pathValue)
+
+				// Verify hash data does not exist
+				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+				assert.Equal(t, redis.Nil, err)
+				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+				assert.Equal(t, redis.Nil, err)
+
+				isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", filePath).Result()
+				assert.NoError(t, err)
+				assert.False(t, isMember)
+			})
+		})
+	}
+}
+
+func TestFileProcessor_ProcessFile(t *testing.T) {
+	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
+	defer mr.Close()
+
+	rootDir := "/testroot"
+	err := fs.MkdirAll(rootDir, 0755)
+	require.NoError(t, err)
+
+	// Create a test file
+	testFilePath := filepath.Join(rootDir, "testfile.txt")
+	err = afero.WriteFile(fs, testFilePath, []byte("test content"), 0644)
+	require.NoError(t, err)
+
+	// Process the file
+	err = fp.ProcessFile(testFilePath, true) // Add the second argument 'true' to calculate hashes
+	assert.NoError(t, err)
+
+	hashedKey := generateHash(testFilePath)
+
+	// Verify file info
+	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+	require.NoError(t, err)
+	assert.NotNil(t, fileInfoData)
+
+	var storedFileInfo FileInfo
+	err = gob.NewDecoder(bytes.NewReader(fileInfoData)).Decode(&storedFileInfo)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len("test content")), storedFileInfo.Size)
+
+	// Verify path data
+	pathValue, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, testFilePath, pathValue)
+
+	// Verify hash data
+	_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+	assert.NoError(t, err)
+	_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+	assert.NoError(t, err)
+}
+
+func TestFileProcessor_WriteDuplicateFilesToFile(t *testing.T) {
+	mr, rdb, ctx, fs, fp := setupTestEnvironment(t) // 传递 t
+	defer mr.Close()
+
+	// Use TempDir without `:=` to avoid redeclaring `err`
+	tempDir, tempErr := afero.TempDir(fs, "", "test")
+	require.NoError(t, tempErr)
+	defer fs.RemoveAll(tempDir)
+
+	// Rest of the code
+	fullHash := "testhash"
+	_, err := rdb.ZAdd(ctx, "duplicateFiles:"+fullHash,
+		&redis.Z{Score: 1, Member: "/path/to/file1"},
+		&redis.Z{Score: 2, Member: "/path/to/file2"},
+		&redis.Z{Score: 3, Member: "/path/to/file3"},
+	).Result()
+	require.NoError(t, err)
+
+	// 模拟文件信息
+	for i, path := range []string{"/path/to/file1", "/path/to/file2", "/path/to/file3"} {
+		hashedKey := fmt.Sprintf("hashedKey%d", i+1)
+		info := FileInfo{Size: int64((i + 1) * 1000), ModTime: time.Now()}
+		var buf bytes.Buffer
+		enc := gob.NewEncoder(&buf)
+		err = enc.Encode(info)
+		require.NoError(t, err)
+		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
+		require.NoError(t, err)
+		err = rdb.Set(ctx, "pathToHashedKey:"+path, hashedKey, 0).Err()
+		require.NoError(t, err)
+	}
+
+	// 执行测试函数
+	err = fp.WriteDuplicateFilesToFile(tempDir, "fav.log.dup", rdb, ctx)
+	require.NoError(t, err)
+
+	// 读取并验证文件内容
+	content, err := afero.ReadFile(fs, filepath.Join(tempDir, "fav.log.dup"))
+	require.NoError(t, err)
+
+	expectedContent := fmt.Sprintf(`Duplicate files for fullHash %s:
+[+] 1000,"./path/to/file1"
+[-] 2000,"./path/to/file2"
+[-] 3000,"./path/to/file3"
+
+`, fullHash)
+
+	assert.Equal(t, expectedContent, string(content))
 }
