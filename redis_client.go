@@ -22,7 +22,7 @@ func generateHash(s string) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, path string, info FileInfo, fileHash, fullHash string) error {
+func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, path string, info FileInfo, fileHash, fullHash string, calculateHashes bool) error {
 	hashedKey := generateHash(path)
 
 	var buf bytes.Buffer
@@ -37,12 +37,15 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, path string, in
 
 	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
 	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, normalizedPath, 0)
-	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, normalizedPath)
-	if fullHash != "" {
-		pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0)
-	}
 	pipe.Set(ctx, "pathToHashedKey:"+normalizedPath, hashedKey, 0)
-	pipe.Set(ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
+
+	if calculateHashes {
+		pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, normalizedPath)
+		pipe.Set(ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
+		if fullHash != "" {
+			pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0)
+		}
+	}
 
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
