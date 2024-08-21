@@ -62,7 +62,6 @@ func main() {
 
 	fp := NewFileProcessor(rdb, ctx)
 
-	// 调用 redis_client.go 中的 CleanUpOldRecords
 	if err := CleanUpOldRecords(rdb, ctx); err != nil {
 		log.Printf("Error cleaning up old records: %v", err)
 	}
@@ -97,7 +96,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for filePath := range fileChan {
-				if err := fp.ProcessFile(filePath); err != nil {
+				if err := fp.ProcessFile(filePath, findDuplicates); err != nil {
 					log.Printf("Error processing file %s: %v", filePath, err)
 				}
 			}
