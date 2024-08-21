@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"github.com/go-redis/redis/v8"
-	"github.com/karrick/godirwalk"
 	"log"
 	"os"
 	"path/filepath"
@@ -225,23 +224,34 @@ func initializeApp() (string, int64, []*regexp.Regexp, *redis.Client, context.Co
 	return *rootDir, minSizeBytes, excludeRegexps, rdb, ctx, *deleteDuplicates, *findDuplicates, *outputDuplicates, *maxDuplicates, nil
 }
 
-// walkFiles 遍历指定目录下的文件，并根据条件进行处理
 func walkFiles(rootDir string, minSizeBytes int64, fileChan chan<- string) error {
-	return godirwalk.Walk(rootDir, &godirwalk.Options{
-		Callback: func(osPathname string, de *godirwalk.Dirent) error {
-			if de.IsDir() {
+	return filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			log.Printf("Error accessing path %q: %v", path, err)
+			return filepath.SkipDir
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			log.Printf("Skipping symlink: %q", path)
+			return nil
+		}
+
+		if info.Size() >= minSizeBytes {
+			relPath, err := filepath.Rel(rootDir, path)
+			if err != nil {
+				log.Printf("Error getting relative path for %q: %v", path, err)
 				return nil
 			}
-			info, err := os.Stat(osPathname)
-			if err != nil {
-				return fmt.Errorf("error getting file info for %s: %w", osPathname, err)
-			}
-			if info.Size() >= minSizeBytes {
-				fileChan <- osPathname
-			}
-			return nil
-		},
-		Unsorted: true,
+			// 使用 filepath.ToSlash 来标准化路径分隔符
+			relPath = filepath.ToSlash(relPath)
+			fileChan <- relPath
+		}
+
+		return nil
 	})
 }
 
