@@ -91,7 +91,12 @@ func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) er
 		return fmt.Errorf("error creating output directory: %w", err)
 	}
 
-	// 从 Redis 获取数据
+	file, err := fp.fs.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("error creating file: %w", err)
+	}
+	defer file.Close()
+
 	iter := fp.Rdb.Scan(fp.Ctx, 0, "fileInfo:*", 0).Iterator()
 	data := make(map[string]FileInfo)
 
@@ -117,16 +122,6 @@ func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) er
 		return fmt.Errorf("error iterating over Redis keys: %w", err)
 	}
 
-	if len(data) == 0 {
-		return nil
-	}
-
-	file, err := fp.fs.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("error creating file: %w", err)
-	}
-	defer file.Close()
-
 	keys := make([]string, 0, len(data))
 	for k := range data {
 		keys = append(keys, k)
@@ -138,7 +133,7 @@ func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) er
 		fileInfo := data[k]
 		cleanedPath := cleanRelativePath(dir, k)
 		line := formatFileInfoLine(fileInfo, cleanedPath, sortByModTime)
-		if _, err := fmt.Fprint(file, line); err != nil {
+		if _, err := file.WriteString(line); err != nil {
 			return fmt.Errorf("error writing to file: %w", err)
 		}
 	}
@@ -246,7 +241,7 @@ func (r *RedisFileInfoRetriever) getFileInfoFromRedis(hashedKey string) (FileInf
 	var fileInfo FileInfo
 	value, err := r.Rdb.Get(r.Ctx, "fileInfo:"+hashedKey).Bytes()
 	if err != nil {
-		return fileInfo, fmt.Errorf("error getting file info from Redis: %w", err)
+		return fileInfo, err // 直接返回错误，包括 redis.Nil
 	}
 
 	buf := bytes.NewBuffer(value)
