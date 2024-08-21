@@ -24,7 +24,7 @@ type FileProcessor struct {
 	Ctx                     context.Context
 	generateHashFunc        func(string) string
 	calculateFileHashFunc   func(path string, limit int64) (string, error)
-	saveFileInfoToRedisFunc func(*redis.Client, context.Context, string, FileInfo, string, string) error
+	saveFileInfoToRedisFunc func(*redis.Client, context.Context, string, FileInfo, string, string, bool) error
 	fs                      afero.Fs
 	fileInfoRetriever       FileInfoRetriever
 }
@@ -40,6 +40,47 @@ func NewFileProcessor(Rdb *redis.Client, Ctx context.Context) *FileProcessor {
 	}
 	fp.calculateFileHashFunc = fp.calculateFileHash
 	return fp
+}
+
+func (fp *FileProcessor) ProcessFile(path string, calculateHashes bool) error {
+	log.Printf("Processing file: %s", path)
+
+	info, err := fp.fs.Stat(path)
+	if err != nil {
+		return fmt.Errorf("error getting file info: %w", err)
+	}
+
+	hashedKey := fp.generateHashFunc(path)
+	log.Printf("Generated hashed key: %s", hashedKey)
+
+	fileInfo := FileInfo{
+		Size:    info.Size(),
+		ModTime: info.ModTime(),
+		Path:    path,
+	}
+
+	var fileHash, fullHash string
+	if calculateHashes {
+		fileHash, err = fp.calculateFileHashFunc(path, ReadLimit)
+		if err != nil {
+			return fmt.Errorf("error calculating file hash: %w", err)
+		}
+		log.Printf("Calculated file hash: %s", fileHash)
+
+		fullHash, err = fp.calculateFileHashFunc(path, FullFileReadCmd)
+		if err != nil {
+			return fmt.Errorf("error calculating full file hash: %w", err)
+		}
+		log.Printf("Calculated full hash: %s", fullHash)
+	}
+
+	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, path, fileInfo, fileHash, fullHash, calculateHashes)
+	if err != nil {
+		return fmt.Errorf("error saving file info to Redis: %w", err)
+	}
+	log.Printf("Saved file info to Redis")
+
+	return nil
 }
 
 // 修改 saveToFile 方法
@@ -101,44 +142,6 @@ func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) er
 			return fmt.Errorf("error writing to file: %w", err)
 		}
 	}
-
-	return nil
-}
-
-func (fp *FileProcessor) ProcessFile(path string) error {
-	log.Printf("Processing file: %s", path)
-
-	info, err := fp.fs.Stat(path)
-	if err != nil {
-		return fmt.Errorf("error getting file info: %w", err)
-	}
-
-	fileHash, err := fp.calculateFileHashFunc(path, ReadLimit)
-	if err != nil {
-		return fmt.Errorf("error calculating file hash: %w", err)
-	}
-	log.Printf("Calculated file hash: %s", fileHash)
-
-	fullHash, err := fp.calculateFileHashFunc(path, FullFileReadCmd)
-	if err != nil {
-		return fmt.Errorf("error calculating full file hash: %w", err)
-	}
-	log.Printf("Calculated full hash: %s", fullHash)
-
-	hashedKey := fp.generateHashFunc(path)
-	log.Printf("Generated hashed key: %s", hashedKey)
-
-	fileInfo := FileInfo{
-		Size:    info.Size(),
-		ModTime: info.ModTime(),
-		Path:    path,
-	}
-
-	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, path, fileInfo, fileHash, fullHash)
-	if err != nil {
-		return fmt.Errorf("error saving file info to Redis: %w", err)
-	}
-	log.Printf("Saved file info to Redis")
 
 	return nil
 }
