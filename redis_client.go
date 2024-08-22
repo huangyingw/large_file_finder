@@ -22,8 +22,8 @@ func generateHash(s string) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, path string, info FileInfo, fileHash, fullHash string, calculateHashes bool) error {
-	hashedKey := generateHash(path)
+func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullPath string, info FileInfo, fileHash, fullHash string, calculateHashes bool) error {
+	hashedKey := generateHash(fullPath)
 
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
@@ -31,16 +31,14 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, path string, in
 		return fmt.Errorf("error encoding file info: %w", err)
 	}
 
-	normalizedPath := filepath.Clean(path)
-
 	pipe := rdb.Pipeline()
 
 	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
-	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, normalizedPath, 0)
-	pipe.Set(ctx, "pathToHashedKey:"+normalizedPath, hashedKey, 0)
+	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, fullPath, 0)
+	pipe.Set(ctx, "pathToHashedKey:"+fullPath, hashedKey, 0)
 
 	if calculateHashes {
-		pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, normalizedPath)
+		pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, fullPath)
 		pipe.Set(ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
 		if fullHash != "" {
 			pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0)
@@ -49,7 +47,7 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, path string, in
 
 	_, err := pipe.Exec(ctx)
 	if err != nil {
-		return fmt.Errorf("error executing pipeline for file: %s: %w", path, err)
+		return fmt.Errorf("error executing pipeline for file: %s: %w", fullPath, err)
 	}
 
 	return nil
@@ -82,7 +80,7 @@ func CleanUpOldRecords(rdb *redis.Client, ctx context.Context) error {
 
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			err := cleanUpRecordsByFilePath(rdb, ctx, filePath)
-			if err != nil {
+			if err != nil && err != redis.Nil {
 				log.Printf("Error cleaning up records for file %s: %s\n", filePath, err)
 			}
 		}
@@ -96,40 +94,42 @@ func CleanUpOldRecords(rdb *redis.Client, ctx context.Context) error {
 	return nil
 }
 
-func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, filePath string) error {
-	hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+filePath).Result()
+func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, fullPath string) error {
+	hashedKey := generateHash(fullPath)
+
+	pipe := rdb.Pipeline()
+
+	pipe.Del(ctx, "fileInfo:"+hashedKey)
+	pipe.Del(ctx, "hashedKeyToPath:"+hashedKey)
+	pipe.Del(ctx, "pathToHashedKey:"+fullPath)
+
+	fileHashCmd := pipe.Get(ctx, "hashedKeyToFileHash:"+hashedKey)
+	pipe.Del(ctx, "hashedKeyToFileHash:"+hashedKey)
+
+	fullHashCmd := pipe.Get(ctx, "hashedKeyToFullHash:"+hashedKey)
+	pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)
+
+	_, err := pipe.Exec(ctx)
 	if err != nil && err != redis.Nil {
-		return fmt.Errorf("error retrieving hashedKey for path %s: %v", filePath, err)
+		return fmt.Errorf("error executing pipeline for cleanup of %s: %v", fullPath, err)
 	}
 
-	fileHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
-	if err != nil {
-		return fmt.Errorf("error retrieving fileHash for key %s: %v", hashedKey, err)
+	fileHash, err := fileHashCmd.Result()
+	if err == nil {
+		pipe.SRem(ctx, "fileHashToPathSet:"+fileHash, fullPath)
 	}
 
-	fullHash, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
-	if err != nil && err != redis.Nil {
-		return fmt.Errorf("error retrieving fullHash for key %s: %v", hashedKey, err)
+	fullHash, err := fullHashCmd.Result()
+	if err == nil {
+		pipe.ZRem(ctx, "duplicateFiles:"+fullHash, fullPath)
 	}
-
-	// 删除记录
-	pipe := rdb.TxPipeline()
-	pipe.Del(ctx, "fileInfo:"+hashedKey)            // 删除 fileInfo 相关数据
-	pipe.Del(ctx, "hashedKeyToPath:"+hashedKey)     // 删除 path 相关数据
-	pipe.Del(ctx, "pathToHashedKey:"+filePath)      // 删除从路径到 hashedKey 的映射
-	pipe.Del(ctx, "hashedKeyToFileHash:"+hashedKey) // 删除 hashedKey 到 fileHash 的映射
-	if fullHash != "" {
-		pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)      // 删除完整文件哈希相关数据
-		pipe.ZRem(ctx, "duplicateFiles:"+fullHash, filePath) // 从 duplicateFiles 有序集合中移除路径
-	}
-	pipe.SRem(ctx, "fileHashToPathSet:"+fileHash, filePath) // 从 hash 集合中移除文件路径
 
 	_, err = pipe.Exec(ctx)
-	if err != nil {
-		return fmt.Errorf("error deleting keys for outdated record %s: %v", hashedKey, err)
+	if err != nil && err != redis.Nil {
+		return fmt.Errorf("error executing second pipeline for cleanup of %s: %v", fullPath, err)
 	}
 
-	log.Printf("Deleted outdated record: path=%s\n", filePath)
+	log.Printf("Successfully cleaned up records for file: %s", fullPath)
 	return nil
 }
 
