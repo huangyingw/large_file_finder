@@ -30,7 +30,7 @@ func setupTestEnvironment(t *testing.T) (*miniredis.Miniredis, *redis.Client, co
 	ctx := context.Background()
 	fs := afero.NewMemMapFs()
 
-	fp := NewFileProcessor(rdb, ctx)
+	fp := CreateFileProcessor(rdb, ctx)
 	fp.fs = fs
 
 	return mr, rdb, ctx, fs, fp
@@ -44,12 +44,14 @@ func TestProcessFile(t *testing.T) {
 	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
 	defer mr.Close()
 
-	rootDir := "/testroot"
-	err := fs.MkdirAll(rootDir, 0755)
+	rootDir := "/media"
+	testRelativePath := "testroot/testfile.txt"
+	testFullPath := filepath.Join(rootDir, testRelativePath)
+
+	err := fs.MkdirAll(filepath.Dir(testFullPath), 0755)
 	require.NoError(t, err)
 
-	testFilePath := filepath.Join(rootDir, "testfile.txt")
-	err = afero.WriteFile(fs, testFilePath, []byte("test content"), 0644)
+	err = afero.WriteFile(fs, testFullPath, []byte("test content"), 0644)
 	require.NoError(t, err)
 
 	hashCalcCount := 0
@@ -61,12 +63,12 @@ func TestProcessFile(t *testing.T) {
 		return "partialhash", nil
 	}
 
-	hashedKey := generateHash(testFilePath)
+	hashedKey := generateHash(testRelativePath)
 
 	// Test without calculating hashes
 	t.Run("Without Calculating Hashes", func(t *testing.T) {
 		hashCalcCount = 0
-		err = fp.ProcessFile(testFilePath, false)
+		err = fp.ProcessFile(rootDir, testRelativePath, false)
 		require.NoError(t, err)
 		assert.Equal(t, 0, hashCalcCount, "Hash should not be calculated when calculateHashes is false")
 
@@ -79,13 +81,14 @@ func TestProcessFile(t *testing.T) {
 		err = gob.NewDecoder(bytes.NewReader(fileInfoData)).Decode(&storedFileInfo)
 		require.NoError(t, err)
 		assert.Equal(t, int64(12), storedFileInfo.Size)
+		assert.Equal(t, testRelativePath, storedFileInfo.Path)
 
 		// Verify path-related data was saved
 		pathValue, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
 		require.NoError(t, err)
-		assert.Equal(t, testFilePath, pathValue)
+		assert.Equal(t, testRelativePath, pathValue)
 
-		hashedKeyValue, err := rdb.Get(ctx, "pathToHashedKey:"+testFilePath).Result()
+		hashedKeyValue, err := rdb.Get(ctx, "pathToHashedKey:"+testRelativePath).Result()
 		require.NoError(t, err)
 		assert.Equal(t, hashedKey, hashedKeyValue)
 
@@ -96,7 +99,7 @@ func TestProcessFile(t *testing.T) {
 		_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
 		assert.Equal(t, redis.Nil, err)
 
-		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testFilePath).Result()
+		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testRelativePath).Result()
 		require.NoError(t, err)
 		assert.False(t, isMember)
 	})
@@ -104,7 +107,7 @@ func TestProcessFile(t *testing.T) {
 	// Test with calculating hashes
 	t.Run("With Calculating Hashes", func(t *testing.T) {
 		hashCalcCount = 0
-		err = fp.ProcessFile(testFilePath, true)
+		err = fp.ProcessFile(rootDir, testRelativePath, true)
 		require.NoError(t, err)
 		assert.Equal(t, 2, hashCalcCount, "Hash should be calculated twice when calculateHashes is true")
 
@@ -117,7 +120,7 @@ func TestProcessFile(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "fullhash", fullHashValue)
 
-		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testFilePath).Result()
+		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testRelativePath).Result()
 		require.NoError(t, err)
 		assert.True(t, isMember)
 	})
@@ -349,7 +352,7 @@ func TestWriteDuplicateFilesToFileWithMockData(t *testing.T) {
 	require.NoError(t, err)
 	defer fs.RemoveAll(tempDir)
 
-	fp = NewFileProcessor(rdb, ctx)
+	fp = CreateFileProcessor(rdb, ctx)
 	fp.fs = fs
 
 	// 模拟重复文件数据
@@ -791,7 +794,7 @@ func TestProcessFileBoundary(t *testing.T) {
 	ctx := context.Background()
 
 	fs := afero.NewMemMapFs()
-	fp := NewFileProcessor(rdb, ctx)
+	fp := CreateFileProcessor(rdb, ctx)
 	fp.fs = fs
 
 	// 确保所有必要的函数都被初始化
@@ -906,6 +909,9 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
 			err := afero.WriteFile(fs, filePath, []byte(sf.content), 0644)
 			require.NoError(t, err)
 
+			relativePath, err := filepath.Rel(tempDir, filePath)
+			require.NoError(t, err)
+
 			t.Run("FileSize", func(t *testing.T) {
 				info, err := fs.Stat(filePath)
 				assert.NoError(t, err)
@@ -921,10 +927,10 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
 
 			t.Run("ProcessFileWithHash", func(t *testing.T) {
 				cleanupRedis(mr) // 清理 Redis 数据
-				err := fp.ProcessFile(filePath, true)
+				err := fp.ProcessFile(tempDir, relativePath, true)
 				assert.NoError(t, err)
 
-				hashedKey := generateHash(filePath)
+				hashedKey := generateHash(relativePath)
 
 				// Verify file info
 				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
@@ -939,7 +945,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
 				// Verify path data
 				pathValue, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
 				require.NoError(t, err)
-				assert.Equal(t, filePath, pathValue)
+				assert.Equal(t, relativePath, pathValue)
 
 				// Verify hash data
 				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
@@ -950,10 +956,10 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
 
 			t.Run("ProcessFileWithoutHash", func(t *testing.T) {
 				cleanupRedis(mr) // 清理 Redis 数据
-				err := fp.ProcessFile(filePath, false)
+				err := fp.ProcessFile(tempDir, relativePath, false)
 				assert.NoError(t, err)
 
-				hashedKey := generateHash(filePath)
+				hashedKey := generateHash(relativePath)
 
 				// Verify file info exists
 				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
@@ -968,7 +974,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
 				// Verify path data exists
 				pathValue, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
 				assert.NoError(t, err)
-				assert.Equal(t, filePath, pathValue)
+				assert.Equal(t, relativePath, pathValue)
 
 				// Verify hash data does not exist
 				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
@@ -976,7 +982,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
 				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
 				assert.Equal(t, redis.Nil, err)
 
-				isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", filePath).Result()
+				isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", relativePath).Result()
 				assert.NoError(t, err)
 				assert.False(t, isMember)
 			})
@@ -993,15 +999,16 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create a test file
-	testFilePath := filepath.Join(rootDir, "testfile.txt")
+	testFileName := "testfile.txt"
+	testFilePath := filepath.Join(rootDir, testFileName)
 	err = afero.WriteFile(fs, testFilePath, []byte("test content"), 0644)
 	require.NoError(t, err)
 
 	// Process the file
-	err = fp.ProcessFile(testFilePath, true) // Add the second argument 'true' to calculate hashes
+	err = fp.ProcessFile(rootDir, testFileName, true) // Use rootDir, relative path, and true to calculate hashes
 	assert.NoError(t, err)
 
-	hashedKey := generateHash(testFilePath)
+	hashedKey := generateHash(testFileName) // Use testFileName instead of full path
 
 	// Verify file info
 	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
@@ -1012,17 +1019,27 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
 	err = gob.NewDecoder(bytes.NewReader(fileInfoData)).Decode(&storedFileInfo)
 	require.NoError(t, err)
 	assert.Equal(t, int64(len("test content")), storedFileInfo.Size)
+	assert.Equal(t, testFileName, storedFileInfo.Path) // Verify that the stored path is the relative path
 
 	// Verify path data
 	pathValue, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
 	require.NoError(t, err)
-	assert.Equal(t, testFilePath, pathValue)
+	assert.Equal(t, testFileName, pathValue) // Should be the relative path now
 
 	// Verify hash data
 	_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
 	assert.NoError(t, err)
 	_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
 	assert.NoError(t, err)
+
+	// Verify that the full path is not stored
+	_, err = rdb.Get(ctx, "pathToHashedKey:"+testFilePath).Result()
+	assert.Equal(t, redis.Nil, err, "Full path should not be stored")
+
+	// Verify that the relative path is stored
+	hashedKeyFromPath, err := rdb.Get(ctx, "pathToHashedKey:"+testFileName).Result()
+	assert.NoError(t, err)
+	assert.Equal(t, hashedKey, hashedKeyFromPath)
 }
 
 func TestFileProcessor_WriteDuplicateFilesToFile(t *testing.T) {
