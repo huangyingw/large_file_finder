@@ -413,7 +413,7 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 				continue
 			}
 			for i, duplicateFile := range duplicateFiles {
-				fp := NewFileProcessor(rdb, ctx)
+				fp := CreateFileProcessor(rdb, ctx)
 				hashedKey, err := fp.getHashedKeyFromPath(duplicateFile)
 				if err != nil {
 					log.Printf("Error getting hashed key for path %s: %v", duplicateFile, err)
@@ -458,7 +458,7 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
 }
 
 func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, fullPath string) (int64, error) {
-	fp := NewFileProcessor(rdb, ctx)
+	fp := CreateFileProcessor(rdb, ctx)
 	hashedKey, err := fp.getHashedKeyFromPath(fullPath)
 	if err != nil {
 		return 0, fmt.Errorf("error getting hashed key for %s: %w", fullPath, err)
