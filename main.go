@@ -59,7 +59,7 @@ func main() {
 
 	semaphore = make(chan struct{}, runtime.NumCPU())
 
-	fp := NewFileProcessor(rdb, ctx)
+	fp := CreateFileProcessor(rdb, ctx)
 
 	if err := CleanUpOldRecords(rdb, ctx); err != nil {
 		log.Printf("Error cleaning up old records: %v", err)
@@ -94,9 +94,9 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for filePath := range fileChan {
-				if err := fp.ProcessFile(filePath, findDuplicates); err != nil {
-					log.Printf("Error processing file %s: %v", filePath, err)
+			for relativePath := range fileChan {
+				if err := fp.ProcessFile(rootDir, relativePath, findDuplicates); err != nil {
+					log.Printf("Error processing file %s: %v", filepath.Join(rootDir, relativePath), err)
 				}
 			}
 		}()
