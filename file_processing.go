@@ -143,13 +143,13 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
 		return fmt.Errorf("error getting file info: %w", err)
 	}
 
-	hashedKey := fp.generateHashFunc(relativePath)
+	hashedKey := fp.generateHashFunc(fullPath)
 	log.Printf("Generated hashed key: %s", hashedKey)
 
 	fileInfo := FileInfo{
 		Size:    info.Size(),
 		ModTime: info.ModTime(),
-		Path:    relativePath,
+		Path:    fullPath, // 存储绝对路径
 	}
 
 	var fileHash, fullHash string
@@ -167,7 +167,7 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
 		log.Printf("Calculated full hash: %s", fullHash)
 	}
 
-	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, relativePath, fileInfo, fileHash, fullHash, calculateHashes)
+	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, fullHash, calculateHashes)
 	if err != nil {
 		return fmt.Errorf("error saving file info to Redis: %w", err)
 	}
