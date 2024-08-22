@@ -612,9 +612,9 @@ func saveToFile(rootDir, filename string, sortByModTime bool, rdb *redis.Client,
 	for iter.Next(ctx) {
 		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
 
-		originalPath, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
+		fullPath, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
 		if err != nil {
-			log.Printf("Error getting original path for key %s: %v", hashedKey, err)
+			log.Printf("Error getting full path for key %s: %v", hashedKey, err)
 			continue
 		}
 
@@ -632,8 +632,13 @@ func saveToFile(rootDir, filename string, sortByModTime bool, rdb *redis.Client,
 			continue
 		}
 
-		fileInfo.Path = originalPath // 设置 Path 字段
-		data[originalPath] = fileInfo
+		relativePath, err := filepath.Rel(rootDir, fullPath)
+		if err != nil {
+			log.Printf("Error getting relative path for %s: %v", fullPath, err)
+			continue
+		}
+
+		data[relativePath] = fileInfo
 	}
 
 	if err := iter.Err(); err != nil {
