@@ -17,3 +17,6 @@
     ignore = ./go.sum
     ignore = ./main.go.sh
     ignore = ./readme
+[deploy]
+    host = server
+    path = ~/loadrc/efficient_file_scanner/
