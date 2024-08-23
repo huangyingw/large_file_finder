@@ -141,10 +141,10 @@ func TestWalkFiles(t *testing.T) {
 		filepath.Join("dir3", "small_file.txt"):                  50,
 	}
 	for file, size := range files {
-        fullPath := filepath.Join(tempDir, file)
-        err := os.MkdirAll(filepath.Dir(fullPath), 0755)
-        assert.NoError(t, err)
-        err = ioutil.WriteFile(fullPath, make([]byte, size), 0644)
+		fullPath := filepath.Join(tempDir, file)
+		err := os.MkdirAll(filepath.Dir(fullPath), 0755)
+		assert.NoError(t, err)
+		err = ioutil.WriteFile(fullPath, make([]byte, size), 0644)
 		assert.NoError(t, err)
 	}
 
@@ -157,7 +157,7 @@ func TestWalkFiles(t *testing.T) {
 
 	fileChan := make(chan string, 10)
 	go func() {
-		err := walkFiles(tempDir, 100, fileChan)
+		err := walkFiles(tempDir, 100, fileChan, nil) // 传入 nil 作为 excludePatterns
 		assert.NoError(t, err)
 		close(fileChan)
 	}()
@@ -291,4 +291,87 @@ func TestGetFileSizeFromRedis(t *testing.T) {
 			assert.Equal(t, int64(len(sf.content)), size)
 		})
 	}
+}
+
+func TestWalkFilesWithExcludePatterns(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "test_walk_files_exclude")
+	assert.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	dirs := []string{
+		"dir1",
+		"dir with spaces",
+		filepath.Join("dir2", "subdir"),
+		"dir3",
+		".git",
+	}
+	for _, dir := range dirs {
+		err := os.MkdirAll(filepath.Join(tempDir, dir), 0755)
+		assert.NoError(t, err)
+	}
+
+	files := map[string]int64{
+		filepath.Join("dir1", "file1.txt"):                       100,
+		filepath.Join("dir with spaces", "file with spaces.txt"): 200,
+		filepath.Join("dir2", "subdir", "file3_特殊字符.txt"):        300,
+		filepath.Join("dir3", "file4!@#$%.txt"):                  400,
+		filepath.Join("dir3", "small_file.txt"):                  50,
+		filepath.Join(".git", "config"):                          100,
+	}
+	for file, size := range files {
+		fullPath := filepath.Join(tempDir, file)
+		err := os.MkdirAll(filepath.Dir(fullPath), 0755)
+		assert.NoError(t, err)
+		err = ioutil.WriteFile(fullPath, make([]byte, size), 0644)
+		assert.NoError(t, err)
+	}
+
+	excludePatterns := []string{
+		`.*\.git/.*`,
+		`.*small_file\.txt$`,
+	}
+
+	excludeRegexps, err := compileExcludePatterns(excludePatterns)
+	require.NoError(t, err)
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	fileChan := make(chan string, 10)
+	go func() {
+		err := walkFiles(tempDir, 100, fileChan, excludeRegexps)
+		assert.NoError(t, err)
+		close(fileChan)
+	}()
+
+	var result []string
+	for file := range fileChan {
+		result = append(result, file)
+	}
+
+	expected := []string{
+		filepath.Join("dir1", "file1.txt"),
+		filepath.Join("dir with spaces", "file with spaces.txt"),
+		filepath.Join("dir2", "subdir", "file3_特殊字符.txt"),
+		filepath.Join("dir3", "file4!@#$%.txt"),
+	}
+
+	// 使用 filepath.ToSlash 来标准化路径
+	for i, path := range result {
+		result[i] = filepath.ToSlash(path)
+	}
+	for i, path := range expected {
+		expected[i] = filepath.ToSlash(path)
+	}
+
+	// 排序结果和期望值，以确保比较的一致性
+	sort.Strings(result)
+	sort.Strings(expected)
+
+	assert.Equal(t, expected, result)
+
+	logOutput := logBuf.String()
+	assert.NotContains(t, logOutput, ".git/config")
+	assert.NotContains(t, logOutput, "small_file.txt")
 }
