@@ -153,7 +153,13 @@ func main() {
 	}
 
 	// Load exclude patterns
-	excludePatternsFile := filepath.Join(filepath.Dir(os.Args[0]), "exclude_patterns.txt")
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		log.Fatal("No caller information")
+	}
+	mainDir := filepath.Dir(filename)
+	excludePatternsFile := filepath.Join(mainDir, "exclude_patterns.txt")
+
 	fs := afero.NewOsFs()
 	var err error
 	excludeRegexps, err = loadExcludePatterns(excludePatternsFile, fs)
