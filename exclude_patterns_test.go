@@ -63,7 +63,7 @@ func TestShouldExclude(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.path, func(t *testing.T) {
-			result := shouldExclude(tc.path, regexps)
+			result := ShouldExclude(tc.path, regexps)
 			assert.Equal(t, tc.expected, result)
 		})
 	}
