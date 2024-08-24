@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,13 +28,15 @@ type FileProcessor struct {
 	saveFileInfoToRedisFunc func(*redis.Client, context.Context, string, FileInfo, string, string, bool) error
 	fs                      afero.Fs
 	fileInfoRetriever       FileInfoRetriever
+	excludeRegexps          []*regexp.Regexp
 }
 
-func CreateFileProcessor(rdb *redis.Client, ctx context.Context, options ...func(*FileProcessor)) *FileProcessor {
+func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps []*regexp.Regexp, options ...func(*FileProcessor)) *FileProcessor {
 	fp := &FileProcessor{
-		Rdb: rdb,
-		Ctx: ctx,
-		fs:  afero.NewOsFs(),
+		Rdb:            rdb,
+		Ctx:            ctx,
+		fs:             afero.NewOsFs(),
+		excludeRegexps: excludeRegexps,
 	}
 
 	// 设置默认值
@@ -173,6 +176,11 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
 	}
 	log.Printf("Saved file info to Redis")
 
+	// 检查文件是否应该被排除
+	if fp.ShouldExclude(fullPath) {
+		return nil
+	}
+
 	return nil
 }
 
@@ -208,17 +216,22 @@ func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile st
 					log.Printf("Error getting hashed key for path %s: %v", duplicateFile, err)
 					continue
 				}
-				fileInfo, err := fp.getFileInfoFromRedis(hashedKey)
-				if err != nil {
-					log.Printf("Error getting file info for key %s: %v", hashedKey, err)
-					continue
-				}
 				cleanedPath := cleanRelativePath(rootDir, duplicateFile)
 				var line string
 				if i == 0 {
-					line = fmt.Sprintf("[+] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
+					fileSize, err := getFileSizeFromRedis(rdb, ctx, duplicateFile, fp.excludeRegexps)
+					if err != nil {
+						log.Printf("Error getting file size for key %s: %v", hashedKey, err)
+						continue
+					}
+					line = fmt.Sprintf("[+] %d,\"%s\"\n", fileSize, cleanedPath)
 				} else {
-					line = fmt.Sprintf("[-] %d,\"%s\"\n", fileInfo.Size, cleanedPath)
+					fileSize, err := getFileSizeFromRedis(rdb, ctx, duplicateFile, fp.excludeRegexps)
+					if err != nil {
+						log.Printf("Error getting file size for key %s: %v", hashedKey, err)
+						continue
+					}
+					line = fmt.Sprintf("[-] %d,\"%s\"\n", fileSize, cleanedPath)
 				}
 				if _, err := file.WriteString(line); err != nil {
 					log.Printf("Error writing line: %v", err)
@@ -235,6 +248,15 @@ func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile st
 		return fmt.Errorf("error during iteration: %w", err)
 	}
 	return nil
+}
+
+func (fp *FileProcessor) ShouldExclude(path string) bool {
+	for _, re := range fp.excludeRegexps {
+		if re.MatchString(path) {
+			return true
+		}
+	}
+	return false
 }
 
 func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
@@ -294,11 +316,19 @@ func processSymlink(path string) {
 }
 
 // 处理关键词
-func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ctx context.Context, rootDir string) {
+func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ctx context.Context, rootDir string, excludeRegexps []*regexp.Regexp) {
 	// 对 keywordFiles 进行排序
 	sort.Slice(keywordFiles, func(i, j int) bool {
-		sizeI, _ := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, keywordFiles[i])))
-		sizeJ, _ := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, keywordFiles[j])))
+		sizeI, err := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, keywordFiles[i])), excludeRegexps)
+		if err != nil {
+			log.Printf("Error getting file size for %s: %v", keywordFiles[i], err)
+			return false
+		}
+		sizeJ, err := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, keywordFiles[j])), excludeRegexps)
+		if err != nil {
+			log.Printf("Error getting file size for %s: %v", keywordFiles[j], err)
+			return false
+		}
 		return sizeI > sizeJ
 	})
 
@@ -306,7 +336,11 @@ func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ct
 	var outputData strings.Builder
 	outputData.WriteString(keyword + "\n")
 	for _, filePath := range keywordFiles {
-		fileSize, _ := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, filePath)))
+		fileSize, err := getFileSizeFromRedis(Rdb, Ctx, filepath.Join(rootDir, cleanRelativePath(rootDir, filePath)), excludeRegexps)
+		if err != nil {
+			log.Printf("Error getting file size for %s: %v", filePath, err)
+			continue
+		}
 		outputData.WriteString(fmt.Sprintf("%d,%s\n", fileSize, filePath))
 	}
 
@@ -314,12 +348,14 @@ func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ct
 	outputFilePath := filepath.Join(rootDir, keyword+".txt")
 	outputFile, err := os.Create(outputFilePath)
 	if err != nil {
+		log.Printf("Error creating output file %s: %v", outputFilePath, err)
 		return
 	}
 	defer outputFile.Close()
 
 	_, err = outputFile.WriteString(outputData.String())
 	if err != nil {
+		log.Printf("Error writing to output file %s: %v", outputFilePath, err)
 	}
 }
 
