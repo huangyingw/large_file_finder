@@ -254,15 +254,6 @@ func sortKeys(keys []string, data map[string]FileInfo, sortByModTime bool) {
 	}
 }
 
-func performSaveOperation(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) {
-	log.Printf("Starting save operation to %s\n", filepath.Join(rootDir, filename))
-	if err := saveToFile(rootDir, filename, sortByModTime, rdb, ctx); err != nil {
-		log.Printf("Error saving to %s: %s\n", filepath.Join(rootDir, filename), err)
-	} else {
-		log.Printf("Saved data to %s\n", filepath.Join(rootDir, filename))
-	}
-}
-
 func writeLinesToFile(filename string, lines []string) error {
 	file, err := os.Create(filename)
 	if err != nil {
@@ -609,49 +600,6 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
 
 func shouldStopDuplicateFileSearch(duplicateCount int, maxDuplicateFiles int) bool {
 	return duplicateCount >= maxDuplicateFiles
-}
-
-func saveToFile(rootDir, filename string, sortByModTime bool, rdb *redis.Client, ctx context.Context) error {
-	data := make(map[string]FileInfo)
-
-	iter := rdb.Scan(ctx, 0, "fileInfo:*", 0).Iterator()
-	for iter.Next(ctx) {
-		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
-
-		fullPath, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
-		if err != nil {
-			log.Printf("Error getting full path for key %s: %v", hashedKey, err)
-			continue
-		}
-
-		fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
-		if err != nil {
-			log.Printf("Error getting file info for key %s: %v", hashedKey, err)
-			continue
-		}
-
-		var fileInfo FileInfo
-		buf := bytes.NewBuffer(fileInfoData)
-		dec := gob.NewDecoder(buf)
-		if err := dec.Decode(&fileInfo); err != nil {
-			log.Printf("Error decoding file info for key %s: %v", hashedKey, err)
-			continue
-		}
-
-		relativePath, err := filepath.Rel(rootDir, fullPath)
-		if err != nil {
-			log.Printf("Error getting relative path for %s: %v", fullPath, err)
-			continue
-		}
-
-		data[relativePath] = fileInfo
-	}
-
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("error iterating over Redis keys: %w", err)
-	}
-
-	return writeDataToFile(rootDir, filename, data, sortByModTime)
 }
 
 func writeDataToFile(rootDir, filename string, data map[string]FileInfo, sortByModTime bool) error {
