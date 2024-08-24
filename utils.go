@@ -85,8 +85,9 @@ func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context
 	return nil
 }
 
-func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, fullPath string, excludeRegexps []*regexp.Regexp) (int64, error) {
+func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, rootDir, relativePath string, excludeRegexps []*regexp.Regexp) (int64, error) {
 	fp := CreateFileProcessor(rdb, ctx, excludeRegexps)
+	fullPath := filepath.Join(rootDir, relativePath)
 	hashedKey, err := fp.getHashedKeyFromPath(fullPath)
 	if err != nil {
 		return 0, fmt.Errorf("error getting hashed key for %s: %w", fullPath, err)
