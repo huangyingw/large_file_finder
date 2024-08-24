@@ -176,7 +176,7 @@ func main() {
 	}
 
 	// Add this line to process fav.log after saving results
-	processFavLog(filepath.Join(rootDir, "fav.log"), rootDir, rdb, ctx, excludeRegexps)
+	// processFavLog(filepath.Join(rootDir, "fav.log"), rootDir, rdb, ctx, excludeRegexps)
 
 	log.Println("Processing complete")
 }
