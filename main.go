@@ -76,59 +76,6 @@ func compileExcludePatterns(patterns []string) ([]*regexp.Regexp, error) {
 	return regexps, nil
 }
 
-func shouldExclude(path string, regexps []*regexp.Regexp) bool {
-	for _, re := range regexps {
-		if re.MatchString(path) {
-			return true
-		}
-	}
-	return false
-}
-
-func walkFiles(rootDir string, minSizeBytes int64, fileChan chan<- string, regexps []*regexp.Regexp) error {
-	return filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			log.Printf("Error accessing path %q: %v", path, err)
-			return filepath.SkipDir
-		}
-
-		relPath, err := filepath.Rel(rootDir, path)
-		if err != nil {
-			log.Printf("Error getting relative path for %q: %v", path, err)
-			return nil
-		}
-
-		if shouldExclude(relPath, regexps) {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		if info.IsDir() {
-			return nil
-		}
-
-		if info.Mode()&os.ModeSymlink != 0 {
-			log.Printf("Skipping symlink: %q", path)
-			return nil
-		}
-
-		if info.Size() >= minSizeBytes {
-			relPath, err := filepath.Rel(rootDir, path)
-			if err != nil {
-				log.Printf("Error getting relative path for %q: %v", path, err)
-				return nil
-			}
-			// 使用 filepath.ToSlash 来标准化路径分隔符
-			relPath = filepath.ToSlash(relPath)
-			fileChan <- relPath
-		}
-
-		return nil
-	})
-}
-
 func main() {
 	flag.Parse()
 
@@ -146,12 +93,6 @@ func main() {
 
 	semaphore = make(chan struct{}, runtime.NumCPU())
 
-	fp := CreateFileProcessor(rdb, ctx)
-
-	if err := CleanUpOldRecords(rdb, ctx); err != nil {
-		log.Printf("Error cleaning up old records: %v", err)
-	}
-
 	// Load exclude patterns
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
@@ -159,7 +100,6 @@ func main() {
 	}
 	mainDir := filepath.Dir(filename)
 	excludePatternsFile := filepath.Join(mainDir, "exclude_patterns.txt")
-
 	fs := afero.NewOsFs()
 	var err error
 	excludeRegexps, err = loadExcludePatterns(excludePatternsFile, fs)
@@ -168,8 +108,14 @@ func main() {
 	}
 	log.Printf("Loaded %d exclude patterns from %s", len(excludeRegexps), excludePatternsFile)
 
+	fp := CreateFileProcessor(rdb, ctx, excludeRegexps)
+
+	if err := CleanUpOldRecords(rdb, ctx); err != nil {
+		log.Printf("Error cleaning up old records: %v", err)
+	}
+
 	if findDuplicates {
-		if err := findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates); err != nil {
+		if err := findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates, excludeRegexps); err != nil {
 			log.Fatalf("Error finding duplicates: %v", err)
 		}
 		return
@@ -189,6 +135,7 @@ func main() {
 		return
 	}
 
+	// 修改这部分代码
 	fileChan := make(chan string, workerCount)
 	var wg sync.WaitGroup
 
@@ -198,9 +145,10 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for relativePath := range fileChan {
-				if !shouldExclude(relativePath, excludeRegexps) {
+				fullPath := filepath.Join(rootDir, relativePath)
+				if !fp.ShouldExclude(fullPath) {
 					if err := fp.ProcessFile(rootDir, relativePath, findDuplicates); err != nil {
-						log.Printf("Error processing file %s: %v", filepath.Join(rootDir, relativePath), err)
+						log.Printf("Error processing file %s: %v", fullPath, err)
 					}
 				}
 			}
@@ -210,8 +158,8 @@ func main() {
 	// Start progress monitoring
 	go monitorProgress(ctx)
 
-	// Walk through files
-	err = walkFiles(rootDir, minSizeBytes, fileChan, excludeRegexps)
+	// 修改 walkFiles 调用
+	err = walkFiles(rootDir, minSizeBytes, fileChan, fp)
 	close(fileChan)
 	if err != nil {
 		log.Printf("Error walking files: %v", err)
@@ -227,10 +175,51 @@ func main() {
 		log.Printf("Error saving to fav.log.sort: %v", err)
 	}
 
+	// Add this line to process fav.log after saving results
+	processFavLog(filepath.Join(rootDir, "fav.log"), rootDir, rdb, ctx, excludeRegexps)
+
 	log.Println("Processing complete")
 }
 
-func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context) {
+// 更新 walkFiles 函数
+func walkFiles(rootDir string, minSizeBytes int64, fileChan chan<- string, fp *FileProcessor) error {
+	return filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			log.Printf("Error accessing path %q: %v", path, err)
+			return filepath.SkipDir
+		}
+
+		relPath, err := filepath.Rel(rootDir, path)
+		if err != nil {
+			log.Printf("Error getting relative path for %q: %v", path, err)
+			return nil
+		}
+
+		if fp.ShouldExclude(path) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			log.Printf("Skipping symlink: %q", path)
+			return nil
+		}
+
+		if info.Size() >= minSizeBytes {
+			fileChan <- relPath
+		}
+
+		return nil
+	})
+}
+
+func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context, excludeRegexps []*regexp.Regexp) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		log.Println("Error opening file:", err)
@@ -269,7 +258,7 @@ func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx conte
 				return func() {
 					defer poolWg.Done()
 					log.Printf("Processing keyword %d of %d: %s\n", idx+1, len(keywords), kw)
-					processKeyword(kw, kf, rdb, ctx, rootDir)
+					processKeyword(kw, kf, rdb, ctx, rootDir, excludeRegexps)
 				}
 			}(keyword, keywordFiles, i)
 		}
