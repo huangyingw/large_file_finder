@@ -18,5 +18,5 @@
     ignore = ./main.go.sh
     ignore = ./readme
 [deploy]
-    host = server
+    host = localhost
     path = ~/loadrc/efficient_file_scanner/
