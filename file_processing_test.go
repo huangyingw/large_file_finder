@@ -30,7 +30,7 @@ func setupTestEnvironment(t *testing.T) (*miniredis.Miniredis, *redis.Client, co
 	ctx := context.Background()
 	fs := afero.NewMemMapFs()
 
-	fp := CreateFileProcessor(rdb, ctx)
+	fp := CreateFileProcessor(rdb, ctx, testExcludeRegexps)
 	fp.fs = fs
 
 	// Clear all data in Redis before each test
@@ -353,14 +353,14 @@ func mockSaveFileInfoToRedis(fp *FileProcessor, path string, info FileInfo, file
 
 // Update the TestProcessFile function
 func TestWriteDuplicateFilesToFileWithMockData(t *testing.T) {
-	mr, rdb, ctx, fs, fp := setupTestEnvironment(t) // 传递 t
+	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
 	defer mr.Close()
 
 	tempDir, err := afero.TempDir(fs, "", "test")
 	require.NoError(t, err)
 	defer fs.RemoveAll(tempDir)
 
-	fp = CreateFileProcessor(rdb, ctx)
+	fp = CreateFileProcessor(rdb, ctx, testExcludeRegexps)
 	fp.fs = fs
 
 	// 模拟重复文件数据
@@ -590,14 +590,14 @@ func testSaveToFile(t *testing.T, fp *FileProcessor, fs afero.Fs, tempDir, filen
 	var expectedContent string
 	if sortByModTime {
 		expectedContent = `"./path/to/file2_02:34:56_03:45:67.mp4"
-"./path/to/file1_01:23:45.mp4"
-"./path/to/file3.mp4"
-`
+		"./path/to/file1_01:23:45.mp4"
+		"./path/to/file3.mp4"
+		`
 	} else {
 		expectedContent = `2172777224,"./path/to/file2_02:34:56_03:45:67.mp4"
-2172777224,"./path/to/file3.mp4"
-209720828,"./path/to/file1_01:23:45.mp4"
-`
+		2172777224,"./path/to/file3.mp4"
+		209720828,"./path/to/file1_01:23:45.mp4"
+		`
 	}
 
 	assert.Equal(t, expectedContent, string(content), "File content does not match expected")
@@ -623,13 +623,13 @@ func testWriteDuplicateFilesToFile(t *testing.T, fp *FileProcessor, fs afero.Fs,
 `, fullHash)
 
 	if string(content) != expectedDupContent {
-		return fmt.Errorf("fav.log.dup content does not match expected")
+		return fmt.Errorf("fav.log.dup content does not match expected.\nExpected:\n%s\nActual:\n%s", expectedDupContent, string(content))
 	}
+
 	return nil
 }
 
 func TestFileContentVerification(t *testing.T) {
-	// 设置测试环境
 	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
 	defer mr.Close()
 
@@ -637,7 +637,6 @@ func TestFileContentVerification(t *testing.T) {
 	require.NoError(t, err, "Failed to create temp directory")
 	defer fs.RemoveAll(tempDir)
 
-	// 准备测试数据
 	fullHash := "793bf43bc5719d3deb836a2a8d38eeada28d457c48153b1e7d5af7ed5f38be98632dbad7d64f0f83d58619c6ef49d7565622d7b20119e7d2cb2540ece11ce119"
 	testData := []struct {
 		path     string
@@ -650,9 +649,18 @@ func TestFileContentVerification(t *testing.T) {
 		{filepath.Join(tempDir, "path", "to", "file3.mp4"), 2172777224, time.Now().Add(-2 * time.Hour), fullHash},
 	}
 
-	// 设置 Redis 数据和创建模拟文件
 	err = setupTestFiles(t, fp, rdb, ctx, fs, testData)
 	require.NoError(t, err, "Failed to setup test files")
+
+	// Set up duplicate files in Redis
+	duplicateFilesKey := "duplicateFiles:" + fullHash
+	for _, data := range testData {
+		if data.fullHash == fullHash {
+			score := float64(-data.size) // Use negative size as score for correct ordering
+			_, err := rdb.ZAdd(ctx, duplicateFilesKey, &redis.Z{Score: score, Member: data.path}).Result()
+			require.NoError(t, err)
+		}
+	}
 
 	t.Run("Test saveToFile (fav.log)", func(t *testing.T) {
 		err := testSaveToFile(t, fp, fs, tempDir, "fav.log", false)
@@ -802,7 +810,7 @@ func TestProcessFileBoundary(t *testing.T) {
 	ctx := context.Background()
 
 	fs := afero.NewMemMapFs()
-	fp := CreateFileProcessor(rdb, ctx)
+	fp := CreateFileProcessor(rdb, ctx, testExcludeRegexps)
 	fp.fs = fs
 
 	// 确保所有必要的函数都被初始化
@@ -1049,42 +1057,40 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
 }
 
 func TestFileProcessor_WriteDuplicateFilesToFile(t *testing.T) {
-	mr, rdb, ctx, fs, fp := setupTestEnvironment(t) // 传递 t
+	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
 	defer mr.Close()
 
-	// Use TempDir without `:=` to avoid redeclaring `err`
-	tempDir, tempErr := afero.TempDir(fs, "", "test")
-	require.NoError(t, tempErr)
+	tempDir, err := afero.TempDir(fs, "", "test")
+	require.NoError(t, err)
 	defer fs.RemoveAll(tempDir)
 
-	// Rest of the code
+	// Set up mock data
 	fullHash := "testhash"
-	_, err := rdb.ZAdd(ctx, "duplicateFiles:"+fullHash,
-		&redis.Z{Score: 1, Member: "/path/to/file1"},
-		&redis.Z{Score: 2, Member: "/path/to/file2"},
-		&redis.Z{Score: 3, Member: "/path/to/file3"},
-	).Result()
-	require.NoError(t, err)
+	duplicateFiles := []string{"/path/to/file1", "/path/to/file2", "/path/to/file3"}
+	for i, file := range duplicateFiles {
+		fileInfo := FileInfo{
+			Size:    int64((i + 1) * 1000),
+			ModTime: time.Now(),
+			Path:    file,
+		}
+		err = SaveDuplicateFileInfoToRedis(rdb, ctx, fullHash, fileInfo)
+		require.NoError(t, err)
 
-	// 模拟文件信息
-	for i, path := range []string{"/path/to/file1", "/path/to/file2", "/path/to/file3"} {
-		hashedKey := fmt.Sprintf("hashedKey%d", i+1)
-		info := FileInfo{Size: int64((i + 1) * 1000), ModTime: time.Now()}
+		// Set up file info in Redis
+		hashedKey := generateHash(file)
 		var buf bytes.Buffer
 		enc := gob.NewEncoder(&buf)
-		err = enc.Encode(info)
+		err = enc.Encode(fileInfo)
 		require.NoError(t, err)
 		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
 		require.NoError(t, err)
-		err = rdb.Set(ctx, "pathToHashedKey:"+path, hashedKey, 0).Err()
+		err = rdb.Set(ctx, "pathToHashedKey:"+file, hashedKey, 0).Err()
 		require.NoError(t, err)
 	}
 
-	// 执行测试函数
 	err = fp.WriteDuplicateFilesToFile(tempDir, "fav.log.dup", rdb, ctx)
 	require.NoError(t, err)
 
-	// 读取并验证文件内容
 	content, err := afero.ReadFile(fs, filepath.Join(tempDir, "fav.log.dup"))
 	require.NoError(t, err)
 
@@ -1095,5 +1101,5 @@ func TestFileProcessor_WriteDuplicateFilesToFile(t *testing.T) {
 
 `, fullHash)
 
-	assert.Equal(t, expectedContent, string(content))
+	assert.Equal(t, expectedContent, string(content), "File content does not match expected")
 }
