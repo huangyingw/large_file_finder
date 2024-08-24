@@ -103,7 +103,7 @@ func (fp *FileProcessor) saveToFile(rootDir, filename string, sortByModTime bool
 		fileInfo := data[k]
 		cleanedPath := cleanRelativePath(rootDir, k)
 		line := formatFileInfoLine(fileInfo, cleanedPath, sortByModTime)
-		if _, err := file.WriteString(line + "\t\t"); err != nil {
+		if _, err := file.WriteString(line); err != nil {
 			return fmt.Errorf("error writing to file: %w", err)
 		}
 	}
