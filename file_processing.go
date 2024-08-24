@@ -54,8 +54,8 @@ func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps 
 }
 
 // 修改 saveToFile 方法
-func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) error {
-	outputPath := filepath.Join(dir, filename)
+func (fp *FileProcessor) saveToFile(rootDir, filename string, sortByModTime bool) error {
+	outputPath := filepath.Join(rootDir, filename)
 	outputDir := filepath.Dir(outputPath)
 	if err := fp.fs.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("error creating output directory: %w", err)
@@ -101,9 +101,9 @@ func (fp *FileProcessor) saveToFile(dir, filename string, sortByModTime bool) er
 
 	for _, k := range keys {
 		fileInfo := data[k]
-		cleanedPath := cleanRelativePath(dir, k)
+		cleanedPath := cleanRelativePath(rootDir, k)
 		line := formatFileInfoLine(fileInfo, cleanedPath, sortByModTime)
-		if _, err := file.WriteString(line); err != nil {
+		if _, err := file.WriteString(line + "\t\t"); err != nil {
 			return fmt.Errorf("error writing to file: %w", err)
 		}
 	}
@@ -130,12 +130,6 @@ const (
 	ReadLimit       = 100 * 1024 // 100KB
 	FullFileReadCmd = -1
 )
-
-type FileInfo struct {
-	Size    int64
-	ModTime time.Time
-	Path    string // 新增 Path 字段
-}
 
 func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHashes bool) error {
 	fullPath := filepath.Join(rootDir, relativePath)
@@ -189,16 +183,12 @@ type FileInfoRetriever interface {
 }
 
 func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
-	outputPath := filepath.Join(rootDir, outputFile)
-	outputDir := filepath.Dir(outputPath)
-	if err := fp.fs.MkdirAll(outputDir, 0755); err != nil {
-		return fmt.Errorf("error creating output directory: %w", err)
-	}
-	file, err := fp.fs.Create(outputPath)
+	file, err := fp.fs.Create(filepath.Join(rootDir, outputFile))
 	if err != nil {
-		return fmt.Errorf("error creating file: %w", err)
+		return fmt.Errorf("Error creating output file: %s", err)
 	}
 	defer file.Close()
+
 	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
 	for iter.Next(ctx) {
 		duplicateFilesKey := iter.Val()
@@ -208,45 +198,49 @@ func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile st
 			log.Printf("Error getting duplicate files for key %s: %v", duplicateFilesKey, err)
 			continue
 		}
+
 		if len(duplicateFiles) > 1 {
 			fmt.Fprintf(file, "Duplicate files for fullHash %s:\n", fullHash)
 			for i, duplicateFile := range duplicateFiles {
-				hashedKey, err := fp.getHashedKeyFromPath(duplicateFile)
+				hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+duplicateFile).Result()
 				if err != nil {
 					log.Printf("Error getting hashed key for path %s: %v", duplicateFile, err)
 					continue
 				}
-				cleanedPath := cleanRelativePath(rootDir, duplicateFile)
-				var line string
-				if i == 0 {
-					fileSize, err := getFileSizeFromRedis(rdb, ctx, duplicateFile, fp.excludeRegexps)
-					if err != nil {
-						log.Printf("Error getting file size for key %s: %v", hashedKey, err)
-						continue
-					}
-					line = fmt.Sprintf("[+] %d,\"%s\"\n", fileSize, cleanedPath)
-				} else {
-					fileSize, err := getFileSizeFromRedis(rdb, ctx, duplicateFile, fp.excludeRegexps)
-					if err != nil {
-						log.Printf("Error getting file size for key %s: %v", hashedKey, err)
-						continue
-					}
-					line = fmt.Sprintf("[-] %d,\"%s\"\n", fileSize, cleanedPath)
-				}
-				if _, err := file.WriteString(line); err != nil {
-					log.Printf("Error writing line: %v", err)
+
+				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+				if err != nil {
+					log.Printf("Error getting file info for key %s: %v", hashedKey, err)
 					continue
 				}
+
+				var fileInfo FileInfo
+				err = gob.NewDecoder(bytes.NewReader(fileInfoData)).Decode(&fileInfo)
+				if err != nil {
+					log.Printf("Error decoding file info: %v", err)
+					continue
+				}
+
+				cleanedPath := cleanRelativePath(rootDir, duplicateFile)
+				formattedLine := formatFileInfoLine(fileInfo, cleanedPath, false)
+				prefix := "[-]"
+				if i == 0 {
+					prefix = "[+]"
+				}
+				line := fmt.Sprintf("%s %s", prefix, formattedLine)
+
+				if _, err := file.WriteString(line); err != nil {
+					log.Printf("Error writing line: %v", err)
+				}
 			}
-			// Add a single newline after each group of duplicate files
-			if _, err := file.WriteString("\n"); err != nil {
-				log.Printf("Error writing newline: %v", err)
-			}
+			file.WriteString("\n")
 		}
 	}
+
 	if err := iter.Err(); err != nil {
 		return fmt.Errorf("error during iteration: %w", err)
 	}
+
 	return nil
 }
 
@@ -385,6 +379,12 @@ const timestampWeight = 1000000000 // 使用一个非常大的数字
 func CalculateScore(timestamps []string, fileNameLength int) float64 {
 	timestampCount := len(timestamps)
 	return float64(-(timestampCount*timestampWeight + fileNameLength))
+}
+
+type FileInfo struct {
+	Size    int64
+	ModTime time.Time
+	Path    string // 新增 Path 字段
 }
 
 func (fp *FileProcessor) getHashedKeyFromPath(path string) (string, error) {
