@@ -41,6 +41,8 @@ func TestShouldExclude(t *testing.T) {
 	regexps, err := compileExcludePatterns(patterns)
 	require.NoError(t, err)
 
+	fp := &FileProcessor{excludeRegexps: regexps}
+
 	testCases := []struct {
 		path     string
 		expected bool
@@ -63,7 +65,7 @@ func TestShouldExclude(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.path, func(t *testing.T) {
-			result := ShouldExclude(tc.path, regexps)
+			result := fp.ShouldExclude(tc.path)
 			assert.Equal(t, tc.expected, result)
 		})
 	}
