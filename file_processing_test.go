@@ -590,14 +590,14 @@ func testSaveToFile(t *testing.T, fp *FileProcessor, fs afero.Fs, tempDir, filen
 	var expectedContent string
 	if sortByModTime {
 		expectedContent = `"./path/to/file2_02:34:56_03:45:67.mp4"
-		"./path/to/file1_01:23:45.mp4"
-		"./path/to/file3.mp4"
-		`
+"./path/to/file1_01:23:45.mp4"
+"./path/to/file3.mp4"
+`
 	} else {
 		expectedContent = `2172777224,"./path/to/file2_02:34:56_03:45:67.mp4"
-		2172777224,"./path/to/file3.mp4"
-		209720828,"./path/to/file1_01:23:45.mp4"
-		`
+2172777224,"./path/to/file3.mp4"
+209720828,"./path/to/file1_01:23:45.mp4"
+`
 	}
 
 	assert.Equal(t, expectedContent, string(content), "File content does not match expected")
