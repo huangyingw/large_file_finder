@@ -307,11 +307,20 @@ func TestGetFileSizeFromRedis(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Run("GetSize_"+sf.name, func(t *testing.T) {
-			size, err := getFileSizeFromRedis(rdb, ctx, filePath, testExcludeRegexps)
+			relativePath, err := filepath.Rel(tempDir, filePath)
+			require.NoError(t, err)
+
+			size, err := getFileSizeFromRedis(rdb, ctx, tempDir, relativePath, testExcludeRegexps)
 			assert.NoError(t, err)
 			assert.Equal(t, int64(len(sf.content)), size)
 		})
 	}
+
+	// Test with non-existent file
+	t.Run("GetSize_NonExistentFile", func(t *testing.T) {
+		_, err := getFileSizeFromRedis(rdb, ctx, tempDir, "non-existent-file.txt", testExcludeRegexps)
+		assert.Error(t, err)
+	})
 }
 
 func TestWalkFilesWithExcludePatterns(t *testing.T) {
