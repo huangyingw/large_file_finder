@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -155,9 +156,26 @@ func TestWalkFiles(t *testing.T) {
 	log.SetOutput(&logBuf)
 	defer log.SetOutput(os.Stderr)
 
+	// 创建一个模拟的 Redis 客户端
+	mr, err := miniredis.Run()
+	assert.NoError(t, err)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	defer rdb.Close()
+
+	// 创建一个 FileProcessor 实例，不包含任何排除规则
+	fp := &FileProcessor{
+		Rdb:            rdb,
+		Ctx:            context.Background(),
+		excludeRegexps: []*regexp.Regexp{},
+	}
+
 	fileChan := make(chan string, 10)
 	go func() {
-		err := walkFiles(tempDir, 100, fileChan, nil) // 传入 nil 作为 excludePatterns
+		err := walkFiles(tempDir, 100, fileChan, fp)
 		assert.NoError(t, err)
 		close(fileChan)
 	}()
@@ -246,12 +264,15 @@ func TestFormatFileInfoLine(t *testing.T) {
 
 func TestGetFileSizeFromRedis(t *testing.T) {
 	mr, err := miniredis.Run()
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("An error occurred while creating miniredis: %v", err)
+	}
 	defer mr.Close()
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr: mr.Addr(),
 	})
+	defer rdb.Close()
 	ctx := context.Background()
 
 	tempDir, err := ioutil.TempDir("", "test_redis_file_size")
@@ -286,7 +307,7 @@ func TestGetFileSizeFromRedis(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Run("GetSize_"+sf.name, func(t *testing.T) {
-			size, err := getFileSizeFromRedis(rdb, ctx, filePath)
+			size, err := getFileSizeFromRedis(rdb, ctx, filePath, testExcludeRegexps)
 			assert.NoError(t, err)
 			assert.Equal(t, int64(len(sf.content)), size)
 		})
@@ -330,7 +351,6 @@ func TestWalkFilesWithExcludePatterns(t *testing.T) {
 		`.*\.git/.*`,
 		`.*small_file\.txt$`,
 	}
-
 	excludeRegexps, err := compileExcludePatterns(excludePatterns)
 	require.NoError(t, err)
 
@@ -338,9 +358,21 @@ func TestWalkFilesWithExcludePatterns(t *testing.T) {
 	log.SetOutput(&logBuf)
 	defer log.SetOutput(os.Stderr)
 
+	// 创建一个模拟的 Redis 客户端
+	mr, err := miniredis.Run()
+	assert.NoError(t, err)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	defer rdb.Close()
+
 	fileChan := make(chan string, 10)
+	fp := CreateFileProcessor(rdb, context.Background(), excludeRegexps)
+
 	go func() {
-		err := walkFiles(tempDir, 100, fileChan, excludeRegexps)
+		err := walkFiles(tempDir, 100, fileChan, fp)
 		assert.NoError(t, err)
 		close(fileChan)
 	}()
