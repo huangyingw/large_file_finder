@@ -8,3 +8,4 @@
 .*/var/lib/.*
 .*/var/log/.*
 \.?/sda1/.*
+.*/xian_yan_dash_cam/.*
