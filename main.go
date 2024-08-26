@@ -189,16 +189,17 @@ func walkFiles(rootDir string, minSizeBytes int64, fileChan chan<- string, fp *F
 			return filepath.SkipDir
 		}
 
-		relPath, err := filepath.Rel(rootDir, path)
-		if err != nil {
-			log.Printf("Error getting relative path for %q: %v", path, err)
-			return nil
-		}
-
+		// Use the full path for exclusion check
 		if fp.ShouldExclude(path) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+
+		relPath, err := filepath.Rel(rootDir, path)
+		if err != nil {
+			log.Printf("Error getting relative path for %q: %v", path, err)
 			return nil
 		}
 
