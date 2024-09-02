@@ -10,10 +10,34 @@ import (
 )
 
 func TestGenerateHash(t *testing.T) {
-	input := "test string"
-	hash := generateHash(input)
-	assert.NotEmpty(t, hash)
-	assert.Len(t, hash, 64) // SHA-256 hash is 64 characters long
+	testCases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Simple string",
+			input:    "hello",
+			expected: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+		},
+		{
+			name:     "Empty string",
+			input:    "",
+			expected: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		},
+		{
+			name:     "Long string",
+			input:    "This is a very long string that we will use to test the generateHash function",
+			expected: "d24160249ac798efe059cdc40edb21f4fc7a5627852fa0313e98ab6f35446a83",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := generateHash(tc.input)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
 }
 
 func TestSaveFileInfoToRedis(t *testing.T) {
