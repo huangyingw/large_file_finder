@@ -55,6 +55,7 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullPath string
 
 // 将重复文件的信息存储到 Redis
 func SaveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHash string, info FileInfo) error {
+	log.Printf("Saving duplicate file info to Redis for hash: %s, path: %s", fullHash, info.Path)
 	timestamps := ExtractTimestamps(info.Path)
 	fileNameLength := len(filepath.Base(info.Path))
 	score := CalculateScore(timestamps, fileNameLength)
@@ -65,9 +66,11 @@ func SaveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
 	}).Result()
 
 	if err != nil {
+		log.Printf("Error adding duplicate file to Redis: %v", err)
 		return fmt.Errorf("error adding duplicate file to Redis: %w", err)
 	}
 
+	log.Printf("Successfully saved duplicate file info to Redis for hash: %s, path: %s", fullHash, info.Path)
 	return nil
 }
 
