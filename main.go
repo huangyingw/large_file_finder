@@ -167,11 +167,30 @@ func main() {
 	wg.Wait()
 
 	// Save results
+	favLogPath := filepath.Join(rootDir, "fav.log")
+	absFavLogPath, _ := filepath.Abs(favLogPath)
 	if err := fp.saveToFile(rootDir, "fav.log", false); err != nil {
 		log.Printf("Error saving to fav.log: %v", err)
+	} else {
+		log.Printf("Successfully updated: %s", absFavLogPath)
 	}
+
+	favLogSortPath := filepath.Join(rootDir, "fav.log.sort")
+	absFavLogSortPath, _ := filepath.Abs(favLogSortPath)
 	if err := fp.saveToFile(rootDir, "fav.log.sort", true); err != nil {
 		log.Printf("Error saving to fav.log.sort: %v", err)
+	} else {
+		log.Printf("Successfully updated: %s", absFavLogSortPath)
+	}
+
+	if outputDuplicates {
+		favLogDupPath := filepath.Join(rootDir, "fav.log.dup")
+		absFavLogDupPath, _ := filepath.Abs(favLogDupPath)
+		if err := fp.WriteDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx); err != nil {
+			log.Printf("Error writing duplicates to file: %v", err)
+		} else {
+			log.Printf("Successfully updated: %s", absFavLogDupPath)
+		}
 	}
 
 	log.Println("Processing complete")
