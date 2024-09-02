@@ -27,7 +27,6 @@ type FileProcessor struct {
 	calculateFileHashFunc   func(path string, limit int64) (string, error)
 	saveFileInfoToRedisFunc func(*redis.Client, context.Context, string, FileInfo, string, string, bool) error
 	fs                      afero.Fs
-	fileInfoRetriever       FileInfoRetriever
 	excludeRegexps          []*regexp.Regexp
 }
 
@@ -43,7 +42,6 @@ func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps 
 	fp.generateHashFunc = generateHash
 	fp.calculateFileHashFunc = fp.calculateFileHash
 	fp.saveFileInfoToRedisFunc = saveFileInfoToRedis
-	fp.fileInfoRetriever = &RedisFileInfoRetriever{Rdb: rdb, Ctx: ctx}
 
 	// 应用选项
 	for _, option := range options {
@@ -253,20 +251,16 @@ func (fp *FileProcessor) ShouldExclude(path string) bool {
 	return false
 }
 
-func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
-	return fp.fileInfoRetriever.getFileInfoFromRedis(hashedKey)
-}
-
 type RedisFileInfoRetriever struct {
 	Rdb *redis.Client
 	Ctx context.Context
 }
 
-func (r *RedisFileInfoRetriever) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
+func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
 	var fileInfo FileInfo
-	value, err := r.Rdb.Get(r.Ctx, "fileInfo:"+hashedKey).Bytes()
+	value, err := fp.Rdb.Get(fp.Ctx, "fileInfo:"+hashedKey).Bytes()
 	if err != nil {
-		return fileInfo, err // 直接返回错误，包括 redis.Nil
+		return fileInfo, err
 	}
 
 	buf := bytes.NewBuffer(value)
