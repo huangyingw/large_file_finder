@@ -24,64 +24,71 @@ import (
 var mu sync.Mutex
 
 func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context, maxDuplicates int, excludeRegexps []*regexp.Regexp) error {
-	// 移除未使用的 fp 变量
-	// fp := CreateFileProcessor(rdb, ctx, excludeRegexps)
-
-	log.Println("Scanning file hashes")
+	log.Println("Starting findAndLogDuplicates function")
 	fileHashes, err := scanFileHashes(rdb, ctx)
 	if err != nil {
+		log.Printf("Error scanning file hashes: %v", err)
 		return err
 	}
+	log.Printf("Found %d file hashes", len(fileHashes))
 
 	fileCount := 0
-
-	// 用于存储已处理的文件哈希
-	processedFullHashes := make(map[string]bool)
-
-	workerCount := 500
+	processedFullHashes := &sync.Map{}
 	var stopProcessing bool
 	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
 
 	for fileHash, filePaths := range fileHashes {
 		if len(filePaths) > 1 {
-			fileCount++
-			if fileCount >= maxDuplicates {
+			select {
+			case <-ctx.Done():
+				log.Println("Context cancelled, stopping processing")
 				stopProcessing = true
 				break
-			}
-
-			semaphore <- struct{}{} // 获取一个信号量
-
-			taskQueue <- func(fileHash string, filePaths []string) Task {
-				return func() {
-					defer func() {
-						<-semaphore // 释放信号量
-					}()
-
-					if stopProcessing {
-						return
-					}
-
-					log.Printf("Processing hash %s with %d files\n", fileHash, len(filePaths))
-					_, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
-					if err != nil {
-						log.Printf("Error processing file hash %s: %s\n", fileHash, err)
-						return
-					}
+			default:
+				fileCount++
+				if fileCount >= maxDuplicates {
+					log.Println("Reached max duplicates, stopping processing")
+					stopProcessing = true
+					break
 				}
-			}(fileHash, filePaths)
+
+				taskQueue <- func(fileHash string, filePaths []string) Task {
+					return func() {
+						log.Printf("Processing hash %s with %d files\n", fileHash, len(filePaths))
+						_, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
+						if err != nil {
+							log.Printf("Error processing file hash %s: %s\n", fileHash, err)
+						}
+					}
+				}(fileHash, filePaths)
+			}
+		}
+		if stopProcessing {
+			break
 		}
 	}
 
 	stopFunc()
-	poolWg.Wait()
+	log.Println("Stopped worker pool, waiting for tasks to complete")
 
-	log.Printf("Total duplicates found: %d\n", fileCount)
+	// 使用带超时的 context 等待
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 
-	if fileCount == 0 {
-		return nil
+	waitCh := make(chan struct{})
+	go func() {
+		poolWg.Wait()
+		close(waitCh)
+	}()
+
+	select {
+	case <-waitCh:
+		log.Println("All tasks completed successfully")
+	case <-waitCtx.Done():
+		log.Println("Timeout waiting for tasks to complete")
 	}
 
+	log.Printf("Total duplicates found: %d\n", fileCount)
 	return nil
 }
 
@@ -282,63 +289,52 @@ type fileInfo struct {
 	FileInfo  // 嵌入已有的FileInfo结构体
 }
 
-func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes map[string]bool) (int, error) {
+func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes *sync.Map) (int, error) {
+	log.Printf("Starting processFileHash for hash: %s", fileHash)
 	fileCount := 0
-	hashes := make(map[string][]fileInfo) // 添加这行
+	hashes := make(map[string][]fileInfo)
 	for _, fullPath := range filePaths {
 		if !strings.HasPrefix(fullPath, rootDir) {
+			log.Printf("Skipping file not in root dir: %s", fullPath)
 			continue
 		}
-
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			log.Printf("File does not exist: %s", fullPath)
 			continue
 		}
-
-		semaphore <- struct{}{} // 获取一个信号量
 		relativePath, err := filepath.Rel(rootDir, fullPath)
 		if err != nil {
-			<-semaphore // 释放信号量
+			log.Printf("Error getting relative path: %v", err)
 			continue
 		}
 		fileName := filepath.Base(relativePath)
 
-		// 获取或计算完整文件的SHA-512哈希值
 		fullHash, err := getFullFileHash(fullPath, rdb, ctx)
 		if err != nil {
-			<-semaphore // 释放信号量
+			log.Printf("Error getting full hash for file %s: %v", fullPath, err)
 			continue
 		}
-
-		// 计算文件的SHA-512哈希值（只读取前4KB）
 		fileHash, err := getFileHash(fullPath, rdb, ctx)
 		if err != nil {
-			<-semaphore // 释放信号量
 			continue
 		}
-
-		// 获取文件信息并编码
 		info, err := os.Stat(fullPath)
 		if err != nil {
-			<-semaphore // 释放信号量
+			log.Printf("Error getting file info for %s: %v", fullPath, err)
 			continue
 		}
-
 		var buf bytes.Buffer
 		enc := gob.NewEncoder(&buf)
 		if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
-			<-semaphore // 释放信号量
 			continue
 		}
-
 		if err := saveFileInfoToRedis(rdb, ctx, fullPath, FileInfo{
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
 			Path:    fullPath,
 		}, fileHash, fullHash, true); err != nil {
-			<-semaphore // 释放信号量
 			continue
 		}
-
 		infoStruct := fileInfo{
 			name:      fileName,
 			path:      fullPath,
@@ -347,19 +343,15 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			fileHash:  fileHash,
 			fullHash:  fullHash,
 			line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
-			// 删除 header 字段
-			FileInfo: FileInfo{Size: info.Size(), ModTime: info.ModTime()},
+			FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
 		}
 		hashes[fullHash] = append(hashes[fullHash], infoStruct)
 		fileCount++
-		<-semaphore // 释放信号量
 	}
-
 	var saveErr error
 	for fullHash, infos := range hashes {
 		if len(infos) > 1 {
-			mu.Lock()
-			if !processedFullHashes[fullHash] {
+			if _, loaded := processedFullHashes.LoadOrStore(fullHash, true); !loaded {
 				for _, info := range infos {
 					log.Printf("Saving duplicate file info to Redis for file: %s", info.path)
 					err := SaveDuplicateFileInfoToRedis(rdb, ctx, fullHash, info.FileInfo)
@@ -370,16 +362,12 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 						log.Printf("Successfully saved duplicate file info to Redis for file: %s", info.path)
 					}
 				}
-				processedFullHashes[fullHash] = true
 			}
-			mu.Unlock()
 		}
 	}
-
 	if saveErr != nil {
 		return fileCount, saveErr
 	}
-
 	return fileCount, nil
 }
 
