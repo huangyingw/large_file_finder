@@ -416,3 +416,32 @@ func TestWalkFilesWithExcludePatterns(t *testing.T) {
 	assert.NotContains(t, logOutput, ".git/config")
 	assert.NotContains(t, logOutput, "small_file.txt")
 }
+
+func TestCleanRelativePath(t *testing.T) {
+	testCases := []struct {
+		name     string
+		rootDir  string
+		fullPath string
+		expected string
+	}{
+		{
+			name:     "Simple case",
+			rootDir:  "/home/user",
+			fullPath: "/home/user/documents/file.txt",
+			expected: "./documents/file.txt",
+		},
+		{
+			name:     "Path with parent directory",
+			rootDir:  "/home/user",
+			fullPath: "/home/user/../user/documents/file.txt",
+			expected: "./documents/file.txt",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := cleanRelativePath(tc.rootDir, tc.fullPath)
+			assert.Equal(t, filepath.ToSlash(tc.expected), filepath.ToSlash(result))
+		})
+	}
+}
