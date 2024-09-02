@@ -54,6 +54,11 @@ func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps 
 // 修改 saveToFile 方法
 func (fp *FileProcessor) saveToFile(rootDir, filename string, sortByModTime bool) error {
 	outputPath := filepath.Join(rootDir, filename)
+	absOutputPath, err := filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("error getting absolute path: %w", err)
+	}
+
 	outputDir := filepath.Dir(outputPath)
 	if err := fp.fs.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("error creating output directory: %w", err)
@@ -106,6 +111,7 @@ func (fp *FileProcessor) saveToFile(rootDir, filename string, sortByModTime bool
 		}
 	}
 
+	log.Printf("File updated successfully: %s", absOutputPath)
 	return nil
 }
 
@@ -176,7 +182,13 @@ type FileInfoRetriever interface {
 }
 
 func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
-	file, err := fp.fs.Create(filepath.Join(rootDir, outputFile))
+	outputPath := filepath.Join(rootDir, outputFile)
+	absOutputPath, err := filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("error getting absolute path: %w", err)
+	}
+
+	file, err := fp.fs.Create(outputPath)
 	if err != nil {
 		return fmt.Errorf("Error creating output file: %s", err)
 	}
@@ -234,6 +246,7 @@ func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile st
 		return fmt.Errorf("error during iteration: %w", err)
 	}
 
+	log.Printf("Duplicate files written successfully: %s", absOutputPath)
 	return nil
 }
 
