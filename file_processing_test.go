@@ -1105,3 +1105,36 @@ func TestFileProcessor_WriteDuplicateFilesToFile(t *testing.T) {
 
 	assert.Equal(t, expectedContent, string(content), "File content does not match expected")
 }
+
+func TestFileProcessor_ShouldExclude(t *testing.T) {
+	excludePatterns := []string{
+		`.*\.git(/.*)?$`,
+		`.*\.tmp$`,
+		`^/tmp/.*`,
+	}
+
+	regexps, err := compileExcludePatterns(excludePatterns)
+	assert.NoError(t, err)
+
+	fp := &FileProcessor{excludeRegexps: regexps}
+
+	testCases := []struct {
+		name     string
+		path     string
+		expected bool
+	}{
+		{"Git directory", "/home/user/project/.git", true},
+		{"File in git directory", "/home/user/project/.git/config", true},
+		{"Temporary file", "/home/user/file.tmp", true},
+		{"File in tmp directory", "/tmp/file.txt", true},
+		{"Normal file", "/home/user/project/file.txt", false},
+		{"Hidden file", "/home/user/project/.hidden", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := fp.ShouldExclude(tc.path)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
