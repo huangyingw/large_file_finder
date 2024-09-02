@@ -3,10 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"github.com/alicebob/miniredis/v2"
-	"github.com/go-redis/redis/v8"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"io/ioutil"
 	"log"
 	"os"
@@ -16,6 +12,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/go-redis/redis/v8"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadAndCompileExcludePatterns(t *testing.T) {
@@ -406,7 +407,7 @@ func TestWalkFilesWithExcludePatterns(t *testing.T) {
 		expected[i] = filepath.ToSlash(path)
 	}
 
-	// 排序结果和期望值，以确保比较的一致性
+	// 排序结果和期望值，���确保比较的一致性
 	sort.Strings(result)
 	sort.Strings(expected)
 
@@ -415,4 +416,75 @@ func TestWalkFilesWithExcludePatterns(t *testing.T) {
 	logOutput := logBuf.String()
 	assert.NotContains(t, logOutput, ".git/config")
 	assert.NotContains(t, logOutput, "small_file.txt")
+}
+
+func TestCleanRelativePath(t *testing.T) {
+	testCases := []struct {
+		name     string
+		rootDir  string
+		fullPath string
+		expected string
+	}{
+		{
+			name:     "Simple case",
+			rootDir:  "/home/user",
+			fullPath: "/home/user/documents/file.txt",
+			expected: "./documents/file.txt",
+		},
+		{
+			name:     "Path with parent directory",
+			rootDir:  "/home/user",
+			fullPath: "/home/user/../user/documents/file.txt",
+			expected: "./documents/file.txt",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := cleanRelativePath(tc.rootDir, tc.fullPath)
+			assert.Equal(t, filepath.ToSlash(tc.expected), filepath.ToSlash(result))
+		})
+	}
+}
+
+func TestFindAndLogDuplicates(t *testing.T) {
+	// 初始化 Redis 客户端和上下文
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+	ctx := context.Background()
+
+	// 清理 Redis 中的测试数据
+	rdb.FlushDB(ctx)
+
+	// 模拟写入重复文件信息到 Redis
+	rdb.SAdd(ctx, "duplicateFiles:hash1", "/path/to/file1", "/path/to/file1_duplicate")
+	rdb.SAdd(ctx, "duplicateFiles:hash2", "/path/to/file2", "/path/to/file2_duplicate")
+
+	// 假设根目录为 "/testroot"
+	rootDir := "/testroot"
+	// 假设 workerCount 为 10
+	workerCount := 10
+	// 假设没有排除规则
+	excludeRegexps := []*regexp.Regexp{}
+
+	// 调用被测试的函数
+	findAndLogDuplicates(rootDir, rdb, ctx, workerCount, excludeRegexps)
+
+	// 检查 Redis 中是否存在期望的键
+	exists, err := rdb.Exists(ctx, "duplicateFiles:hash1").Result()
+	if err != nil {
+		t.Fatalf("Error checking existence of key: %v", err)
+	}
+	if exists != 1 {
+		t.Errorf("Expected key duplicateFiles:hash1 to exist")
+	}
+
+	exists, err = rdb.Exists(ctx, "duplicateFiles:hash2").Result()
+	if err != nil {
+		t.Fatalf("Error checking existence of key: %v", err)
+	}
+	if exists != 1 {
+		t.Errorf("Expected key duplicateFiles:hash2 to exist")
+	}
 }

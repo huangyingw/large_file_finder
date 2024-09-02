@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"sync"
 	"time"
 )
@@ -168,15 +167,31 @@ func main() {
 	wg.Wait()
 
 	// Save results
+	favLogPath := filepath.Join(rootDir, "fav.log")
+	absFavLogPath, _ := filepath.Abs(favLogPath)
 	if err := fp.saveToFile(rootDir, "fav.log", false); err != nil {
 		log.Printf("Error saving to fav.log: %v", err)
-	}
-	if err := fp.saveToFile(rootDir, "fav.log.sort", true); err != nil {
-		log.Printf("Error saving to fav.log.sort: %v", err)
+	} else {
+		log.Printf("Successfully updated: %s", absFavLogPath)
 	}
 
-	// Add this line to process fav.log after saving results
-	// processFavLog(filepath.Join(rootDir, "fav.log"), rootDir, rdb, ctx, excludeRegexps)
+	favLogSortPath := filepath.Join(rootDir, "fav.log.sort")
+	absFavLogSortPath, _ := filepath.Abs(favLogSortPath)
+	if err := fp.saveToFile(rootDir, "fav.log.sort", true); err != nil {
+		log.Printf("Error saving to fav.log.sort: %v", err)
+	} else {
+		log.Printf("Successfully updated: %s", absFavLogSortPath)
+	}
+
+	if outputDuplicates {
+		favLogDupPath := filepath.Join(rootDir, "fav.log.dup")
+		absFavLogDupPath, _ := filepath.Abs(favLogDupPath)
+		if err := fp.WriteDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx); err != nil {
+			log.Printf("Error writing duplicates to file: %v", err)
+		} else {
+			log.Printf("Successfully updated: %s", absFavLogDupPath)
+		}
+	}
 
 	log.Println("Processing complete")
 }
@@ -189,17 +204,10 @@ func walkFiles(rootDir string, minSizeBytes int64, fileChan chan<- string, fp *F
 			return filepath.SkipDir
 		}
 
-		// Use the full path for exclusion check
 		if fp.ShouldExclude(path) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
-			return nil
-		}
-
-		relPath, err := filepath.Rel(rootDir, path)
-		if err != nil {
-			log.Printf("Error getting relative path for %q: %v", path, err)
 			return nil
 		}
 
@@ -213,60 +221,16 @@ func walkFiles(rootDir string, minSizeBytes int64, fileChan chan<- string, fp *F
 		}
 
 		if info.Size() >= minSizeBytes {
+			relPath, err := filepath.Rel(rootDir, path)
+			if err != nil {
+				log.Printf("Error getting relative path for %q: %v", path, err)
+				return nil
+			}
 			fileChan <- relPath
 		}
 
 		return nil
 	})
-}
-
-func processFavLog(filePath string, rootDir string, rdb *redis.Client, ctx context.Context, excludeRegexps []*regexp.Regexp) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		log.Println("Error opening file:", err)
-		return
-	}
-	defer file.Close()
-
-	var fileNames, filePaths []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		line = regexp.MustCompile(`^\d+,`).ReplaceAllString(line, "")
-		filePaths = append(filePaths, line)
-		fileNames = append(fileNames, extractFileName(line))
-	}
-
-	// 确定工作池的大小并调用 extractKeywords
-	var stopProcessing bool
-	keywords := extractKeywords(fileNames, &stopProcessing)
-
-	closeFiles := findCloseFiles(fileNames, filePaths, keywords)
-
-	// 排序关键词
-	sort.Slice(keywords, func(i, j int) bool {
-		return len(closeFiles[keywords[i]]) > len(closeFiles[keywords[j]])
-	})
-
-	workerCount := 500
-	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
-
-	for i, keyword := range keywords {
-		keywordFiles := closeFiles[keyword]
-		if len(keywordFiles) >= 2 {
-			poolWg.Add(1) // 在将任务发送到队列之前增加计数
-			taskQueue <- func(kw string, kf []string, idx int) Task {
-				return func() {
-					defer poolWg.Done()
-					log.Printf("Processing keyword %d of %d: %s\n", idx+1, len(keywords), kw)
-					processKeyword(kw, kf, rdb, ctx, rootDir, excludeRegexps)
-				}
-			}(keyword, keywordFiles, i)
-		}
-	}
-
-	stopFunc() // 使用停止函数来关闭任务队列
-	poolWg.Wait()
 }
 
 // 初始化Redis客户端
@@ -280,43 +244,6 @@ func newRedisClient(ctx context.Context) *redis.Client {
 		os.Exit(1)
 	}
 	return rdb
-}
-
-func initializeApp() (string, int64, []*regexp.Regexp, *redis.Client, context.Context, bool, bool, bool, int, error) {
-	rootDir := flag.String("rootDir", "", "Root directory to start the search")
-	deleteDuplicates := flag.Bool("delete-duplicates", false, "Delete duplicate files")
-	findDuplicates := flag.Bool("find-duplicates", false, "Find duplicate files")
-	outputDuplicates := flag.Bool("output-duplicates", false, "Output duplicate files")
-	maxDuplicates := flag.Int("max-duplicates", 50, "Maximum number of duplicates to process")
-	flag.Parse()
-
-	if *rootDir == "" {
-		return "", 0, nil, nil, nil, false, false, false, 0, fmt.Errorf("rootDir must be specified")
-	}
-
-	// Minimum file size in bytes
-	minSize := 200 // Default size is 200MB
-	minSizeBytes := int64(minSize * 1024 * 1024)
-
-	// 获取当前运行目录
-	currentDir, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("Failed to get current directory: %v", err)
-	}
-
-	// 拼接当前目录和文件名
-	excludePatternsFilePath := filepath.Join(currentDir, "exclude_patterns.txt")
-
-	excludeRegexps, err := loadAndCompileExcludePatterns(excludePatternsFilePath)
-	if err != nil {
-		log.Printf("Error loading exclude patterns: %v", err)
-	}
-
-	// 创建 Redis 客户端
-	ctx := context.Background()
-	rdb := newRedisClient(ctx)
-
-	return *rootDir, minSizeBytes, excludeRegexps, rdb, ctx, *deleteDuplicates, *findDuplicates, *outputDuplicates, *maxDuplicates, nil
 }
 
 func monitorProgress(ctx context.Context) {

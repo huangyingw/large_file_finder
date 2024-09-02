@@ -27,7 +27,6 @@ type FileProcessor struct {
 	calculateFileHashFunc   func(path string, limit int64) (string, error)
 	saveFileInfoToRedisFunc func(*redis.Client, context.Context, string, FileInfo, string, string, bool) error
 	fs                      afero.Fs
-	fileInfoRetriever       FileInfoRetriever
 	excludeRegexps          []*regexp.Regexp
 }
 
@@ -43,7 +42,6 @@ func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps 
 	fp.generateHashFunc = generateHash
 	fp.calculateFileHashFunc = fp.calculateFileHash
 	fp.saveFileInfoToRedisFunc = saveFileInfoToRedis
-	fp.fileInfoRetriever = &RedisFileInfoRetriever{Rdb: rdb, Ctx: ctx}
 
 	// 应用选项
 	for _, option := range options {
@@ -56,6 +54,11 @@ func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps 
 // 修改 saveToFile 方法
 func (fp *FileProcessor) saveToFile(rootDir, filename string, sortByModTime bool) error {
 	outputPath := filepath.Join(rootDir, filename)
+	absOutputPath, err := filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("error getting absolute path: %w", err)
+	}
+
 	outputDir := filepath.Dir(outputPath)
 	if err := fp.fs.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("error creating output directory: %w", err)
@@ -108,6 +111,7 @@ func (fp *FileProcessor) saveToFile(rootDir, filename string, sortByModTime bool
 		}
 	}
 
+	log.Printf("File updated successfully: %s", absOutputPath)
 	return nil
 }
 
@@ -170,11 +174,6 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
 	}
 	log.Printf("Saved file info to Redis")
 
-	// 检查文件是否应该被排除
-	if fp.ShouldExclude(fullPath) {
-		return nil
-	}
-
 	return nil
 }
 
@@ -183,7 +182,13 @@ type FileInfoRetriever interface {
 }
 
 func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Client, ctx context.Context) error {
-	file, err := fp.fs.Create(filepath.Join(rootDir, outputFile))
+	outputPath := filepath.Join(rootDir, outputFile)
+	absOutputPath, err := filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("error getting absolute path: %w", err)
+	}
+
+	file, err := fp.fs.Create(outputPath)
 	if err != nil {
 		return fmt.Errorf("Error creating output file: %s", err)
 	}
@@ -241,6 +246,7 @@ func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile st
 		return fmt.Errorf("error during iteration: %w", err)
 	}
 
+	log.Printf("Duplicate files written successfully: %s", absOutputPath)
 	return nil
 }
 
@@ -253,20 +259,16 @@ func (fp *FileProcessor) ShouldExclude(path string) bool {
 	return false
 }
 
-func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
-	return fp.fileInfoRetriever.getFileInfoFromRedis(hashedKey)
-}
-
 type RedisFileInfoRetriever struct {
 	Rdb *redis.Client
 	Ctx context.Context
 }
 
-func (r *RedisFileInfoRetriever) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
+func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
 	var fileInfo FileInfo
-	value, err := r.Rdb.Get(r.Ctx, "fileInfo:"+hashedKey).Bytes()
+	value, err := fp.Rdb.Get(fp.Ctx, "fileInfo:"+hashedKey).Bytes()
 	if err != nil {
-		return fileInfo, err // 直接返回错误，包括 redis.Nil
+		return fileInfo, err
 	}
 
 	buf := bytes.NewBuffer(value)
