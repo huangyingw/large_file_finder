@@ -496,6 +496,7 @@ func TestFileProcessor_GetFileInfoFromRedis(t *testing.T) {
 	testFileInfo := FileInfo{
 		Size:    1000,
 		ModTime: time.Now(),
+		Path:    "/test/path/file.txt",
 	}
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
@@ -509,6 +510,7 @@ func TestFileProcessor_GetFileInfoFromRedis(t *testing.T) {
 	result, err := fp.getFileInfoFromRedis(hashedKey)
 	require.NoError(t, err)
 	assert.Equal(t, testFileInfo.Size, result.Size)
+	assert.Equal(t, testFileInfo.Path, result.Path)
 	assert.WithinDuration(t, testFileInfo.ModTime, result.ModTime, time.Second)
 }
 
