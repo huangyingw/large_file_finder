@@ -168,11 +168,6 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
 	}
 	log.Printf("Saved file info to Redis")
 
-	// 检查文件是否应该被排除
-	if fp.ShouldExclude(fullPath) {
-		return nil
-	}
-
 	return nil
 }
 
