@@ -7,17 +7,18 @@ import (
 	"context"
 	"encoding/gob"
 	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 	"github.com/go-redis/redismock/v8"
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"io/ioutil"
-	"os"
-	"path/filepath"
-	"testing"
-	"time"
 )
 
 func setupTestEnvironment(t *testing.T) (*miniredis.Miniredis, *redis.Client, context.Context, afero.Fs, *FileProcessor) {
@@ -132,50 +133,6 @@ func TestProcessFile(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, isMember)
 	})
-}
-
-// 保留原有的 createTestData 函数
-func createTestData(rdb *redis.Client, ctx context.Context, fs afero.Fs, rootDir string) error {
-	testData := []struct {
-		path     string
-		size     int64
-		modTime  time.Time
-		fullHash string
-	}{
-		{filepath.Join(rootDir, "file1.txt"), 100, time.Now().Add(-1 * time.Hour), "hash1"},
-		{filepath.Join(rootDir, "file2.txt"), 200, time.Now(), "hash2"},
-		{filepath.Join(rootDir, "file3.txt"), 300, time.Now().Add(-2 * time.Hour), "hash2"},
-	}
-
-	for _, data := range testData {
-		info := FileInfo{Size: data.size, ModTime: data.modTime}
-		var buf bytes.Buffer
-		enc := gob.NewEncoder(&buf)
-		if err := enc.Encode(info); err != nil {
-			return err
-		}
-
-		hashedKey := generateHash(data.path)
-		if err := rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err(); err != nil {
-			return err
-		}
-		if err := rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, data.path, 0).Err(); err != nil {
-			return err
-		}
-		if err := rdb.Set(ctx, "pathToHashedKey:"+data.path, hashedKey, 0).Err(); err != nil {
-			return err
-		}
-		if err := rdb.Set(ctx, "hashedKeyToFullHash:"+hashedKey, data.fullHash, 0).Err(); err != nil {
-			return err
-		}
-
-		// 创建模拟文件
-		if err := afero.WriteFile(fs, data.path, []byte("test content"), 0644); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 func TestFormatTimestamp(t *testing.T) {
@@ -532,7 +489,7 @@ func TestFileProcessor_GetHashedKeyFromPath(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func setupTestFiles(t *testing.T, fp *FileProcessor, rdb *redis.Client, ctx context.Context, fs afero.Fs, testData []struct {
+func setupTestFiles(fp *FileProcessor, rdb *redis.Client, ctx context.Context, fs afero.Fs, testData []struct {
 	path     string
 	size     int64
 	modTime  time.Time
@@ -607,7 +564,7 @@ func testSaveToFile(t *testing.T, fp *FileProcessor, fs afero.Fs, tempDir, filen
 	return nil
 }
 
-func testWriteDuplicateFilesToFile(t *testing.T, fp *FileProcessor, fs afero.Fs, rdb *redis.Client, ctx context.Context, tempDir, fullHash string) error {
+func testWriteDuplicateFilesToFile(fp *FileProcessor, fs afero.Fs, rdb *redis.Client, ctx context.Context, tempDir, fullHash string) error {
 	err := fp.WriteDuplicateFilesToFile(tempDir, "fav.log.dup", rdb, ctx)
 	if err != nil {
 		return err
@@ -651,7 +608,7 @@ func TestFileContentVerification(t *testing.T) {
 		{filepath.Join(tempDir, "path", "to", "file3.mp4"), 2172777224, time.Now().Add(-2 * time.Hour), fullHash},
 	}
 
-	err = setupTestFiles(t, fp, rdb, ctx, fs, testData)
+	err = setupTestFiles(fp, rdb, ctx, fs, testData)
 	require.NoError(t, err, "Failed to setup test files")
 
 	// Set up duplicate files in Redis
@@ -675,7 +632,7 @@ func TestFileContentVerification(t *testing.T) {
 	})
 
 	t.Run("Test WriteDuplicateFilesToFile", func(t *testing.T) {
-		err := testWriteDuplicateFilesToFile(t, fp, fs, rdb, ctx, tempDir, fullHash)
+		err := testWriteDuplicateFilesToFile(fp, fs, rdb, ctx, tempDir, fullHash)
 		require.NoError(t, err, "Failed to test WriteDuplicateFilesToFile")
 	})
 }
