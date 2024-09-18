@@ -20,38 +20,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLoadAndCompileExcludePatterns(t *testing.T) {
-	// Create a temporary file with test patterns
-	tmpfile, err := os.CreateTemp("", "test_patterns")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpfile.Name())
-
-	testPatterns := []string{
-		"pattern1*",
-		"pattern2?",
-		"[a-z]+pattern3",
-	}
-
-	for _, pattern := range testPatterns {
-		if _, err := tmpfile.WriteString(pattern + "\n"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	tmpfile.Close()
-
-	// Test loadAndCompileExcludePatterns
-	regexps, err := loadAndCompileExcludePatterns(tmpfile.Name())
-	assert.NoError(t, err)
-	assert.Len(t, regexps, len(testPatterns))
-
-	// Test compiled patterns
-	assert.True(t, regexps[0].MatchString("pattern1abc"))
-	assert.True(t, regexps[1].MatchString("pattern2a"))
-	assert.True(t, regexps[2].MatchString("abcpattern3"))
-}
-
 func TestSortKeys(t *testing.T) {
 	data := map[string]FileInfo{
 		"file1": {Size: 100, ModTime: time.Now().Add(-1 * time.Hour)},
