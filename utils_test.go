@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"github.com/spf13/afero"
 	"io/ioutil"
 	"log"
 	"os"
@@ -448,43 +449,127 @@ func TestCleanRelativePath(t *testing.T) {
 }
 
 func TestFindAndLogDuplicates(t *testing.T) {
-	// 初始化 Redis 客户端和上下文
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
 	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
+		Addr: mr.Addr(),
 	})
 	ctx := context.Background()
 
-	// 清理 Redis 中的测试数据
-	rdb.FlushDB(ctx)
+	fs := afero.NewMemMapFs()
+	fp := CreateFileProcessor(rdb, ctx, testExcludeRegexps)
+	fp.fs = fs
 
-	// 模拟写入重复文件信息到 Redis
-	rdb.SAdd(ctx, "duplicateFiles:hash1", "/path/to/file1", "/path/to/file1_duplicate")
-	rdb.SAdd(ctx, "duplicateFiles:hash2", "/path/to/file2", "/path/to/file2_duplicate")
+	rootDir, err := afero.TempDir(fs, "", "testroot")
+	require.NoError(t, err)
 
-	// 假设根目录为 "/testroot"
-	rootDir := "/testroot"
-	// 假设 workerCount 为 10
-	workerCount := 10
-	// 假设没有排除规则
-	excludeRegexps := []*regexp.Regexp{}
-
-	// 调用被测试的函数
-	findAndLogDuplicates(rootDir, rdb, ctx, workerCount, excludeRegexps)
-
-	// 检查 Redis 中是否存在期望的键
-	exists, err := rdb.Exists(ctx, "duplicateFiles:hash1").Result()
-	if err != nil {
-		t.Fatalf("Error checking existence of key: %v", err)
-	}
-	if exists != 1 {
-		t.Errorf("Expected key duplicateFiles:hash1 to exist")
+	// 创建测试文件
+	testFiles := []struct {
+		path    string
+		content string
+	}{
+		{filepath.Join(rootDir, "file1.txt"), "duplicate content"},
+		{filepath.Join(rootDir, "file2.txt"), "duplicate content"},
+		{filepath.Join(rootDir, "file3.txt"), "unique content"},
 	}
 
-	exists, err = rdb.Exists(ctx, "duplicateFiles:hash2").Result()
-	if err != nil {
-		t.Fatalf("Error checking existence of key: %v", err)
+	for _, tf := range testFiles {
+		err := afero.WriteFile(fs, tf.path, []byte(tf.content), 0644)
+		require.NoError(t, err)
 	}
-	if exists != 1 {
-		t.Errorf("Expected key duplicateFiles:hash2 to exist")
+
+	// 处理文件，计算哈希值
+	calculateHashes := true
+	for _, tf := range testFiles {
+		relPath, err := filepath.Rel(rootDir, tf.path)
+		require.NoError(t, err)
+		err = fp.ProcessFile(rootDir, relPath, calculateHashes)
+		require.NoError(t, err)
 	}
+
+	// 调用 findAndLogDuplicates 时传递 fs
+	err = findAndLogDuplicates(rootDir, rdb, ctx, 10, testExcludeRegexps, fp.fs)
+	require.NoError(t, err)
+
+	// 检查是否在 Redis 中正确存储了重复文件信息
+	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
+	foundDuplicates := false
+	for iter.Next(ctx) {
+		key := iter.Val()
+		members, err := rdb.ZRange(ctx, key, 0, -1).Result()
+		require.NoError(t, err)
+		if len(members) > 1 {
+			foundDuplicates = true
+			break
+		}
+	}
+	assert.True(t, foundDuplicates, "应当找到重复的文件")
+}
+
+func TestDeleteDuplicateFiles(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	ctx := context.Background()
+
+	fs := afero.NewMemMapFs()
+	fp := CreateFileProcessor(rdb, ctx, testExcludeRegexps)
+	fp.fs = fs
+
+	rootDir, err := afero.TempDir(fs, "", "testroot")
+	require.NoError(t, err)
+
+	// 创建重复文件
+	fullHash := "duplicate_full_hash"
+	testFiles := []string{
+		filepath.Join(rootDir, "dup_file1.txt"),
+		filepath.Join(rootDir, "dup_file2.txt"),
+	}
+
+	for _, filePath := range testFiles {
+		err := afero.WriteFile(fs, filePath, []byte("duplicate content"), 0644)
+		require.NoError(t, err)
+
+		// 存储文件信息到 Redis
+		info, err := fs.Stat(filePath)
+		require.NoError(t, err)
+		fileInfo := FileInfo{Size: info.Size(), ModTime: info.ModTime(), Path: filePath}
+		err = SaveDuplicateFileInfoToRedis(rdb, ctx, fullHash, fileInfo)
+		require.NoError(t, err)
+	}
+
+	// 模拟存储 duplicateFiles 键
+	for i, filePath := range testFiles {
+		score := float64(-i) // 保证第一个文件被保留
+		_, err := rdb.ZAdd(ctx, "duplicateFiles:"+fullHash, &redis.Z{
+			Score:  score,
+			Member: filePath,
+		}).Result()
+		require.NoError(t, err)
+	}
+
+	// 执行删除重复文件的函数
+	err = deleteDuplicateFiles(rootDir, rdb, ctx, fp.fs)
+	require.NoError(t, err)
+
+	// 检查文件是否被删除
+	exists, err := afero.Exists(fs, testFiles[1])
+	require.NoError(t, err)
+	assert.False(t, exists, "重复的文件应当被删除")
+
+	// 检查保留的文件是否存在
+	exists, err = afero.Exists(fs, testFiles[0])
+	require.NoError(t, err)
+	assert.True(t, exists, "第一个文件应当被保留")
+
+	// 检查 Redis 中的键是否被清理
+	existsInRedis, err := rdb.Exists(ctx, "duplicateFiles:"+fullHash).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), existsInRedis, "Redis 中的 duplicateFiles 键应当被删除")
 }

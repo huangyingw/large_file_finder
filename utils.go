@@ -9,6 +9,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"github.com/go-redis/redis/v8"
+	"github.com/spf13/afero"
 	"io"
 	"log"
 	"os"
@@ -23,7 +24,7 @@ import (
 
 var mu sync.Mutex
 
-func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context, maxDuplicates int, excludeRegexps []*regexp.Regexp) error {
+func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context, maxDuplicates int, excludeRegexps []*regexp.Regexp, fs afero.Fs) error {
 	log.Println("Starting findAndLogDuplicates function")
 	fileHashes, err := scanFileHashes(rdb, ctx)
 	if err != nil {
@@ -55,7 +56,7 @@ func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context
 				taskQueue <- func(fileHash string, filePaths []string) Task {
 					return func() {
 						log.Printf("Processing hash %s with %d files\n", fileHash, len(filePaths))
-						_, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes)
+						_, err := processFileHash(rootDir, fileHash, filePaths, rdb, ctx, processedFullHashes, fs)
 						if err != nil {
 							log.Printf("Error processing file hash %s: %s\n", fileHash, err)
 						}
@@ -116,16 +117,16 @@ func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, rootDir, relat
 	return fileInfo.Size, nil
 }
 
-func getFullFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
-	return calculateFileHash(path, -1)
+func getFullFileHash(fs afero.Fs, path string, rdb *redis.Client, ctx context.Context) (string, error) {
+	return calculateFileHash(fs, path, -1)
 }
 
-func getFileHash(path string, rdb *redis.Client, ctx context.Context) (string, error) {
-	return calculateFileHash(path, 100*1024) // 100KB
+func getFileHash(fs afero.Fs, path string, rdb *redis.Client, ctx context.Context) (string, error) {
+	return calculateFileHash(fs, path, 100*1024) // 100KB
 }
 
-func calculateFileHash(path string, limit int64) (string, error) {
-	f, err := os.Open(path)
+func calculateFileHash(fs afero.Fs, path string, limit int64) (string, error) {
+	f, err := fs.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("error opening file %q: %w", path, err)
 	}
@@ -289,16 +290,13 @@ type fileInfo struct {
 	FileInfo  // 嵌入已有的FileInfo结构体
 }
 
-func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes *sync.Map) (int, error) {
+func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *redis.Client, ctx context.Context, processedFullHashes *sync.Map, fs afero.Fs) (int, error) {
 	log.Printf("Starting processFileHash for hash: %s", fileHash)
 	fileCount := 0
 	hashes := make(map[string][]fileInfo)
-	for _, fullPath := range filePaths {
-		if !strings.HasPrefix(fullPath, rootDir) {
-			log.Printf("Skipping file not in root dir: %s", fullPath)
-			continue
-		}
-		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+	for _, fullPath := range filePaths { // 注意这里直接使用 fullPath
+		info, err := fs.Stat(fullPath) // 使用 fs.Stat
+		if err != nil {
 			log.Printf("File does not exist: %s", fullPath)
 			continue
 		}
@@ -309,16 +307,16 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 		}
 		fileName := filepath.Base(relativePath)
 
-		fullHash, err := getFullFileHash(fullPath, rdb, ctx)
+		fullHash, err := getFullFileHash(fs, fullPath, rdb, ctx)
 		if err != nil {
 			log.Printf("Error getting full hash for file %s: %v", fullPath, err)
 			continue
 		}
-		fileHash, err := getFileHash(fullPath, rdb, ctx)
+		fileHash, err := getFileHash(fs, fullPath, rdb, ctx)
 		if err != nil {
 			continue
 		}
-		info, err := os.Stat(fullPath)
+		info, err = fs.Stat(fullPath)
 		if err != nil {
 			log.Printf("Error getting file info for %s: %v", fullPath, err)
 			continue
@@ -534,7 +532,7 @@ func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string
 	return closeFiles
 }
 
-func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context) error {
+func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context, fs afero.Fs) error {
 	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
 	for iter.Next(ctx) {
 		duplicateFilesKey := iter.Val()
@@ -553,23 +551,21 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
 			fileToKeep := duplicateFiles[0]
 
 			// 检查第一个文件是否存在
-			if _, err := os.Stat(fileToKeep); os.IsNotExist(err) {
+			if _, err := fs.Stat(fileToKeep); os.IsNotExist(err) {
 				continue
 			}
 
 			filesToDelete := duplicateFiles[1:]
 
-			for _, duplicateFile := range filesToDelete {
-				// 先从 Redis 中删除相关记录
-				err := cleanUpRecordsByFilePath(rdb, ctx, duplicateFile)
-				if err != nil {
-					continue
-				}
+			if _, err := fs.Stat(fileToKeep); os.IsNotExist(err) {
+				continue
+			}
 
-				// 然后删除文件
-				err = os.Remove(duplicateFile)
-				if err != nil {
-					continue
+			for _, filePath := range filesToDelete {
+				if err := fs.Remove(filePath); err != nil { // 使用 fs.Remove
+					log.Printf("Error deleting file %s: %v", filePath, err)
+				} else {
+					log.Printf("Deleted duplicate file: %s", filePath)
 				}
 			}
 

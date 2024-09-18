@@ -108,33 +108,16 @@ func main() {
 	log.Printf("Loaded %d exclude patterns from %s", len(excludeRegexps), excludePatternsFile)
 
 	fp := CreateFileProcessor(rdb, ctx, excludeRegexps)
+	fp.fs = afero.NewOsFs() // 使用实际文件系统
 
 	if err := CleanUpOldRecords(rdb, ctx); err != nil {
 		log.Printf("Error cleaning up old records: %v", err)
 	}
 
-	if findDuplicates {
-		if err := findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates, excludeRegexps); err != nil {
-			log.Fatalf("Error finding duplicates: %v", err)
-		}
-		return
-	}
+	// 确定是否需要计算哈希值
+	calculateHashes := findDuplicates || outputDuplicates || deleteDuplicates
 
-	if outputDuplicates {
-		if err := fp.WriteDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx); err != nil {
-			log.Fatalf("Error writing duplicates to file: %v", err)
-		}
-		return
-	}
-
-	if deleteDuplicates {
-		if err := deleteDuplicateFiles(rootDir, rdb, ctx); err != nil {
-			log.Fatalf("Error deleting duplicate files: %v", err)
-		}
-		return
-	}
-
-	// 修改这部分代码
+	// 处理文件
 	fileChan := make(chan string, workerCount)
 	var wg sync.WaitGroup
 
@@ -146,7 +129,7 @@ func main() {
 			for relativePath := range fileChan {
 				fullPath := filepath.Join(rootDir, relativePath)
 				if !fp.ShouldExclude(fullPath) {
-					if err := fp.ProcessFile(rootDir, relativePath, findDuplicates); err != nil {
+					if err := fp.ProcessFile(rootDir, relativePath, calculateHashes); err != nil {
 						log.Printf("Error processing file %s: %v", fullPath, err)
 					}
 				}
@@ -157,7 +140,6 @@ func main() {
 	// Start progress monitoring
 	go monitorProgress(ctx)
 
-	// 修改 walkFiles 调用
 	err = walkFiles(rootDir, minSizeBytes, fileChan, fp)
 	close(fileChan)
 	if err != nil {
@@ -166,30 +148,22 @@ func main() {
 
 	wg.Wait()
 
-	// Save results
-	favLogPath := filepath.Join(rootDir, "fav.log")
-	absFavLogPath, _ := filepath.Abs(favLogPath)
-	if err := fp.saveToFile(rootDir, "fav.log", false); err != nil {
-		log.Printf("Error saving to fav.log: %v", err)
-	} else {
-		log.Printf("Successfully updated: %s", absFavLogPath)
-	}
-
-	favLogSortPath := filepath.Join(rootDir, "fav.log.sort")
-	absFavLogSortPath, _ := filepath.Abs(favLogSortPath)
-	if err := fp.saveToFile(rootDir, "fav.log.sort", true); err != nil {
-		log.Printf("Error saving to fav.log.sort: %v", err)
-	} else {
-		log.Printf("Successfully updated: %s", absFavLogSortPath)
+	// 在处理完文件后，根据标志执行相应操作
+	if findDuplicates {
+		if err := findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates, excludeRegexps, fp.fs); err != nil {
+			log.Fatalf("Error finding duplicates: %v", err)
+		}
 	}
 
 	if outputDuplicates {
-		favLogDupPath := filepath.Join(rootDir, "fav.log.dup")
-		absFavLogDupPath, _ := filepath.Abs(favLogDupPath)
 		if err := fp.WriteDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx); err != nil {
-			log.Printf("Error writing duplicates to file: %v", err)
-		} else {
-			log.Printf("Successfully updated: %s", absFavLogDupPath)
+			log.Fatalf("Error writing duplicates to file: %v", err)
+		}
+	}
+
+	if deleteDuplicates {
+		if err := deleteDuplicateFiles(rootDir, rdb, ctx, fp.fs); err != nil {
+			log.Fatalf("Error deleting duplicate files: %v", err)
 		}
 	}
 
