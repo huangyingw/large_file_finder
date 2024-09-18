@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha512"
@@ -220,34 +219,6 @@ func TimestampToSeconds(timestamp string) int {
 	return totalSeconds
 }
 
-// 合并 loadExcludePatterns 和 compileExcludePatterns
-func loadAndCompileExcludePatterns(filename string) ([]*regexp.Regexp, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var patterns []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		patterns = append(patterns, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	excludeRegexps := make([]*regexp.Regexp, len(patterns))
-	for i, pattern := range patterns {
-		regexPattern := strings.Replace(pattern, "*", ".*", -1)
-		excludeRegexps[i], err = regexp.Compile(regexPattern)
-		if err != nil {
-			return nil, fmt.Errorf("Invalid regex pattern '%s': %v", regexPattern, err)
-		}
-	}
-	return excludeRegexps, nil
-}
-
 func sortKeys(keys []string, data map[string]FileInfo, sortByModTime bool) {
 	if sortByModTime {
 		sort.Slice(keys, func(i, j int) bool {
@@ -294,8 +265,8 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 	log.Printf("Starting processFileHash for hash: %s", fileHash)
 	fileCount := 0
 	hashes := make(map[string][]fileInfo)
-    for _, fullPath := range filePaths {
-        info, err := fs.Stat(fullPath)
+	for _, fullPath := range filePaths {
+		info, err := fs.Stat(fullPath)
 		if err != nil {
 			log.Printf("File does not exist: %s", fullPath)
 			continue
@@ -312,7 +283,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			log.Printf("Error getting full hash for file %s: %v", fullPath, err)
 			continue
 		}
-        localFileHash, err := getFileHash(fs, fullPath, rdb, ctx) // 使用不同的变量名，避免与参数冲突
+		localFileHash, err := getFileHash(fs, fullPath, rdb, ctx) // 使用不同的变量名，避免与参数冲突
 		if err != nil {
 			continue
 		}
@@ -323,14 +294,14 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 		}
 		var buf bytes.Buffer
 		enc := gob.NewEncoder(&buf)
-        if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime(), Path: fullPath}); err != nil { // 确保 Path 被正确设置
+		if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime(), Path: fullPath}); err != nil { // 确保 Path 被正确设置
 			continue
 		}
 		if err := saveFileInfoToRedis(rdb, ctx, fullPath, FileInfo{
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
 			Path:    fullPath,
-        }, localFileHash, fullHash, true); err != nil {
+		}, localFileHash, fullHash, true); err != nil {
 			continue
 		}
 		infoStruct := fileInfo{
@@ -338,10 +309,10 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			path:      fullPath,
 			buf:       buf,
 			startTime: time.Now().Unix(),
-            fileHash:  localFileHash,
+			fileHash:  localFileHash,
 			fullHash:  fullHash,
 			line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
-            FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime(), Path: fullPath}, // 确保 Path 被正确设置
+			FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime(), Path: fullPath}, // 确保 Path 被正确设置
 		}
 		hashes[fullHash] = append(hashes[fullHash], infoStruct)
 		fileCount++
