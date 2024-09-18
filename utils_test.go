@@ -544,9 +544,9 @@ func TestDeleteDuplicateFiles(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// 模拟存储 duplicateFiles 键
+	// 模拟存储 duplicateFiles 键，调整分数以确保第一个文件被保留
 	for i, filePath := range testFiles {
-		score := float64(-i) // 保证第一个文件被保留
+		score := float64(i) // 确保 testFiles[0] 的分数较小
 		_, err := rdb.ZAdd(ctx, "duplicateFiles:"+fullHash, &redis.Z{
 			Score:  score,
 			Member: filePath,
