@@ -2227,12 +2227,11 @@ diff --git a/utils.go b/utils.go
 new file mode 100644
 --- /dev/null
 +++ ./utils.go
-@@ -0,0 +1,632 @@
+@@ -0,0 +1,600 @@
 +// utils.go
 +package main
 +
 +import (
-+	"bufio"
 +	"bytes"
 +	"context"
 +	"crypto/sha512"
@@ -2450,34 +2449,6 @@ new file mode 100644
 +	return totalSeconds
 +}
 +
-+// 合并 loadExcludePatterns 和 compileExcludePatterns
-+func loadAndCompileExcludePatterns(filename string) ([]*regexp.Regexp, error) {
-+	file, err := os.Open(filename)
-+	if err != nil {
-+		return nil, err
-+	}
-+	defer file.Close()
-+
-+	var patterns []string
-+	scanner := bufio.NewScanner(file)
-+	for scanner.Scan() {
-+		patterns = append(patterns, scanner.Text())
-+	}
-+	if err := scanner.Err(); err != nil {
-+		return nil, err
-+	}
-+
-+	excludeRegexps := make([]*regexp.Regexp, len(patterns))
-+	for i, pattern := range patterns {
-+		regexPattern := strings.Replace(pattern, "*", ".*", -1)
-+		excludeRegexps[i], err = regexp.Compile(regexPattern)
-+		if err != nil {
-+			return nil, fmt.Errorf("Invalid regex pattern '%s': %v", regexPattern, err)
-+		}
-+	}
-+	return excludeRegexps, nil
-+}
-+
 +func sortKeys(keys []string, data map[string]FileInfo, sortByModTime bool) {
 +	if sortByModTime {
 +		sort.Slice(keys, func(i, j int) bool {
@@ -2524,8 +2495,8 @@ new file mode 100644
 +	log.Printf("Starting processFileHash for hash: %s", fileHash)
 +	fileCount := 0
 +	hashes := make(map[string][]fileInfo)
-+    for _, fullPath := range filePaths {
-+        info, err := fs.Stat(fullPath)
++	for _, fullPath := range filePaths {
++		info, err := fs.Stat(fullPath)
 +		if err != nil {
 +			log.Printf("File does not exist: %s", fullPath)
 +			continue
@@ -2542,7 +2513,7 @@ new file mode 100644
 +			log.Printf("Error getting full hash for file %s: %v", fullPath, err)
 +			continue
 +		}
-+        localFileHash, err := getFileHash(fs, fullPath, rdb, ctx) // 使用不同的变量名，避免与参数冲突
++		localFileHash, err := getFileHash(fs, fullPath, rdb, ctx) // 避免变量名冲突
 +		if err != nil {
 +			continue
 +		}
@@ -2553,14 +2524,11 @@ new file mode 100644
 +		}
 +		var buf bytes.Buffer
 +		enc := gob.NewEncoder(&buf)
-+        if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime(), Path: fullPath}); err != nil { // 确保 Path 被正确设置
++		fileInfoData := FileInfo{Size: info.Size(), ModTime: info.ModTime(), Path: fullPath} // 修改变量名
++		if err := enc.Encode(fileInfoData); err != nil {
 +			continue
 +		}
-+		if err := saveFileInfoToRedis(rdb, ctx, fullPath, FileInfo{
-+			Size:    info.Size(),
-+			ModTime: info.ModTime(),
-+			Path:    fullPath,
-+        }, localFileHash, fullHash, true); err != nil {
++		if err := saveFileInfoToRedis(rdb, ctx, fullPath, fileInfoData, localFileHash, fullHash, true); err != nil {
 +			continue
 +		}
 +		infoStruct := fileInfo{
@@ -2568,10 +2536,10 @@ new file mode 100644
 +			path:      fullPath,
 +			buf:       buf,
 +			startTime: time.Now().Unix(),
-+            fileHash:  localFileHash,
++			fileHash:  localFileHash,
 +			fullHash:  fullHash,
 +			line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
-+            FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime(), Path: fullPath}, // 确保 Path 被正确设置
++			FileInfo:  fileInfoData, // 使用修改后的变量名
 +		}
 +		hashes[fullHash] = append(hashes[fullHash], infoStruct)
 +		fileCount++
@@ -2864,7 +2832,7 @@ diff --git a/utils_test.go b/utils_test.go
 new file mode 100644
 --- /dev/null
 +++ ./utils_test.go
-@@ -0,0 +1,575 @@
+@@ -0,0 +1,538 @@
 +package main
 +
 +import (
@@ -2886,38 +2854,6 @@ new file mode 100644
 +	"github.com/stretchr/testify/assert"
 +	"github.com/stretchr/testify/require"
 +)
-+
-+func TestLoadAndCompileExcludePatterns(t *testing.T) {
-+	// Create a temporary file with test patterns
-+	tmpfile, err := os.CreateTemp("", "test_patterns")
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	defer os.Remove(tmpfile.Name())
-+
-+	testPatterns := []string{
-+		"pattern1*",
-+		"pattern2?",
-+		"[a-z]+pattern3",
-+	}
-+
-+	for _, pattern := range testPatterns {
-+		if _, err := tmpfile.WriteString(pattern + "\n"); err != nil {
-+			t.Fatal(err)
-+		}
-+	}
-+	tmpfile.Close()
-+
-+	// Test loadAndCompileExcludePatterns
-+	regexps, err := loadAndCompileExcludePatterns(tmpfile.Name())
-+	assert.NoError(t, err)
-+	assert.Len(t, regexps, len(testPatterns))
-+
-+	// Test compiled patterns
-+	assert.True(t, regexps[0].MatchString("pattern1abc"))
-+	assert.True(t, regexps[1].MatchString("pattern2a"))
-+	assert.True(t, regexps[2].MatchString("abcpattern3"))
-+}
 +
 +func TestSortKeys(t *testing.T) {
 +	data := map[string]FileInfo{
@@ -2942,14 +2878,14 @@ new file mode 100644
 +		expected string
 +	}{
 +		{"/path/to/file.txt", "file.txt"},
-+		{"file.txt", "file.txt"},
++		{"/path/to/FILE.TXT", "file.txt"},
 +		{"/path/with/spaces/file name.txt", "file name.txt"},
 +		{"/path/to/file/without/extension", "extension"},
 +	}
 +
 +	for _, tc := range testCases {
 +		result := extractFileName(tc.input)
-+		assert.Equal(t, tc.expected, result)
++		assert.Equal(t, strings.ToLower(tc.expected), result)
 +	}
 +}
 +
@@ -2963,13 +2899,8 @@ new file mode 100644
 +	var stopProcessing bool
 +	keywords := extractKeywords(fileNames, &stopProcessing)
 +
-+	// 使用 sort.Strings 对结果进行排序，以确保比较的一致性
-+	sort.Strings(keywords)
-+
-+	expectedKeywords := []string{"02", "03", "document123abc", "file01"}
-+	sort.Strings(expectedKeywords)
-+
-+	assert.Equal(t, expectedKeywords, keywords, "Extracted keywords do not match expected keywords")
++	expectedKeywords := []string{"01.02.03", "document123abc", "image_20210515"}
++	assert.ElementsMatch(t, expectedKeywords, keywords)
 +}
 +
 +func TestFindCloseFiles(t *testing.T) {
