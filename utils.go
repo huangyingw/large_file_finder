@@ -294,8 +294,8 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 	log.Printf("Starting processFileHash for hash: %s", fileHash)
 	fileCount := 0
 	hashes := make(map[string][]fileInfo)
-	for _, fullPath := range filePaths { // 注意这里直接使用 fullPath
-		info, err := fs.Stat(fullPath) // 使用 fs.Stat
+    for _, fullPath := range filePaths {
+        info, err := fs.Stat(fullPath)
 		if err != nil {
 			log.Printf("File does not exist: %s", fullPath)
 			continue
@@ -312,7 +312,7 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			log.Printf("Error getting full hash for file %s: %v", fullPath, err)
 			continue
 		}
-		fileHash, err := getFileHash(fs, fullPath, rdb, ctx)
+        localFileHash, err := getFileHash(fs, fullPath, rdb, ctx) // 使用不同的变量名，避免与参数冲突
 		if err != nil {
 			continue
 		}
@@ -323,14 +323,14 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 		}
 		var buf bytes.Buffer
 		enc := gob.NewEncoder(&buf)
-		if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime()}); err != nil {
+        if err := enc.Encode(FileInfo{Size: info.Size(), ModTime: info.ModTime(), Path: fullPath}); err != nil { // 确保 Path 被正确设置
 			continue
 		}
 		if err := saveFileInfoToRedis(rdb, ctx, fullPath, FileInfo{
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
 			Path:    fullPath,
-		}, fileHash, fullHash, true); err != nil {
+        }, localFileHash, fullHash, true); err != nil {
 			continue
 		}
 		infoStruct := fileInfo{
@@ -338,10 +338,10 @@ func processFileHash(rootDir string, fileHash string, filePaths []string, rdb *r
 			path:      fullPath,
 			buf:       buf,
 			startTime: time.Now().Unix(),
-			fileHash:  fileHash,
+            fileHash:  localFileHash,
 			fullHash:  fullHash,
 			line:      fmt.Sprintf("%d,\"./%s\"", info.Size(), relativePath),
-			FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime()},
+            FileInfo:  FileInfo{Size: info.Size(), ModTime: info.ModTime(), Path: fullPath}, // 确保 Path 被正确设置
 		}
 		hashes[fullHash] = append(hashes[fullHash], infoStruct)
 		fileCount++
