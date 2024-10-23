@@ -27,10 +27,9 @@ go get github.com/stretchr/testify
 docker-compose up -d
 
 # 定义路径变量，确保处理包含空格和特殊字符的情况
-rootDir="/media/"
+rootDir="/Volumes/download/baidu_cloud/"
 
 go run . --rootDir="$rootDir"
-#pm-suspend
-#go run . --rootDir="$rootDir" --find-duplicates --max-duplicates=10000000000000
+go run . --rootDir="$rootDir" --find-duplicates --max-duplicates=10000000000000
 #go run . --rootDir="$rootDir" --output-duplicates
 #go run . --rootDir="$rootDir" --delete-duplicates
