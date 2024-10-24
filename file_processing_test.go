@@ -684,29 +684,117 @@ func TestGetHashedKeyFromPath(t *testing.T) {
 }
 
 func TestCalculateFileHash(t *testing.T) {
-	_, _, _, fs, fp := setupTestEnvironment(t)
-
-	testFilePath := "/testfile.txt"
-	testContent := "This is a test file content"
-	err := afero.WriteFile(fs, testFilePath, []byte(testContent), 0644)
+	// 设置测试环境
+	mr, err := miniredis.Run()
 	require.NoError(t, err)
+	defer mr.Close()
 
-	// Test partial hash
-	partialHash, err := fp.calculateFileHash(testFilePath, ReadLimit)
-	require.NoError(t, err)
-	assert.NotEmpty(t, partialHash)
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	ctx := context.Background()
+	fs := afero.NewMemMapFs()
+	fp := CreateFileProcessor(rdb, ctx, testExcludeRegexps)
+	fp.fs = fs
 
-	// Test full hash
-	fullHash, err := fp.calculateFileHash(testFilePath, FullFileReadCmd)
-	require.NoError(t, err)
-	assert.NotEmpty(t, fullHash)
+	t.Run("部分哈希和完整哈希应该不同", func(t *testing.T) {
+		// 准备测试文件
+		testFile := "/diff_hash.txt"
+		content := []byte("test content for different hashes")
+		err := afero.WriteFile(fs, testFile, content, 0644)
+		require.NoError(t, err)
 
-	// Partial hash and full hash should be different for files larger than ReadLimit
-	if len(testContent) > ReadLimit {
-		assert.NotEqual(t, partialHash, fullHash)
-	} else {
-		assert.Equal(t, partialHash, fullHash)
-	}
+		// 计算部分哈希
+		partialHash, err := fp.calculateFileHash(testFile, 4)
+		require.NoError(t, err)
+
+		// 计算完整哈希
+		fullHash, err := fp.calculateFileHash(testFile, FullFileReadCmd)
+		require.NoError(t, err)
+
+		// 验证部分哈希和完整哈希不同
+		assert.NotEqual(t, partialHash, fullHash, "部分哈希和完整哈希应该不同")
+
+		// 验证Redis中分别存储了两种哈希
+		hashedKey := fp.generateHashFunc(testFile)
+		
+		// 检查部分哈希缓存
+		cachedPartialHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+		require.NoError(t, err)
+		assert.Equal(t, partialHash, cachedPartialHash)
+
+		// 检查完整哈希缓存
+		cachedFullHash, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+		require.NoError(t, err)
+		assert.Equal(t, fullHash, cachedFullHash)
+	})
+
+	t.Run("相同限制大小应返回相同哈希", func(t *testing.T) {
+		// 准备测试文件
+		testFile := "/same_size.txt"
+		content := []byte("test content for same size")
+		err := afero.WriteFile(fs, testFile, content, 0644)
+		require.NoError(t, err)
+
+		// 两次使用相同的限制大小计算哈希
+		hash1, err := fp.calculateFileHash(testFile, 4)
+		require.NoError(t, err)
+
+		hash2, err := fp.calculateFileHash(testFile, 4)
+		require.NoError(t, err)
+
+		// 验证两次计算结果相同
+		assert.Equal(t, hash1, hash2, "相同大小的读取应该产生相同的哈希值")
+
+		// 验证第二次计算使用了缓存
+		hashedKey := fp.generateHashFunc(testFile)
+		cachedHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+		require.NoError(t, err)
+		assert.Equal(t, hash1, cachedHash)
+	})
+
+	t.Run("缓存命中测试", func(t *testing.T) {
+		// 准备测试文件
+		testFile := "/cache_test.txt"
+		content := []byte("test content for cache test")
+		err := afero.WriteFile(fs, testFile, content, 0644)
+		require.NoError(t, err)
+
+		// 预设缓存值
+		hashedKey := fp.generateHashFunc(testFile)
+		expectedHash := "cached_hash_value"
+		err = rdb.Set(ctx, "hashedKeyToFileHash:"+hashedKey, expectedHash, 0).Err()
+		require.NoError(t, err)
+
+		// 计算哈希（应该返回缓存值）
+		hash, err := fp.calculateFileHash(testFile, 4)
+		require.NoError(t, err)
+		assert.Equal(t, expectedHash, hash, "应该返回缓存的哈希值")
+	})
+
+	t.Run("文件不存在", func(t *testing.T) {
+		hash, err := fp.calculateFileHash("/nonexistent.txt", 4)
+		assert.Error(t, err)
+		assert.Empty(t, hash)
+		assert.Contains(t, err.Error(), "error opening file")
+	})
+
+	t.Run("零字节文件", func(t *testing.T) {
+		// 准备空文件
+		testFile := "/empty.txt"
+		err := afero.WriteFile(fs, testFile, []byte{}, 0644)
+		require.NoError(t, err)
+
+		// 计算空文件的哈希
+		hash, err := fp.calculateFileHash(testFile, 4)
+		require.NoError(t, err)
+		require.NotEmpty(t, hash)
+
+		// 再次计算应该返回相同的哈希
+		hash2, err := fp.calculateFileHash(testFile, 4)
+		require.NoError(t, err)
+		assert.Equal(t, hash, hash2)
+	})
 }
 
 func TestCleanUpOldRecords(t *testing.T) {
