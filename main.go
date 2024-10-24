@@ -167,6 +167,16 @@ func main() {
 		}
 	}
 
+	// 生成 fav.log（按大小排序）
+	if err := fp.saveToFile(rootDir, "fav.log", false); err != nil {
+		log.Printf("Error writing fav.log: %v", err)
+	}
+
+	// 生成 fav.log.sort（按修改时间排序）
+	if err := fp.saveToFile(rootDir, "fav.log.sort", true); err != nil {
+		log.Printf("Error writing fav.log.sort: %v", err)
+	}
+
 	log.Println("Processing complete")
 }
 
