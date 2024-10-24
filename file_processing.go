@@ -281,6 +281,24 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
 }
 
 func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
+	// 首先检查Redis中是否已存在hash值
+	hashedKey := fp.generateHashFunc(path)
+	
+	// 对于部分hash
+	if limit != FullFileReadCmd {
+		fileHash, err := fp.Rdb.Get(fp.Ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+		if err == nil {
+			return fileHash, nil
+		}
+	} else {
+		// 对于完整hash
+		fullHash, err := fp.Rdb.Get(fp.Ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+		if err == nil {
+			return fullHash, nil
+		}
+	}
+
+	// Redis中不存在，则计算hash
 	f, err := fp.fs.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("error opening file: %w", err)
@@ -298,7 +316,16 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
 		}
 	}
 
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	hash := fmt.Sprintf("%x", h.Sum(nil))
+	
+	// 将计算出的hash保存到Redis
+	if limit != FullFileReadCmd {
+		fp.Rdb.Set(fp.Ctx, "hashedKeyToFileHash:"+hashedKey, hash, 0)
+	} else {
+		fp.Rdb.Set(fp.Ctx, "hashedKeyToFullHash:"+hashedKey, hash, 0)
+	}
+
+	return hash, nil
 }
 
 const readLimit = 100 * 1024 // 100KB
