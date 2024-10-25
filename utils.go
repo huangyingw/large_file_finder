@@ -489,20 +489,6 @@ func extractKeywords(fileNames []string, stopProcessing *bool) []string {
 	return keywords
 }
 
-func findCloseFiles(fileNames, filePaths, keywords []string) map[string][]string {
-	closeFiles := make(map[string][]string)
-
-	for _, kw := range keywords {
-		for i, fileName := range fileNames {
-			if strings.Contains(strings.ToLower(fileName), strings.ToLower(kw)) {
-				closeFiles[kw] = append(closeFiles[kw], filePaths[i])
-			}
-		}
-	}
-
-	return closeFiles
-}
-
 func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context, fs afero.Fs) error {
 	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
 	for iter.Next(ctx) {
