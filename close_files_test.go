@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,7 +43,7 @@ func TestCloseFileFinder(t *testing.T) {
 	// 读取并验证输出内容
 	content, err := os.ReadFile(outputPath)
 	require.NoError(t, err)
-	
+
 	// 验证相似文件被正确识别
 	assert.Contains(t, string(content), "similar_name_1.mp4")
 	assert.Contains(t, string(content), "similar_name_2.mp4")
@@ -126,6 +129,40 @@ func TestCalculateSimilarityEdgeCases(t *testing.T) {
 			assert.InDelta(t, tc.expected, score, 0.1)
 		})
 	}
+}
+
+func TestCloseFileFinderConcurrency(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "closefiles_concurrent_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	// 创建大量测试文件名
+	var fileNames []string
+	for i := 0; i < 1000; i++ {
+		fileNames = append(fileNames, fmt.Sprintf("test_file_%d.txt", i))
+	}
+
+	// 创建fav.log
+	var content strings.Builder
+	for _, name := range fileNames {
+		content.WriteString(fmt.Sprintf("100,\"%s\"\n", name))
+	}
+	err = os.WriteFile(filepath.Join(tempDir, "fav.log"), []byte(content.String()), 0644)
+	require.NoError(t, err)
+
+	// 测试并发处理
+	finder := NewCloseFileFinder(tempDir)
+	start := time.Now()
+	err = finder.ProcessCloseFiles()
+	duration := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Less(t, duration, 8*time.Second, "并发处理应该在合理时间内完成")
+
+	// 验证输出文件
+	outputContent, err := os.ReadFile(filepath.Join(tempDir, "fav.log.close"))
+	require.NoError(t, err)
+	assert.NotEmpty(t, outputContent)
 }
 
 func TestCloseFileFinderErrors(t *testing.T) {
