@@ -177,6 +177,12 @@ func main() {
 		log.Printf("Error writing fav.log.sort: %v", err)
 	}
 
+	// 处理相似文件
+	finder := NewCloseFileFinder(rootDir)
+	if err := finder.ProcessCloseFiles(); err != nil {
+		log.Printf("Error processing close files: %v", err)
+	}
+
 	log.Println("Processing complete")
 }
 
