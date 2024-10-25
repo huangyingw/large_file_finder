@@ -12,11 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCloseFileFinder(t *testing.T) {
+// 创建测试辅助函数
+func setupCloseFileTest(t *testing.T) (string, *CloseFileFinder, func()) {
 	// 创建临时目录
 	tempDir, err := os.MkdirTemp("", "closefiles_test")
 	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
 
 	// 创建测试用的 fav.log 文件
 	favLog := `100,"test_file_1.txt"
@@ -31,8 +31,21 @@ func TestCloseFileFinder(t *testing.T) {
 	// 创建 CloseFileFinder 实例
 	finder := NewCloseFileFinder(tempDir)
 
+	// 返回清理函数
+	cleanup := func() {
+		os.RemoveAll(tempDir)
+	}
+
+	return tempDir, finder, cleanup
+}
+
+// 使用测试辅助函数重写测试用例
+func TestCloseFileFinder(t *testing.T) {
+	tempDir, finder, cleanup := setupCloseFileTest(t)
+	defer cleanup()
+
 	// 测试处理文件
-	err = finder.ProcessCloseFiles()
+	err := finder.ProcessCloseFiles()
 	require.NoError(t, err)
 
 	// 验证输出文件存在
@@ -45,8 +58,13 @@ func TestCloseFileFinder(t *testing.T) {
 	require.NoError(t, err)
 
 	// 验证相似文件被正确识别
-	assert.Contains(t, string(content), "similar_name_1.mp4")
-	assert.Contains(t, string(content), "similar_name_2.mp4")
+	contentStr := string(content)
+	assert.Contains(t, contentStr, "similar_name_1.mp4")
+	assert.Contains(t, contentStr, "similar_name_2.mp4")
+	assert.Contains(t, contentStr, "相似度:")
+
+	// 验证不相似的文件没有被错误匹配
+	assert.NotContains(t, contentStr, "totally_different.txt")
 }
 
 func TestCalculateSimilarity(t *testing.T) {
@@ -188,4 +206,24 @@ func TestCloseFileFinderErrors(t *testing.T) {
 		err = finder.ProcessCloseFiles()
 		assert.NoError(t, err) // 应该优雅处理格式错误
 	})
+}
+
+// 如果需要测试其他场景，可以继续使用相同的辅助函数
+func TestCloseFileFinderWithEmptyFile(t *testing.T) {
+	tempDir, finder, cleanup := setupCloseFileTest(t)
+	defer cleanup()
+
+	// 清空 fav.log 文件
+	err := os.WriteFile(filepath.Join(tempDir, "fav.log"), []byte(""), 0644)
+	require.NoError(t, err)
+
+	// 测试处理空文件
+	err = finder.ProcessCloseFiles()
+	require.NoError(t, err)
+
+	// 验证输出文件存在但为空
+	outputPath := filepath.Join(tempDir, "fav.log.close")
+	content, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Empty(t, string(content))
 }
