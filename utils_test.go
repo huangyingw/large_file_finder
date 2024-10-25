@@ -74,18 +74,43 @@ func TestExtractKeywords(t *testing.T) {
 }
 
 func TestFindCloseFiles(t *testing.T) {
-	fileNames := []string{"file1.txt", "file2.txt", "document3.pdf"}
-	filePaths := []string{"/path/to/file1.txt", "/path/to/file2.txt", "/path/to/document3.pdf"}
-	keywords := []string{"file", "document"}
+	// 创建临时目录
+	tempDir, err := os.MkdirTemp("", "closefiles_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
 
-	result := findCloseFiles(fileNames, filePaths, keywords)
+	// 创建测试用的 fav.log 文件
+	favLog := `100,"test_file_1.txt"
+200,"test_file_2.txt"
+300,"similar_name_1.mp4"
+400,"similar_name_2.mp4"
+500,"totally_different.txt"
+`
+	err = os.WriteFile(filepath.Join(tempDir, "fav.log"), []byte(favLog), 0644)
+	require.NoError(t, err)
 
-	expected := map[string][]string{
-		"file":     {"/path/to/file1.txt", "/path/to/file2.txt"},
-		"document": {"/path/to/document3.pdf"},
-	}
+	// 创建 CloseFileFinder 实例并处理文件
+	finder := NewCloseFileFinder(tempDir)
+	err = finder.ProcessCloseFiles()
+	require.NoError(t, err)
 
-	assert.Equal(t, expected, result)
+	// 验证输出文件存在
+	outputPath := filepath.Join(tempDir, "fav.log.close")
+	_, err = os.Stat(outputPath)
+	assert.NoError(t, err)
+
+	// 读取并验证输出内容
+	content, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+
+	// 验证相似文件被正确识别
+	contentStr := string(content)
+	assert.Contains(t, contentStr, "similar_name_1.mp4")
+	assert.Contains(t, contentStr, "similar_name_2.mp4")
+	assert.Contains(t, contentStr, "相似度:")
+
+	// 验证不相似的文件没有被错误匹配
+	assert.NotContains(t, contentStr, "totally_different.txt")
 }
 
 func TestWalkFiles(t *testing.T) {
@@ -376,7 +401,7 @@ func TestWalkFilesWithExcludePatterns(t *testing.T) {
 		expected[i] = filepath.ToSlash(path)
 	}
 
-	// 排序结果和期望值，���确保比较的一致性
+	// 排序结果和期望值，确保比较的一致性
 	sort.Strings(result)
 	sort.Strings(expected)
 
