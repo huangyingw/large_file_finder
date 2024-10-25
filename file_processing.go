@@ -283,7 +283,7 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
 func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
 	// 首先获取文件的 hashedKey
 	hashedKey := fp.generateHashFunc(path)
-
+	
 	// 检查Redis缓存中是否已存在对应的hash
 	var cacheKey string
 	if limit == FullFileReadCmd {
@@ -291,7 +291,7 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
 	} else {
 		cacheKey = "hashedKeyToFileHash:" + hashedKey
 	}
-
+	
 	// 尝试从缓存获取
 	cachedHash, err := fp.Rdb.Get(fp.Ctx, cacheKey).Result()
 	if err == nil {
@@ -299,14 +299,14 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
 	} else if err != redis.Nil {
 		return "", fmt.Errorf("redis error: %w", err)
 	}
-
+	
 	// 缓存未命中，计算新的hash
 	f, err := fp.fs.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("error opening file: %w", err)
 	}
 	defer f.Close()
-
+	
 	h := sha512.New()
 	if limit == FullFileReadCmd {
 		if _, err := io.Copy(h, f); err != nil {
@@ -317,14 +317,14 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
 			return "", fmt.Errorf("error reading file: %w", err)
 		}
 	}
-
+	
 	hash := fmt.Sprintf("%x", h.Sum(nil))
-
+	
 	// 将新计算的hash保存到Redis
 	if err := fp.Rdb.Set(fp.Ctx, cacheKey, hash, 0).Err(); err != nil {
 		log.Printf("Warning: Failed to cache hash for %s: %v", path, err)
 	}
-
+	
 	return hash, nil
 }
 
