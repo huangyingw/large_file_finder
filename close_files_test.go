@@ -86,3 +86,44 @@ func TestCalculateSimilarity(t *testing.T) {
 		})
 	}
 }
+
+func TestCalculateSimilarityEdgeCases(t *testing.T) {
+	testCases := []struct {
+		name     string
+		file1    string
+		file2    string
+		expected float64
+	}{
+		{
+			name:     "空文件名",
+			file1:    "",
+			file2:    "",
+			expected: 0.0,
+		},
+		{
+			name:     "特殊字符",
+			file1:    "file!@#$%^&*.txt",
+			file2:    "file!@#$%^&*.mp4",
+			expected: 1.0,
+		},
+		{
+			name:     "中文文件名",
+			file1:    "测试文件1.txt",
+			file2:    "测试文件2.txt",
+			expected: 0.9,
+		},
+		{
+			name:     "混合字符",
+			file1:    "test文件1.txt",
+			file2:    "test文件2.txt",
+			expected: 0.9,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			score := calculateSimilarity(tc.file1, tc.file2)
+			assert.InDelta(t, tc.expected, score, 0.1)
+		})
+	}
+}
