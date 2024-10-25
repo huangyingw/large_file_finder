@@ -127,3 +127,28 @@ func TestCalculateSimilarityEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestCloseFileFinderErrors(t *testing.T) {
+	// 创建临时目录
+	tempDir, err := os.MkdirTemp("", "closefiles_error_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	t.Run("不存在的fav.log文件", func(t *testing.T) {
+		finder := NewCloseFileFinder(tempDir)
+		err := finder.ProcessCloseFiles()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "no such file or directory")
+	})
+
+	t.Run("无效的fav.log内容", func(t *testing.T) {
+		// 创建格式错误的fav.log
+		invalidContent := "invalid content\nwrong format\n"
+		err := os.WriteFile(filepath.Join(tempDir, "fav.log"), []byte(invalidContent), 0644)
+		require.NoError(t, err)
+
+		finder := NewCloseFileFinder(tempDir)
+		err = finder.ProcessCloseFiles()
+		assert.NoError(t, err) // 应该优雅处理格式错误
+	})
+}
