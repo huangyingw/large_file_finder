@@ -23,8 +23,7 @@ func TestFileProcessorIntegration(t *testing.T) {
 	ctx := context.Background()
 	fs := afero.NewMemMapFs()
 
-	fp := CreateFileProcessor(rdb, ctx, testExcludeRegexps)
-	fp.fs = fs
+	fp := NewFileProcessor("", fs, rdb, ctx, testExcludeRegexps)
 
 	// Create test directory structure
 	tempDir, err := afero.TempDir(fs, "", "test")
