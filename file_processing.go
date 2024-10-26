@@ -21,34 +21,27 @@ import (
 )
 
 type FileProcessor struct {
-	Rdb                     *redis.Client
-	Ctx                     context.Context
-	generateHashFunc        func(string) string
-	calculateFileHashFunc   func(path string, limit int64) (string, error)
-	saveFileInfoToRedisFunc func(*redis.Client, context.Context, string, FileInfo, string, string, bool) error
+	rootDir                 string
 	fs                      afero.Fs
+	rdb                     *redis.Client
+	ctx                     context.Context
+	generateHashFunc        func(string) string
+	calculateFileHashFunc   func(fs afero.Fs, path string, limit int64) (string, error)
+	saveFileInfoToRedisFunc func(*redis.Client, context.Context, string, FileInfo, string, string, bool) error
 	excludeRegexps          []*regexp.Regexp
 }
 
-func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps []*regexp.Regexp, options ...func(*FileProcessor)) *FileProcessor {
-	fp := &FileProcessor{
-		Rdb:            rdb,
-		Ctx:            ctx,
-		fs:             afero.NewOsFs(),
-		excludeRegexps: excludeRegexps,
+func NewFileProcessor(rootDir string, fs afero.Fs, rdb *redis.Client, ctx context.Context, excludeRegexps []*regexp.Regexp) *FileProcessor {
+	return &FileProcessor{
+		rootDir:                 rootDir,
+		fs:                      fs,
+		rdb:                     rdb,
+		ctx:                     ctx,
+		generateHashFunc:        generateHash,
+		calculateFileHashFunc:   calculateFileHash,
+		saveFileInfoToRedisFunc: SaveFileInfoToRedis,
+		excludeRegexps:          excludeRegexps,
 	}
-
-	// 设置默认值
-	fp.generateHashFunc = generateHash
-	fp.calculateFileHashFunc = fp.calculateFileHash
-	fp.saveFileInfoToRedisFunc = saveFileInfoToRedis
-
-	// 应用选项
-	for _, option := range options {
-		option(fp)
-	}
-
-	return fp
 }
 
 // 修改 saveToFile 方法
@@ -70,13 +63,13 @@ func (fp *FileProcessor) saveToFile(rootDir, filename string, sortByModTime bool
 	}
 	defer file.Close()
 
-	iter := fp.Rdb.Scan(fp.Ctx, 0, "fileInfo:*", 0).Iterator()
+	iter := fp.rdb.Scan(fp.ctx, 0, "fileInfo:*", 0).Iterator()
 	data := make(map[string]FileInfo)
 
-	for iter.Next(fp.Ctx) {
+	for iter.Next(fp.ctx) {
 		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
 
-		originalPath, err := fp.Rdb.Get(fp.Ctx, "hashedKeyToPath:"+hashedKey).Result()
+		originalPath, err := fp.rdb.Get(fp.ctx, "hashedKeyToPath:"+hashedKey).Result()
 		if err != nil {
 			log.Printf("Error getting original path for key %s: %v", hashedKey, err)
 			continue
@@ -155,20 +148,43 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
 
 	var fileHash, fullHash string
 	if calculateHashes {
-		fileHash, err = fp.calculateFileHashFunc(fullPath, ReadLimit)
-		if err != nil {
-			return fmt.Errorf("error calculating file hash: %w", err)
-		}
-		log.Printf("Calculated file hash: %s", fileHash)
+		// 首先检查缓存中是否有哈希值
+		hashedKey := fp.generateHashFunc(fullPath)
+		cachedHash, err := fp.rdb.Get(fp.ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+		if err == nil {
+			// 使用缓存的哈希值
+			fileHash = cachedHash
+			cachedFullHash, err := fp.rdb.Get(fp.ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+			if err == nil {
+				fullHash = cachedFullHash
+			}
+		} else {
+			// 计算部分哈希
+			fileHash, err = fp.calculateFileHashFunc(fp.fs, fullPath, ReadLimit)
+			if err != nil {
+				return fmt.Errorf("error calculating file hash: %w", err)
+			}
+			log.Printf("Calculated file hash: %s", fileHash)
 
-		fullHash, err = fp.calculateFileHashFunc(fullPath, FullFileReadCmd)
-		if err != nil {
-			return fmt.Errorf("error calculating full file hash: %w", err)
+			// 检查是否存在相同的部分哈希
+			members, err := fp.rdb.SMembers(fp.ctx, "fileHashToPathSet:"+fileHash).Result()
+			if err != nil && err != redis.Nil {
+				return fmt.Errorf("error checking file hash members: %w", err)
+			}
+
+			// 只有当存在相同的部分哈希时，才计算完整哈希
+			if len(members) > 0 {
+				fullHash, err = fp.calculateFileHashFunc(fp.fs, fullPath, FullFileReadCmd)
+				if err != nil {
+					return fmt.Errorf("error calculating full file hash: %w", err)
+				}
+				log.Printf("Calculated full hash: %s", fullHash)
+			}
 		}
-		log.Printf("Calculated full hash: %s", fullHash)
 	}
 
-	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, fullHash, calculateHashes)
+	// 保存文件信息到 Redis
+	err = fp.saveFileInfoToRedisFunc(fp.rdb, fp.ctx, fullPath, fileInfo, fileHash, fullHash, calculateHashes)
 	if err != nil {
 		return fmt.Errorf("error saving file info to Redis: %w", err)
 	}
@@ -266,7 +282,7 @@ type RedisFileInfoRetriever struct {
 
 func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
 	var fileInfo FileInfo
-	value, err := fp.Rdb.Get(fp.Ctx, "fileInfo:"+hashedKey).Bytes()
+	value, err := fp.rdb.Get(fp.ctx, "fileInfo:"+hashedKey).Bytes()
 	if err != nil {
 		return fileInfo, err
 	}
@@ -283,7 +299,7 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
 func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
 	// 首先获取文件的 hashedKey
 	hashedKey := fp.generateHashFunc(path)
-	
+
 	// 检查Redis缓存中是否已存在对应的hash
 	var cacheKey string
 	if limit == FullFileReadCmd {
@@ -291,22 +307,22 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
 	} else {
 		cacheKey = "hashedKeyToFileHash:" + hashedKey
 	}
-	
+
 	// 尝试从缓存获取
-	cachedHash, err := fp.Rdb.Get(fp.Ctx, cacheKey).Result()
+	cachedHash, err := fp.rdb.Get(fp.ctx, cacheKey).Result()
 	if err == nil {
 		return cachedHash, nil
 	} else if err != redis.Nil {
 		return "", fmt.Errorf("redis error: %w", err)
 	}
-	
+
 	// 缓存未命中，计算新的hash
 	f, err := fp.fs.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("error opening file: %w", err)
 	}
 	defer f.Close()
-	
+
 	h := sha512.New()
 	if limit == FullFileReadCmd {
 		if _, err := io.Copy(h, f); err != nil {
@@ -317,14 +333,14 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
 			return "", fmt.Errorf("error reading file: %w", err)
 		}
 	}
-	
+
 	hash := fmt.Sprintf("%x", h.Sum(nil))
-	
+
 	// 将新计算的hash保存到Redis
-	if err := fp.Rdb.Set(fp.Ctx, cacheKey, hash, 0).Err(); err != nil {
+	if err := fp.rdb.Set(fp.ctx, cacheKey, hash, 0).Err(); err != nil {
 		log.Printf("Warning: Failed to cache hash for %s: %v", path, err)
 	}
-	
+
 	return hash, nil
 }
 
@@ -420,5 +436,5 @@ type FileInfo struct {
 }
 
 func (fp *FileProcessor) getHashedKeyFromPath(path string) (string, error) {
-	return fp.Rdb.Get(fp.Ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
+	return fp.rdb.Get(fp.ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
 }
