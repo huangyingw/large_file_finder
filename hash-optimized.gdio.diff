@@ -133,14 +133,21 @@ diff --git a/file_processing.go b/file_processing.go
  
  func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
 -	// 首先获取文件的 hashedKey
-+	// 首先检查缓存
++	// 生成缓存键
  	hashedKey := fp.generateHashFunc(path)
 -	
 -	// 检查Redis缓存中是否已存在对应的hash
  	var cacheKey string
  	if limit == FullFileReadCmd {
  		cacheKey = "hashedKeyToFullHash:" + hashedKey
-@@ -301,21 +307,20 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
+@@ -295,27 +301,27 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
+ 	// 尝试从缓存获取
+ 	cachedHash, err := fp.Rdb.Get(fp.Ctx, cacheKey).Result()
+ 	if err == nil {
++		log.Printf("Using cached hash for %s", path)
+ 		return cachedHash, nil
+ 	} else if err != redis.Nil {
+ 		return "", fmt.Errorf("redis error: %w", err)
  	}
  
  	// 缓存未命中，计算新的hash
@@ -169,6 +176,24 @@ diff --git a/file_processing.go b/file_processing.go
  	}
  
  	hash := fmt.Sprintf("%x", h.Sum(nil))
+@@ -323,6 +329,8 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
+ 	// 将新计算的hash保存到Redis
+ 	if err := fp.Rdb.Set(fp.Ctx, cacheKey, hash, 0).Err(); err != nil {
+ 		log.Printf("Warning: Failed to cache hash for %s: %v", path, err)
++	} else {
++		log.Printf("Cached new hash for %s", path)
+ 	}
+ 
+ 	return hash, nil
+@@ -338,7 +346,7 @@ func processDirectory(path string) {
+ func processSymlink(path string) {
+ }
+ 
+-// 处理关键词
++// ��理关键词
+ func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ctx context.Context, rootDir string, excludeRegexps []*regexp.Regexp) {
+ 	// 对 keywordFiles 进行排序
+ 	sort.Slice(keywordFiles, func(i, j int) bool {
 diff --git a/file_processing_test.go b/file_processing_test.go
 --- ./file_processing_test.go
 +++ ./file_processing_test.go
@@ -183,12 +208,11 @@ diff --git a/file_processing_test.go b/file_processing_test.go
 -	"time"
 -
  	"github.com/alicebob/miniredis/v2"
--	"github.com/go-redis/redis/v8"
+ 	"github.com/go-redis/redis/v8"
  	"github.com/go-redis/redismock/v8"
  	"github.com/spf13/afero"
  	"github.com/stretchr/testify/assert"
  	"github.com/stretchr/testify/require"
-+	"github.com/go-redis/redis/v8"
 +	"io/ioutil"
 +	"os"
 +	"path/filepath"
@@ -202,7 +226,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  		{
  			"Timestamps with different formats",
 -			"/Users/huangyingw/mini/media/usb_backup_crypt_8T_1/cartoon/dragonball/第一部/龙珠 第一部 日语配音/七龙珠146.rmvb:24:30,1:11:27,:02:35:52",
-+			"/Users/huangyingw/mini/media/usb_backup_crypt_8T_1/cartoon/dragonball/第一��/龙珠 第一部 日语配音/七龙珠146.rmvb:24:30,1:11:27,:02:35:52",
++			"/Users/huangyingw/mini/media/usb_backup_crypt_8T_1/cartoon/dragonball/第一/龙珠 第一部 日语配音/七龙珠146.rmvb:24:30,1:11:27,:02:35:52",
  			[]string{"24:30", "01:11:27", "02:35:52"},
  		},
  		{
@@ -211,11 +235,11 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  		assert.Equal(t, hash1, hash2, "相同大小的读取应该产生相同的哈希值")
  
 -		// 验证第二次计算使用了缓存
-+		// 验证第二次计算使��了缓存
++		// 验证第二次计算使了缓存
  		hashedKey := fp.generateHashFunc(testFile)
  		cachedHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
  		require.NoError(t, err)
-@@ -1183,3 +1182,31 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
+@@ -1183,3 +1182,125 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
  		})
  	}
  }
@@ -246,6 +270,100 @@ diff --git a/file_processing_test.go b/file_processing_test.go
 +	cachedHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
 +	require.NoError(t, err)
 +	assert.Equal(t, hash1, cachedHash)
++}
++
++func TestFileHashCalculation(t *testing.T) {
++	// 设置 Redis
++	mr, err := miniredis.Run()
++	require.NoError(t, err)
++	defer mr.Close()
++
++	rdb := redis.NewClient(&redis.Options{
++		Addr: mr.Addr(),
++	})
++	defer rdb.Close()
++
++	ctx := context.Background()
++	fs := afero.NewMemMapFs()
++
++	// 创建测试目录
++	tempDir := "/test"
++	err = fs.MkdirAll(tempDir, 0755)
++	require.NoError(t, err)
++
++	// 创建两个内容相同的文件和一个不同的文件
++	testFiles := []struct {
++		path    string
++		content string
++	}{
++		{filepath.Join(tempDir, "file1.txt"), "duplicate content"},
++		{filepath.Join(tempDir, "file2.txt"), "duplicate content"},
++		{filepath.Join(tempDir, "file3.txt"), "unique content"},
++	}
++
++	fp := CreateFileProcessor(rdb, ctx, nil, WithFs(fs))
++
++	// 测试场景
++	t.Run("Hash Calculation and Caching", func(t *testing.T) {
++		// 处理第一个文件
++		err = fp.ProcessFile(tempDir, "file1.txt", true)
++		require.NoError(t, err)
++
++		// 验证部分哈希已计算并缓存
++		hashedKey1 := fp.generateHashFunc(filepath.Join(tempDir, "file1.txt"))
++		partialHash1, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey1).Result()
++		require.NoError(t, err)
++		assert.NotEmpty(t, partialHash1)
++
++		// 验证完整哈希尚未计算
++		_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey1).Result()
++		assert.Equal(t, redis.Nil, err, "完整哈希不应该被计算")
++
++		// 处理第二个相同内容的文件
++		err = fp.ProcessFile(tempDir, "file2.txt", true)
++		require.NoError(t, err)
++
++		// 验证第二个文件触发了完整哈希的计算
++		hashedKey2 := fp.generateHashFunc(filepath.Join(tempDir, "file2.txt"))
++		fullHash2, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey2).Result()
++		require.NoError(t, err)
++		assert.NotEmpty(t, fullHash2)
++
++		// 验证第一个文件的完整哈希也被计算
++		fullHash1, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey1).Result()
++		require.NoError(t, err)
++		assert.NotEmpty(t, fullHash1)
++
++		// 处理第三个不同内容的文件
++		err = fp.ProcessFile(tempDir, "file3.txt", true)
++		require.NoError(t, err)
++
++		// 验证第三个文件只计算了部分哈希
++		hashedKey3 := fp.generateHashFunc(filepath.Join(tempDir, "file3.txt"))
++		_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey3).Result()
++		require.NoError(t, err)
++
++		// 验证第三个文件没有计算完整哈希
++		_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey3).Result()
++		assert.Equal(t, redis.Nil, err, "不同内容的文件不应计算完整哈希")
++	})
++
++	// 测试哈希缓存
++	t.Run("Hash Cache Usage", func(t *testing.T) {
++		// 重新处理第一个文件
++		err = fp.ProcessFile(tempDir, "file1.txt", true)
++		require.NoError(t, err)
++
++		// 验证使用了缓存的哈希值
++		hashedKey := fp.generateHashFunc(filepath.Join(tempDir, "file1.txt"))
++		cachedPartialHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
++		require.NoError(t, err)
++		assert.Equal(t, partialHash1, cachedPartialHash, "应该使用缓存的部分哈希值")
++
++		cachedFullHash, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
++		require.NoError(t, err)
++		assert.Equal(t, fullHash1, cachedFullHash, "应该使用缓存的完整哈希值")
++	})
 +}
 diff --git a/utils_test.go b/utils_test.go
 --- ./utils_test.go
