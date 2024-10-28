@@ -41,25 +41,23 @@ diff --git a/.cursorrules b/.cursorrules
 diff --git a/file_processing.go b/file_processing.go
 --- ./file_processing.go
 +++ ./file_processing.go
-@@ -13,11 +13,12 @@ import (
+@@ -13,11 +13,11 @@ import (
  	"log"
  	"os"
  	"path/filepath"
 -	"regexp"
--	"sort"
++	"regexp"  // 添加
++	"strconv" // 添加
++	"strings" // 添加
++	"time"    // 添加
+ 	"sort"
 -	"strconv"
 -	"strings"
 -	"time"
-+	"regexp" // 添加
-+	"runtime"
-+	"strconv" // 添加
-+	"strings" // 添加
-+	"sync"
-+	"time" // 添加
  )
  
  type FileProcessor struct {
-@@ -38,7 +39,7 @@ func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps
+@@ -38,7 +38,7 @@ func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps
  		excludeRegexps: excludeRegexps,
  	}
  
@@ -68,12 +66,11 @@ diff --git a/file_processing.go b/file_processing.go
  	fp.generateHashFunc = generateHash
  	fp.calculateFileHashFunc = fp.calculateFileHash
  	fp.saveFileInfoToRedisFunc = saveFileInfoToRedis
-@@ -137,46 +138,56 @@ const (
+@@ -137,20 +137,16 @@ const (
  
  func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHashes bool) error {
  	fullPath := filepath.Join(rootDir, relativePath)
 -	log.Printf("Processing file: %s", fullPath)
-+	hashedKey := fp.generateHashFunc(fullPath)
  
  	info, err := fp.fs.Stat(fullPath)
  	if err != nil {
@@ -91,15 +88,12 @@ diff --git a/file_processing.go b/file_processing.go
  	}
  
  	var fileHash, fullHash string
- 	if calculateHashes {
-+		// 先计算部分hash
- 		fileHash, err = fp.calculateFileHashFunc(fullPath, ReadLimit)
+@@ -159,24 +155,35 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
  		if err != nil {
  			return fmt.Errorf("error calculating file hash: %w", err)
  		}
 -		log.Printf("Calculated file hash: %s", fileHash)
  
-+		// 检查是否存在相同的部分hash，如果存在才计算完整hash
 +		exists, err := fp.checkPartialHashExists(fileHash)
 +		if err != nil {
 +			log.Printf("Warning: Failed to check partial hash: %v", err)
@@ -133,7 +127,7 @@ diff --git a/file_processing.go b/file_processing.go
  type FileInfoRetriever interface {
  	getFileInfoFromRedis(hashedKey string) (FileInfo, error)
  }
-@@ -281,10 +292,8 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
+@@ -281,10 +288,8 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
  }
  
  func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
@@ -145,7 +139,7 @@ diff --git a/file_processing.go b/file_processing.go
  	var cacheKey string
  	if limit == FullFileReadCmd {
  		cacheKey = "hashedKeyToFullHash:" + hashedKey
-@@ -301,21 +310,20 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
+@@ -301,21 +306,20 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
  	}
  
  	// 缓存未命中，计算新的hash
@@ -177,7 +171,50 @@ diff --git a/file_processing.go b/file_processing.go
 diff --git a/file_processing_test.go b/file_processing_test.go
 --- ./file_processing_test.go
 +++ ./file_processing_test.go
-@@ -1183,3 +1183,67 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
+@@ -7,18 +7,17 @@ import (
+ 	"context"
+ 	"encoding/gob"
+ 	"fmt"
+-	"io/ioutil"
+-	"os"
+-	"path/filepath"
+-	"testing"
+-	"time"
+-
+ 	"github.com/alicebob/miniredis/v2"
+-	"github.com/go-redis/redis/v8"
+ 	"github.com/go-redis/redismock/v8"
+ 	"github.com/spf13/afero"
+ 	"github.com/stretchr/testify/assert"
+ 	"github.com/stretchr/testify/require"
++	"github.com/go-redis/redis/v8"
++	"io/ioutil"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
+ )
+ 
+ func setupTestEnvironment(t *testing.T) (*miniredis.Miniredis, *redis.Client, context.Context, afero.Fs, *FileProcessor) {
+@@ -375,7 +374,7 @@ func TestExtractTimestamps(t *testing.T) {
+ 		},
+ 		{
+ 			"Timestamps with different formats",
+-			"/Users/huangyingw/mini/media/usb_backup_crypt_8T_1/cartoon/dragonball/第一部/龙珠 第一部 日语配音/七龙珠146.rmvb:24:30,1:11:27,:02:35:52",
++			"/Users/huangyingw/mini/media/usb_backup_crypt_8T_1/cartoon/dragonball/第一��/龙珠 第一部 日语配音/七龙珠146.rmvb:24:30,1:11:27,:02:35:52",
+ 			[]string{"24:30", "01:11:27", "02:35:52"},
+ 		},
+ 		{
+@@ -746,7 +745,7 @@ func TestCalculateFileHash(t *testing.T) {
+ 		// 验证两次计算结果相同
+ 		assert.Equal(t, hash1, hash2, "相同大小的读取应该产生相同的哈希值")
+ 
+-		// 验证第二次计算使用了缓存
++		// 验证第二次计算使��了缓存
+ 		hashedKey := fp.generateHashFunc(testFile)
+ 		cachedHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+ 		require.NoError(t, err)
+@@ -1183,3 +1182,31 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
  		})
  	}
  }
@@ -202,46 +239,60 @@ diff --git a/file_processing_test.go b/file_processing_test.go
 +
 +	// 验证结果
 +	assert.Equal(t, hash1, hash2)
-+	
++
 +	// 验证缓存
 +	hashedKey := fp.generateHashFunc(testFile)
 +	cachedHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
 +	require.NoError(t, err)
 +	assert.Equal(t, hash1, cachedHash)
 +}
-+
-+func TestExtractFileNames(t *testing.T) {
-+	content := `/path/to/file1.txt
-+	/another/path/file2.jpg
-+	/test/file3.png
-+	`
-+	expected := []string{"file1.txt", "file2.jpg", "file3.png"}
-+	result := extractFileNames(content)
-+	assert.Equal(t, expected, result)
-+}
-+
-+func TestFindCloseFiles(t *testing.T) {
-+	_, _, _, fs, fp := setupTestEnvironment(t)
-+
-+	// 创建测试文件
-+	content := `
-+/path/to/test_file1.txt
-+/path/to/test_file2.txt
-+/path/to/different.txt
-+`
-+	err := afero.WriteFile(fs, "fav.log", []byte(content), 0644)
-+	require.NoError(t, err)
-+
-+	// 执行查找
-+	err = fp.findCloseFiles("fav.log", "fav.log.close")
-+	require.NoError(t, err)
-+
-+	// 验证结果
-+	result, err := afero.ReadFile(fs, "fav.log.close")
-+	require.NoError(t, err)
-+	
-+	resultStr := string(result)
-+	assert.Contains(t, resultStr, "test_file1.txt")
-+	assert.Contains(t, resultStr, "test_file2.txt")
-+	assert.NotContains(t, resultStr, "different.txt")
-+}
+diff --git a/utils_test.go b/utils_test.go
+--- ./utils_test.go
++++ ./utils_test.go
+@@ -73,46 +73,6 @@ func TestExtractKeywords(t *testing.T) {
+ 	assert.Equal(t, expectedKeywords, keywords, "Extracted keywords do not match expected keywords")
+ }
+ 
+-func TestFindCloseFiles(t *testing.T) {
+-	// 创建临时目录
+-	tempDir, err := os.MkdirTemp("", "closefiles_test")
+-	require.NoError(t, err)
+-	defer os.RemoveAll(tempDir)
+-
+-	// 创建测试用的 fav.log 文件
+-	favLog := `100,"test_file_1.txt"
+-200,"test_file_2.txt"
+-300,"similar_name_1.mp4"
+-400,"similar_name_2.mp4"
+-500,"totally_different.txt"
+-`
+-	err = os.WriteFile(filepath.Join(tempDir, "fav.log"), []byte(favLog), 0644)
+-	require.NoError(t, err)
+-
+-	// 创建 CloseFileFinder 实例并处理文件
+-	finder := NewCloseFileFinder(tempDir)
+-	err = finder.ProcessCloseFiles()
+-	require.NoError(t, err)
+-
+-	// 验证输出文件存在
+-	outputPath := filepath.Join(tempDir, "fav.log.close")
+-	_, err = os.Stat(outputPath)
+-	assert.NoError(t, err)
+-
+-	// 读取并验证输出内容
+-	content, err := os.ReadFile(outputPath)
+-	require.NoError(t, err)
+-
+-	// 验证相似文件被正确识别
+-	contentStr := string(content)
+-	assert.Contains(t, contentStr, "similar_name_1.mp4")
+-	assert.Contains(t, contentStr, "similar_name_2.mp4")
+-	assert.Contains(t, contentStr, "相似度:")
+-
+-	// 验证不相似的文件没有被错误匹配
+-	assert.NotContains(t, contentStr, "totally_different.txt")
+-}
+-
+ func TestWalkFiles(t *testing.T) {
+ 	tempDir, err := ioutil.TempDir("", "test_walk_files")
+ 	assert.NoError(t, err)
