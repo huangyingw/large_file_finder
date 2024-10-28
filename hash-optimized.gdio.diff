@@ -1,12 +1,247 @@
 diff --git a/.cursorrules b/.cursorrules
 --- ./.cursorrules
 +++ ./.cursorrules
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,36 @@
  用中文回答
--1. 在添加新方法之前，先搜索现有代码库中是否已有类似实现
--2. 检查是否可以通过组合现有方法来实现所需功能
--3. 确保不创建重复的功能实现
 +在添加新方法之前，先搜索现有代码库中是否已有类似实现
 +检查是否可以通过组合现有方法来实现所需功能
 +确保不创建重复的功能实现
 +要检查一下之前的apply是否正确.
++
++# AI 工作指令
++
++## 核心原则
++1. 专注于用户明确要求的具体任务
++2. 不要主动添加额外的功能或优化
++3. 在修改代码时保持最小改动原则
++
++## 工作流程
++1. 仔细理解用户的具体需求
++2. 确认需要修改的关键部分
++3. 只修改必要的代码
++4. 保持其他代码不变
++
++## 代码修改原则
+ 1. 在添加新方法之前，先搜索现有代码库中是否已有类似实现
+ 2. 检查是否可以通过组合现有方法来实现所需功能
+ 3. 确保不创建重复的功能实现
++4. 只在用户明确要求时才进行重构或优化
++
++## 响应规范
++1. 用中文回答
++2. 清晰说明将要修改的内容
++3. 解释为什么需要这些修改
++4. 只展示必要的代码改动
++
++## 代码展示格式
++1. 使用 markdown 代码块
++2. 标注文件路径和修改位置
++3. 使用注释标明跳过的未修改代码
++4. 重点突出修改的部分
+diff --git a/file_processing.go b/file_processing.go
+--- ./file_processing.go
++++ ./file_processing.go
+@@ -13,11 +13,12 @@ import (
+ 	"log"
+ 	"os"
+ 	"path/filepath"
+-	"regexp"
+-	"sort"
+-	"strconv"
+-	"strings"
+-	"time"
++	"regexp" // 添加
++	"runtime"
++	"strconv" // 添加
++	"strings" // 添加
++	"sync"
++	"time" // 添加
+ )
+ 
+ type FileProcessor struct {
+@@ -38,7 +39,7 @@ func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps
+ 		excludeRegexps: excludeRegexps,
+ 	}
+ 
+-	// 设置默认值
++	// 设置默认
+ 	fp.generateHashFunc = generateHash
+ 	fp.calculateFileHashFunc = fp.calculateFileHash
+ 	fp.saveFileInfoToRedisFunc = saveFileInfoToRedis
+@@ -137,46 +138,56 @@ const (
+ 
+ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHashes bool) error {
+ 	fullPath := filepath.Join(rootDir, relativePath)
+-	log.Printf("Processing file: %s", fullPath)
++	hashedKey := fp.generateHashFunc(fullPath)
+ 
+ 	info, err := fp.fs.Stat(fullPath)
+ 	if err != nil {
+ 		return fmt.Errorf("error getting file info: %w", err)
+ 	}
+ 
+-	hashedKey := fp.generateHashFunc(fullPath)
+-	log.Printf("Generated hashed key: %s", hashedKey)
+-
+ 	fileInfo := FileInfo{
+ 		Size:    info.Size(),
+ 		ModTime: info.ModTime(),
+-		Path:    fullPath, // 存储绝对路径
++		Path:    fullPath,
+ 	}
+ 
+ 	var fileHash, fullHash string
+ 	if calculateHashes {
++		// 先计算部分hash
+ 		fileHash, err = fp.calculateFileHashFunc(fullPath, ReadLimit)
+ 		if err != nil {
+ 			return fmt.Errorf("error calculating file hash: %w", err)
+ 		}
+-		log.Printf("Calculated file hash: %s", fileHash)
+ 
++		// 检查是否存在相同的部分hash，如果存在才计算完整hash
++		exists, err := fp.checkPartialHashExists(fileHash)
++		if err != nil {
++			log.Printf("Warning: Failed to check partial hash: %v", err)
++		} else if exists {
+ 			fullHash, err = fp.calculateFileHashFunc(fullPath, FullFileReadCmd)
+ 			if err != nil {
+ 				return fmt.Errorf("error calculating full file hash: %w", err)
+ 			}
+-		log.Printf("Calculated full hash: %s", fullHash)
++		}
+ 	}
+ 
+ 	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, fullHash, calculateHashes)
+ 	if err != nil {
+ 		return fmt.Errorf("error saving file info to Redis: %w", err)
+ 	}
+-	log.Printf("Saved file info to Redis")
+ 
+ 	return nil
+ }
+ 
++// 新增函数：检查部分hash是否存在
++func (fp *FileProcessor) checkPartialHashExists(partialHash string) (bool, error) {
++	count, err := fp.Rdb.SCard(fp.Ctx, "fileHashToPathSet:"+partialHash).Result()
++	if err != nil {
++		return false, err
++	}
++	return count > 0, nil
++}
++
+ type FileInfoRetriever interface {
+ 	getFileInfoFromRedis(hashedKey string) (FileInfo, error)
+ }
+@@ -281,10 +292,8 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
+ }
+ 
+ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
+-	// 首先获取文件的 hashedKey
++	// 首先检查缓存
+ 	hashedKey := fp.generateHashFunc(path)
+-	
+-	// 检查Redis缓存中是否已存在对应的hash
+ 	var cacheKey string
+ 	if limit == FullFileReadCmd {
+ 		cacheKey = "hashedKeyToFullHash:" + hashedKey
+@@ -301,21 +310,20 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
+ 	}
+ 
+ 	// 缓存未命中，计算新的hash
+-	f, err := fp.fs.Open(path)
++	file, err := fp.fs.Open(path)
+ 	if err != nil {
+ 		return "", fmt.Errorf("error opening file: %w", err)
+ 	}
+-	defer f.Close()
++	defer file.Close()
+ 
+ 	h := sha512.New()
+-	if limit == FullFileReadCmd {
+-		if _, err := io.Copy(h, f); err != nil {
+-			return "", fmt.Errorf("error reading full file: %w", err)
+-		}
++	if limit > 0 {
++		_, err = io.CopyN(h, file, limit)
+ 	} else {
+-		if _, err := io.CopyN(h, f, limit); err != nil && err != io.EOF {
+-			return "", fmt.Errorf("error reading file: %w", err)
++		_, err = io.Copy(h, file)
+ 	}
++	if err != nil && err != io.EOF {
++		return "", fmt.Errorf("error reading file: %w", err)
+ 	}
+ 
+ 	hash := fmt.Sprintf("%x", h.Sum(nil))
+diff --git a/file_processing_test.go b/file_processing_test.go
+--- ./file_processing_test.go
++++ ./file_processing_test.go
+@@ -1183,3 +1183,67 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestCalculateFileHashCaching(t *testing.T) {
++	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
++	defer mr.Close()
++
++	// 创建测试文件
++	testFile := "/test.txt"
++	content := []byte("test content")
++	err := afero.WriteFile(fs, testFile, content, 0644)
++	require.NoError(t, err)
++
++	// 第一次计算哈希
++	hash1, err := fp.calculateFileHash(testFile, ReadLimit)
++	require.NoError(t, err)
++
++	// 第二次计算哈希（应该从缓存获取）
++	hash2, err := fp.calculateFileHash(testFile, ReadLimit)
++	require.NoError(t, err)
++
++	// 验证结果
++	assert.Equal(t, hash1, hash2)
++	
++	// 验证缓存
++	hashedKey := fp.generateHashFunc(testFile)
++	cachedHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
++	require.NoError(t, err)
++	assert.Equal(t, hash1, cachedHash)
++}
++
++func TestExtractFileNames(t *testing.T) {
++	content := `/path/to/file1.txt
++	/another/path/file2.jpg
++	/test/file3.png
++	`
++	expected := []string{"file1.txt", "file2.jpg", "file3.png"}
++	result := extractFileNames(content)
++	assert.Equal(t, expected, result)
++}
++
++func TestFindCloseFiles(t *testing.T) {
++	_, _, _, fs, fp := setupTestEnvironment(t)
++
++	// 创建测试文件
++	content := `
++/path/to/test_file1.txt
++/path/to/test_file2.txt
++/path/to/different.txt
++`
++	err := afero.WriteFile(fs, "fav.log", []byte(content), 0644)
++	require.NoError(t, err)
++
++	// 执行查找
++	err = fp.findCloseFiles("fav.log", "fav.log.close")
++	require.NoError(t, err)
++
++	// 验证结果
++	result, err := afero.ReadFile(fs, "fav.log.close")
++	require.NoError(t, err)
++	
++	resultStr := string(result)
++	assert.Contains(t, resultStr, "test_file1.txt")
++	assert.Contains(t, resultStr, "test_file2.txt")
++	assert.NotContains(t, resultStr, "different.txt")
++}
