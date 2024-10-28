@@ -88,16 +88,16 @@ diff --git a/file_processing.go b/file_processing.go
  	}
  
  	var fileHash, fullHash string
-@@ -159,24 +155,35 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
+@@ -159,24 +155,36 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
  		if err != nil {
  			return fmt.Errorf("error calculating file hash: %w", err)
  		}
 -		log.Printf("Calculated file hash: %s", fileHash)
  
-+		exists, err := fp.checkPartialHashExists(fileHash)
++		hasMultiple, err := fp.hasMultipleFilesWithHash(fileHash)
 +		if err != nil {
 +			log.Printf("Warning: Failed to check partial hash: %v", err)
-+		} else if exists {
++		} else if hasMultiple {
  			fullHash, err = fp.calculateFileHashFunc(fullPath, FullFileReadCmd)
  			if err != nil {
  				return fmt.Errorf("error calculating full file hash: %w", err)
@@ -115,19 +115,20 @@ diff --git a/file_processing.go b/file_processing.go
  	return nil
  }
  
-+// 新增函数：检查部分hash是否存在
-+func (fp *FileProcessor) checkPartialHashExists(partialHash string) (bool, error) {
++// 修改函数名和返回值以更好地表达意图
++func (fp *FileProcessor) hasMultipleFilesWithHash(partialHash string) (bool, error) {
 +	count, err := fp.Rdb.SCard(fp.Ctx, "fileHashToPathSet:"+partialHash).Result()
 +	if err != nil {
 +		return false, err
 +	}
-+	return count > 0, nil
++	// 只有当有多个文件具有相同的部分哈希时才返回 true
++	return count > 1, nil
 +}
 +
  type FileInfoRetriever interface {
  	getFileInfoFromRedis(hashedKey string) (FileInfo, error)
  }
-@@ -281,10 +288,8 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
+@@ -281,10 +289,8 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
  }
  
  func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
@@ -139,7 +140,7 @@ diff --git a/file_processing.go b/file_processing.go
  	var cacheKey string
  	if limit == FullFileReadCmd {
  		cacheKey = "hashedKeyToFullHash:" + hashedKey
-@@ -301,21 +306,20 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
+@@ -301,21 +307,20 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
  	}
  
  	// 缓存未命中，计算新的hash
