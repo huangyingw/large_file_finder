@@ -25,16 +25,19 @@ var mu sync.Mutex
 
 func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context, maxDuplicates int, excludeRegexps []*regexp.Regexp, fs afero.Fs) error {
 	log.Println("Starting findAndLogDuplicates function")
+
+	// 获取所有部分哈希重复的文件
 	fileHashes, err := scanFileHashes(rdb, ctx)
 	if err != nil {
-		log.Printf("Error scanning file hashes: %v", err)
 		return err
 	}
-	log.Printf("Found %d file hashes", len(fileHashes))
 
-	fileCount := 0
 	processedFullHashes := &sync.Map{}
 	var stopProcessing bool
+	fileCount := 0
+
+	// 创建工作池
+	workerCount := 100 // 可以根据需要调整
 	taskQueue, poolWg, stopFunc, _ := NewWorkerPool(workerCount, &stopProcessing)
 
 	for fileHash, filePaths := range fileHashes {
@@ -63,6 +66,7 @@ func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context
 				}(fileHash, filePaths)
 			}
 		}
+
 		if stopProcessing {
 			break
 		}
@@ -86,9 +90,10 @@ func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context
 		log.Println("All tasks completed successfully")
 	case <-waitCtx.Done():
 		log.Println("Timeout waiting for tasks to complete")
+		return fmt.Errorf("timeout waiting for tasks to complete")
 	}
 
-	log.Printf("Total duplicates found: %d\n", fileCount)
+	log.Printf("Total duplicates found: %d", fileCount)
 	return nil
 }
 
@@ -117,14 +122,32 @@ func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, rootDir, relat
 }
 
 func getFullFileHash(fs afero.Fs, path string, rdb *redis.Client, ctx context.Context) (string, error) {
-	return calculateFileHash(fs, path, -1)
+	return calculateFileHash(fs, path, -1, rdb, ctx)
 }
 
 func getFileHash(fs afero.Fs, path string, rdb *redis.Client, ctx context.Context) (string, error) {
-	return calculateFileHash(fs, path, 100*1024) // 100KB
+	return calculateFileHash(fs, path, 100*1024, rdb, ctx) // 100KB
 }
 
-func calculateFileHash(fs afero.Fs, path string, limit int64) (string, error) {
+func calculateFileHash(fs afero.Fs, path string, limit int64, rdb *redis.Client, ctx context.Context) (string, error) {
+	// 生成缓存键
+	hashedKey := generateHash(path)
+	cacheKey := fmt.Sprintf("fileHash:%s:%d", hashedKey, limit)
+	
+	// 先尝试从 Redis 获取哈希值
+	if rdb != nil && ctx != nil {
+		cachedHash, err := rdb.Get(ctx, cacheKey).Result()
+		if err == nil {
+			// 找到缓存的哈希值，直接返回
+			return cachedHash, nil
+		}
+		// 如果错误不是 key 不存在，记录日志
+		if err != redis.Nil {
+			log.Printf("Error reading hash from Redis for %s: %v", path, err)
+		}
+	}
+
+	// 如果没有缓存或获取失败，计算哈希值
 	f, err := fs.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("error opening file %q: %w", path, err)
@@ -142,7 +165,17 @@ func calculateFileHash(fs afero.Fs, path string, limit int64) (string, error) {
 		}
 	}
 
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	hash := fmt.Sprintf("%x", h.Sum(nil))
+
+	// 将计算的哈希值保存到 Redis
+	if rdb != nil && ctx != nil {
+		err = rdb.Set(ctx, cacheKey, hash, 0).Err()
+		if err != nil {
+			log.Printf("Warning: Failed to cache hash for %s: %v", path, err)
+		}
+	}
+
+	return hash, nil
 }
 
 func ExtractTimestamps(filePath string) []string {
