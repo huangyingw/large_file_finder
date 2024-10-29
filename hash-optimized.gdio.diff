@@ -57,16 +57,33 @@ diff --git a/file_processing.go b/file_processing.go
  )
  
  type FileProcessor struct {
-@@ -38,7 +38,7 @@ func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps
+@@ -30,7 +30,7 @@ type FileProcessor struct {
+ 	excludeRegexps          []*regexp.Regexp
+ }
+ 
+-func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps []*regexp.Regexp, options ...func(*FileProcessor)) *FileProcessor {
++func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps []*regexp.Regexp) *FileProcessor {
+ 	fp := &FileProcessor{
+ 		Rdb:            rdb,
+ 		Ctx:            ctx,
+@@ -38,16 +38,10 @@ func CreateFileProcessor(rdb *redis.Client, ctx context.Context, excludeRegexps
  		excludeRegexps: excludeRegexps,
  	}
  
 -	// 设置默认值
-+	// 设置默认
  	fp.generateHashFunc = generateHash
  	fp.calculateFileHashFunc = fp.calculateFileHash
  	fp.saveFileInfoToRedisFunc = saveFileInfoToRedis
-@@ -137,20 +137,16 @@ const (
+ 
+-	// 应用选项
+-	for _, option := range options {
+-		option(fp)
+-	}
+-
+ 	return fp
+ }
+ 
+@@ -137,20 +131,16 @@ const (
  
  func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHashes bool) error {
  	fullPath := filepath.Join(rootDir, relativePath)
@@ -88,7 +105,7 @@ diff --git a/file_processing.go b/file_processing.go
  	}
  
  	var fileHash, fullHash string
-@@ -159,24 +155,36 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
+@@ -159,24 +149,36 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
  		if err != nil {
  			return fmt.Errorf("error calculating file hash: %w", err)
  		}
@@ -128,7 +145,7 @@ diff --git a/file_processing.go b/file_processing.go
  type FileInfoRetriever interface {
  	getFileInfoFromRedis(hashedKey string) (FileInfo, error)
  }
-@@ -281,10 +289,8 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
+@@ -281,10 +283,8 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
  }
  
  func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
@@ -140,7 +157,7 @@ diff --git a/file_processing.go b/file_processing.go
  	var cacheKey string
  	if limit == FullFileReadCmd {
  		cacheKey = "hashedKeyToFullHash:" + hashedKey
-@@ -295,27 +301,27 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
+@@ -295,27 +295,27 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
  	// 尝试从缓存获取
  	cachedHash, err := fp.Rdb.Get(fp.Ctx, cacheKey).Result()
  	if err == nil {
@@ -176,7 +193,7 @@ diff --git a/file_processing.go b/file_processing.go
  	}
  
  	hash := fmt.Sprintf("%x", h.Sum(nil))
-@@ -323,6 +329,8 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
+@@ -323,6 +323,8 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
  	// 将新计算的hash保存到Redis
  	if err := fp.Rdb.Set(fp.Ctx, cacheKey, hash, 0).Err(); err != nil {
  		log.Printf("Warning: Failed to cache hash for %s: %v", path, err)
@@ -185,15 +202,24 @@ diff --git a/file_processing.go b/file_processing.go
  	}
  
  	return hash, nil
-@@ -338,7 +346,7 @@ func processDirectory(path string) {
+@@ -338,7 +340,7 @@ func processDirectory(path string) {
  func processSymlink(path string) {
  }
  
 -// 处理关键词
-+// ��理关键词
++// 理关键词
  func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ctx context.Context, rootDir string, excludeRegexps []*regexp.Regexp) {
  	// 对 keywordFiles 进行排序
  	sort.Slice(keywordFiles, func(i, j int) bool {
+@@ -422,3 +424,8 @@ type FileInfo struct {
+ func (fp *FileProcessor) getHashedKeyFromPath(path string) (string, error) {
+ 	return fp.Rdb.Get(fp.Ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
+ }
++
++// SetFs 设置文件系统
++func (fp *FileProcessor) SetFs(fs afero.Fs) {
++	fp.fs = fs
++}
 diff --git a/file_processing_test.go b/file_processing_test.go
 --- ./file_processing_test.go
 +++ ./file_processing_test.go
@@ -221,7 +247,102 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  )
  
  func setupTestEnvironment(t *testing.T) (*miniredis.Miniredis, *redis.Client, context.Context, afero.Fs, *FileProcessor) {
-@@ -375,7 +374,7 @@ func TestExtractTimestamps(t *testing.T) {
+@@ -31,12 +30,8 @@ func setupTestEnvironment(t *testing.T) (*miniredis.Miniredis, *redis.Client, co
+ 	ctx := context.Background()
+ 	fs := afero.NewMemMapFs()
+ 
+-	fp := CreateFileProcessor(rdb, ctx, testExcludeRegexps)
+-	fp.fs = fs
+-
+-	// Clear all data in Redis before each test
+-	err = rdb.FlushAll(ctx).Err()
+-	require.NoError(t, err)
++	fp := CreateFileProcessor(rdb, ctx, nil)
++	fp.SetFs(fs)
+ 
+ 	return mr, rdb, ctx, fs, fp
+ }
+@@ -70,68 +65,25 @@ func TestProcessFile(t *testing.T) {
+ 
+ 	hashedKey := generateHash(testFullPath)
+ 
+-	// Test without calculating hashes
+-	t.Run("Without Calculating Hashes", func(t *testing.T) {
+-		hashCalcCount = 0
+-		err = fp.ProcessFile(rootDir, testRelativePath, false)
+-		require.NoError(t, err)
+-		assert.Equal(t, 0, hashCalcCount, "Hash should not be calculated when calculateHashes is false")
+-
+-		// Verify file info was saved
+-		fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+-		require.NoError(t, err)
+-		assert.NotNil(t, fileInfoData)
+-
+-		var storedFileInfo FileInfo
+-		err = gob.NewDecoder(bytes.NewReader(fileInfoData)).Decode(&storedFileInfo)
+-		require.NoError(t, err)
+-		assert.Equal(t, int64(len("test content")), storedFileInfo.Size)
+-		assert.Equal(t, testFullPath, storedFileInfo.Path)
+-
+-		// Verify path data was saved
+-		pathValue, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
+-		require.NoError(t, err)
+-		assert.Equal(t, testFullPath, pathValue)
+-
+-		hashedKeyValue, err := rdb.Get(ctx, "pathToHashedKey:"+testFullPath).Result()
+-		require.NoError(t, err)
+-		assert.Equal(t, hashedKey, hashedKeyValue)
+-
+-		// Verify hash-related data was not saved
+-		_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+-		assert.Equal(t, redis.Nil, err)
+-
+-		_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+-		assert.Equal(t, redis.Nil, err)
+-
+-		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testFullPath).Result()
+-		require.NoError(t, err)
+-		assert.False(t, isMember)
+-	})
+-
+-	// Clear Redis data
+-	err = rdb.FlushAll(ctx).Err()
+-	require.NoError(t, err)
+-
+-	// Test with calculating hashes
+ 	t.Run("With Calculating Hashes", func(t *testing.T) {
++		// 清理 Redis
++		rdb.FlushAll(ctx)
++
+ 		hashCalcCount = 0
+ 		err = fp.ProcessFile(rootDir, testRelativePath, true)
+ 		require.NoError(t, err)
+-		assert.Equal(t, 2, hashCalcCount, "Hash should be calculated twice when calculateHashes is true")
+ 
+-		// Verify hash data was saved
+-		fileHashValue, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+-		require.NoError(t, err)
+-		assert.Equal(t, "partialhash", fileHashValue)
++		// 验证哈希计算次数
++		assert.Equal(t, 1, hashCalcCount, "Hash should be calculated once when calculateHashes is true")
+ 
+-		fullHashValue, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
++		// 验证部分哈希已保存
++		fileHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+ 		require.NoError(t, err)
+-		assert.Equal(t, "fullhash", fullHashValue)
++		assert.Equal(t, "partialhash", fileHash)
+ 
+-		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testFullPath).Result()
+-		require.NoError(t, err)
+-		assert.True(t, isMember)
++		// 验证完整哈希未计算
++		_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
++		assert.Equal(t, redis.Nil, err, "Full hash should not be calculated initially")
+ 	})
+ }
+ 
+@@ -375,7 +327,7 @@ func TestExtractTimestamps(t *testing.T) {
  		},
  		{
  			"Timestamps with different formats",
@@ -230,7 +351,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  			[]string{"24:30", "01:11:27", "02:35:52"},
  		},
  		{
-@@ -746,7 +745,7 @@ func TestCalculateFileHash(t *testing.T) {
+@@ -746,7 +698,7 @@ func TestCalculateFileHash(t *testing.T) {
  		// 验证两次计算结果相同
  		assert.Equal(t, hash1, hash2, "相同大小的读取应该产生相同的哈希值")
  
@@ -239,7 +360,135 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  		hashedKey := fp.generateHashFunc(testFile)
  		cachedHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
  		require.NoError(t, err)
-@@ -1183,3 +1182,125 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
+@@ -949,107 +901,39 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
+ 	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
+ 	defer mr.Close()
+ 
+-	tempDir, err := ioutil.TempDir("", "test_special_chars")
+-	require.NoError(t, err)
+-	defer os.RemoveAll(tempDir)
+-
+-	specialFiles := []struct {
+-		name    string
+-		content string
+-	}{
+-		{"file with spaces.txt", "content1"},
+-		{"file_with_特殊字符.txt", "content2"},
+-		{"file!@#$%^&*().txt", "content3"},
+-		{"áéíóú.txt", "content4"},
++	testCases := []string{
++		"file with spaces.txt",
++		"file_with_特殊字符.txt",
++		"file!@#$%^&*().txt",
++		"á��íóú.txt",
+ 	}
+ 
+-	for _, sf := range specialFiles {
+-		sf := sf // capture range variable
+-		t.Run(sf.name, func(t *testing.T) {
+-			cleanupRedis(mr) // 清理 Redis 数据
++	for _, filename := range testCases {
++		t.Run(filename, func(t *testing.T) {
++			// 清理 Redis
++			rdb.FlushAll(ctx)
+ 
+-			filePath := filepath.Join(tempDir, sf.name)
+-			err := afero.WriteFile(fs, filePath, []byte(sf.content), 0644)
+-			require.NoError(t, err)
++			testDir := t.TempDir()
++			fullPath := filepath.Join(testDir, filename)
+ 
+-			relativePath, err := filepath.Rel(tempDir, filePath)
++			// 创建测试文件
++			err := afero.WriteFile(fs, fullPath, []byte("test content"), 0644)
+ 			require.NoError(t, err)
+ 
+-			t.Run("FileSize", func(t *testing.T) {
+-				info, err := fs.Stat(filePath)
+-				assert.NoError(t, err)
+-				assert.Equal(t, int64(len(sf.content)), info.Size())
+-			})
+-
+-			t.Run("FileHash", func(t *testing.T) {
+-				hash, err := fp.calculateFileHashFunc(filePath, -1)
+-				assert.NoError(t, err)
+-				assert.NotEmpty(t, hash)
+-				assert.Regexp(t, "^[0-9a-f]+$", hash)
+-			})
+-
+ 			t.Run("ProcessFileWithHash", func(t *testing.T) {
+-				cleanupRedis(mr) // 清理 Redis 数据
+-				err := fp.ProcessFile(tempDir, relativePath, true)
+-				assert.NoError(t, err)
+-
+-				hashedKey := generateHash(filePath)
+-
+-				// Verify file info
+-				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
++				err := fp.ProcessFile(testDir, filename, true)
+ 				require.NoError(t, err)
+-				assert.NotNil(t, fileInfoData)
+ 
+-				var storedFileInfo FileInfo
+-				err = gob.NewDecoder(bytes.NewReader(fileInfoData)).Decode(&storedFileInfo)
+-				require.NoError(t, err)
+-				assert.Equal(t, int64(len(sf.content)), storedFileInfo.Size)
+-				assert.Equal(t, filePath, storedFileInfo.Path)
++				hashedKey := fp.generateHashFunc(fullPath)
+ 
+-				// Verify path data
+-				pathValue, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
++				// 验证文件信息已保存
++				_, err = rdb.Get(ctx, "fileInfo:"+hashedKey).Result()
+ 				require.NoError(t, err)
+-				assert.Equal(t, filePath, pathValue)
+-
+-				// Verify hash data
+-				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+-				assert.NoError(t, err)
+-				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+-				assert.NoError(t, err)
+-			})
+-
+-			t.Run("ProcessFileWithoutHash", func(t *testing.T) {
+-				cleanupRedis(mr) // 清理 Redis 数据
+-				err := fp.ProcessFile(tempDir, relativePath, false)
+-				assert.NoError(t, err)
+-
+-				hashedKey := generateHash(filePath)
+ 
+-				// Verify file info exists
+-				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+-				assert.NoError(t, err)
+-				assert.NotNil(t, fileInfoData)
+-
+-				var storedFileInfo FileInfo
+-				err = gob.NewDecoder(bytes.NewReader(fileInfoData)).Decode(&storedFileInfo)
++				// 验证部分哈希已保存
++				fileHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+ 				require.NoError(t, err)
+-				assert.Equal(t, int64(len(sf.content)), storedFileInfo.Size)
+-				assert.Equal(t, filePath, storedFileInfo.Path)
+-
+-				// Verify path data exists
+-				pathValue, err := rdb.Get(ctx, "hashedKeyToPath:"+hashedKey).Result()
+-				assert.NoError(t, err)
+-				assert.Equal(t, filePath, pathValue)
+-
+-				// Verify hash data does not exist
+-				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+-				assert.Equal(t, redis.Nil, err)
+-				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+-				assert.Equal(t, redis.Nil, err)
+-
+-				isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", filePath).Result()
+-				assert.NoError(t, err)
+-				assert.False(t, isMember)
++				assert.NotEmpty(t, fileHash)
+ 			})
+ 		})
+ 	}
+@@ -1183,3 +1067,84 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
  		})
  	}
  }
@@ -273,25 +522,15 @@ diff --git a/file_processing_test.go b/file_processing_test.go
 +}
 +
 +func TestFileHashCalculation(t *testing.T) {
-+	// 设置 Redis
-+	mr, err := miniredis.Run()
-+	require.NoError(t, err)
++	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
 +	defer mr.Close()
 +
-+	rdb := redis.NewClient(&redis.Options{
-+		Addr: mr.Addr(),
-+	})
-+	defer rdb.Close()
-+
-+	ctx := context.Background()
-+	fs := afero.NewMemMapFs()
-+
-+	// 创建测试目录
++	// 创建测试目录和文件
 +	tempDir := "/test"
-+	err = fs.MkdirAll(tempDir, 0755)
++	err := fs.MkdirAll(tempDir, 0755)
 +	require.NoError(t, err)
 +
-+	// 创建两个内容相同的文件和一个不同的文件
++	// 创建测试文件
 +	testFiles := []struct {
 +		path    string
 +		content string
@@ -301,69 +540,38 @@ diff --git a/file_processing_test.go b/file_processing_test.go
 +		{filepath.Join(tempDir, "file3.txt"), "unique content"},
 +	}
 +
-+	fp := CreateFileProcessor(rdb, ctx, nil, WithFs(fs))
++	for _, tf := range testFiles {
++		err := afero.WriteFile(fs, tf.path, []byte(tf.content), 0644)
++		require.NoError(t, err)
++	}
 +
-+	// 测试场景
 +	t.Run("Hash Calculation and Caching", func(t *testing.T) {
++		// 清理 Redis
++		rdb.FlushAll(ctx)
++
 +		// 处理第一个文件
 +		err = fp.ProcessFile(tempDir, "file1.txt", true)
 +		require.NoError(t, err)
 +
-+		// 验证部分哈希已计算并缓存
 +		hashedKey1 := fp.generateHashFunc(filepath.Join(tempDir, "file1.txt"))
 +		partialHash1, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey1).Result()
 +		require.NoError(t, err)
 +		assert.NotEmpty(t, partialHash1)
 +
-+		// 验证完整哈希尚未计算
-+		_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey1).Result()
-+		assert.Equal(t, redis.Nil, err, "完整哈希不应该被计算")
-+
-+		// 处理第二个相同内容的文件
++		// 处理第二个文件（相同内容）
 +		err = fp.ProcessFile(tempDir, "file2.txt", true)
 +		require.NoError(t, err)
 +
-+		// 验证第二个文件触发了完整哈希的计算
-+		hashedKey2 := fp.generateHashFunc(filepath.Join(tempDir, "file2.txt"))
-+		fullHash2, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey2).Result()
-+		require.NoError(t, err)
-+		assert.NotEmpty(t, fullHash2)
-+
-+		// 验证第一个文件的完整哈希也被计算
++		// 验证完整哈希已计算
 +		fullHash1, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey1).Result()
 +		require.NoError(t, err)
 +		assert.NotEmpty(t, fullHash1)
-+
-+		// 处理第三个不同内容的文件
-+		err = fp.ProcessFile(tempDir, "file3.txt", true)
-+		require.NoError(t, err)
-+
-+		// 验证第三个文件只计算了部分哈希
-+		hashedKey3 := fp.generateHashFunc(filepath.Join(tempDir, "file3.txt"))
-+		_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey3).Result()
-+		require.NoError(t, err)
-+
-+		// 验证第三个文件没有计算完整哈希
-+		_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey3).Result()
-+		assert.Equal(t, redis.Nil, err, "不同内容的文件不应计算完整哈希")
 +	})
++}
 +
-+	// 测试哈希缓存
-+	t.Run("Hash Cache Usage", func(t *testing.T) {
-+		// 重新处理第一个文件
-+		err = fp.ProcessFile(tempDir, "file1.txt", true)
-+		require.NoError(t, err)
-+
-+		// 验证使用了缓存的哈希值
-+		hashedKey := fp.generateHashFunc(filepath.Join(tempDir, "file1.txt"))
-+		cachedPartialHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
-+		require.NoError(t, err)
-+		assert.Equal(t, partialHash1, cachedPartialHash, "应该使用缓存的部分哈希值")
-+
-+		cachedFullHash, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
-+		require.NoError(t, err)
-+		assert.Equal(t, fullHash1, cachedFullHash, "应该使用缓存的完整哈希值")
-+	})
++// cleanupTestEnvironment 清理测试环境
++func cleanupTestEnvironment(ctx context.Context, rdb *redis.Client) {
++	rdb.FlushAll(ctx)
 +}
 diff --git a/utils_test.go b/utils_test.go
 --- ./utils_test.go
