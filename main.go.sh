@@ -3,8 +3,8 @@ SCRIPT=$(realpath "$0")
 SCRIPTPATH=$(dirname "$SCRIPT")
 cd "$SCRIPTPATH"
 
-# 运行带覆盖率的单元测试
-go test ./... -cover || exit 1
+go tool cover -html=coverage.out -o coverage.html
+go test -coverprofile=coverage.out ./... || exit 1
 
 ## 以下代码段已被注释掉，保留以备将来使用
 #go mod init github.com/huangyingw/FileSorter
