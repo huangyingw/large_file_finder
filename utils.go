@@ -573,10 +573,6 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
 	return nil
 }
 
-func shouldStopDuplicateFileSearch(duplicateCount int, maxDuplicateFiles int) bool {
-	return duplicateCount >= maxDuplicateFiles
-}
-
 func writeDataToFile(rootDir, filename string, data map[string]FileInfo, sortByModTime bool) error {
 	outputPath := filepath.Join(rootDir, filename)
 	outputDir := filepath.Dir(outputPath)
