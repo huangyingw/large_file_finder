@@ -118,16 +118,15 @@ func TestProcessFile(t *testing.T) {
 		hashCalcCount = 0
 		err = fp.ProcessFile(rootDir, testRelativePath, true)
 		require.NoError(t, err)
-		assert.Equal(t, 2, hashCalcCount, "Hash should be calculated twice when calculateHashes is true")
+		assert.Equal(t, 1, hashCalcCount, "Hash should be calculated once for partial hash")
 
 		// Verify hash data was saved
 		fileHashValue, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
 		require.NoError(t, err)
 		assert.Equal(t, "partialhash", fileHashValue)
 
-		fullHashValue, err := rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
-		require.NoError(t, err)
-		assert.Equal(t, "fullhash", fullHashValue)
+		_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+		require.Error(t, err)
 
 		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testFullPath).Result()
 		require.NoError(t, err)
@@ -717,7 +716,7 @@ func TestCalculateFileHash(t *testing.T) {
 
 		// 验证Redis中分别存储了两种哈希
 		hashedKey := fp.generateHashFunc(testFile)
-		
+
 		// 检查部分哈希缓存
 		cachedPartialHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
 		require.NoError(t, err)
@@ -1015,7 +1014,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
 				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
 				assert.NoError(t, err)
 				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
-				assert.NoError(t, err)
+				assert.Error(t, err)
 			})
 
 			t.Run("ProcessFileWithoutHash", func(t *testing.T) {
@@ -1095,7 +1094,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
 	_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
 	assert.NoError(t, err)
 	_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
-	assert.NoError(t, err)
+	assert.Error(t, err)
 
 	// Verify that the full path is stored
 	hashedKeyFromPath, err := rdb.Get(ctx, "pathToHashedKey:"+testFilePath).Result()
