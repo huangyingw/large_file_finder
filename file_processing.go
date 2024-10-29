@@ -153,26 +153,39 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
 		Path:    fullPath, // 存储绝对路径
 	}
 
-	var fileHash, fullHash string
+	var fileHash string
 	if calculateHashes {
 		fileHash, err = fp.calculateFileHashFunc(fullPath, ReadLimit)
 		if err != nil {
 			return fmt.Errorf("error calculating file hash: %w", err)
 		}
 		log.Printf("Calculated file hash: %s", fileHash)
-
-		fullHash, err = fp.calculateFileHashFunc(fullPath, FullFileReadCmd)
-		if err != nil {
-			return fmt.Errorf("error calculating full file hash: %w", err)
-		}
-		log.Printf("Calculated full hash: %s", fullHash)
 	}
 
-	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, fullHash, calculateHashes)
+	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, "", calculateHashes)
 	if err != nil {
 		return fmt.Errorf("error saving file info to Redis: %w", err)
 	}
-	log.Printf("Saved file info to Redis")
+
+	if calculateHashes {
+		count, err := fp.Rdb.SCard(fp.Ctx, "fileHashToPathSet:"+fileHash).Result()
+		if err != nil {
+			return fmt.Errorf("error checking file hash duplicates: %w", err)
+		}
+
+		if count > 1 {
+			fullHash, err := fp.calculateFileHashFunc(fullPath, FullFileReadCmd)
+			if err != nil {
+				return fmt.Errorf("error calculating full file hash: %w", err)
+			}
+			log.Printf("Calculated full hash: %s", fullHash)
+
+			err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, fullHash, calculateHashes)
+			if err != nil {
+				return fmt.Errorf("error saving full hash to Redis: %w", err)
+			}
+		}
+	}
 
 	return nil
 }
