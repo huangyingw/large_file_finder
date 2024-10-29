@@ -1,2 +1,4 @@
 find_large_files_with_cache
 data/
+coverage.html
+coverage.out
