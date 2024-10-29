@@ -99,3 +99,44 @@ func TestLevenshteinDistance(t *testing.T) {
 		})
 	}
 }
+
+func TestMin(t *testing.T) {
+	testCases := []struct {
+		name     string
+		numbers  []int
+		expected int
+	}{
+		{
+			name:     "正数序列",
+			numbers:  []int{5, 3, 8, 2, 9},
+			expected: 2,
+		},
+		{
+			name:     "包含负数",
+			numbers:  []int{-1, 3, -5, 2, 0},
+			expected: -5,
+		},
+		{
+			name:     "相同数字",
+			numbers:  []int{4, 4, 4, 4},
+			expected: 4,
+		},
+		{
+			name:     "单个数字",
+			numbers:  []int{42},
+			expected: 42,
+		},
+		{
+			name:     "零值",
+			numbers:  []int{0, 1, 2},
+			expected: 0,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := min(tc.numbers...)
+			assert.Equal(t, tc.expected, result, "最小值计算错误")
+		})
+	}
+}
