@@ -83,7 +83,7 @@ diff --git a/file_processing.go b/file_processing.go
  	return fp
  }
  
-@@ -137,44 +131,57 @@ const (
+@@ -137,44 +131,61 @@ const (
  
  func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHashes bool) error {
  	fullPath := filepath.Join(rootDir, relativePath)
@@ -92,6 +92,7 @@ diff --git a/file_processing.go b/file_processing.go
  
 -	info, err := fp.fs.Stat(fullPath)
 +	if calculateHashes {
++		// 首先计算部分哈希
 +		fileHash, err := fp.calculateFileHash(fullPath, ReadLimit)
  		if err != nil {
 -		return fmt.Errorf("error getting file info: %w", err)
@@ -105,6 +106,7 @@ diff --git a/file_processing.go b/file_processing.go
 -		Size:    info.Size(),
 -		ModTime: info.ModTime(),
 -		Path:    fullPath, // 存储绝对路径
++		// 检查是否有其他文件具有相同的部分哈希
 +		members, err := GetFileHashMembers(fp.Rdb, fp.Ctx, fileHash)
 +		if err != nil {
 +			return fmt.Errorf("error getting hash members: %w", err)
@@ -114,8 +116,9 @@ diff --git a/file_processing.go b/file_processing.go
 -	if calculateHashes {
 -		fileHash, err = fp.calculateFileHashFunc(fullPath, ReadLimit)
 +		var fullHash string
++		// 只有当存在多个文件具有相同的部分哈希时，才计算完整哈希
 +		if len(members) > 1 {
-+			fullHash, err = fp.calculateFileHash(fullPath, 0)
++			fullHash, err = fp.calculateFileHash(fullPath, 0) // 0 表示读取整个文件
  			if err != nil {
 -			return fmt.Errorf("error calculating file hash: %w", err)
 +				return fmt.Errorf("error calculating full hash: %w", err)
@@ -124,6 +127,7 @@ diff --git a/file_processing.go b/file_processing.go
 -		log.Printf("Calculated file hash: %s", fileHash)
  
 -		fullHash, err = fp.calculateFileHashFunc(fullPath, FullFileReadCmd)
++		// 保存哈希信息
 +		err = fp.SaveFileHash(hashedKey, fileHash, fullHash, fullPath)
  		if err != nil {
 -			return fmt.Errorf("error calculating full file hash: %w", err)
@@ -163,7 +167,7 @@ diff --git a/file_processing.go b/file_processing.go
  }
  
  type FileInfoRetriever interface {
-@@ -281,10 +288,7 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
+@@ -281,10 +292,7 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
  }
  
  func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
@@ -174,7 +178,7 @@ diff --git a/file_processing.go b/file_processing.go
  	var cacheKey string
  	if limit == FullFileReadCmd {
  		cacheKey = "hashedKeyToFullHash:" + hashedKey
-@@ -295,36 +299,41 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
+@@ -295,36 +303,41 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
  	// 尝试从缓存获取
  	cachedHash, err := fp.Rdb.Get(fp.Ctx, cacheKey).Result()
  	if err == nil {
@@ -228,7 +232,7 @@ diff --git a/file_processing.go b/file_processing.go
  	return hash, nil
  }
  
-@@ -338,7 +347,7 @@ func processDirectory(path string) {
+@@ -338,7 +351,7 @@ func processDirectory(path string) {
  func processSymlink(path string) {
  }
  
@@ -237,7 +241,7 @@ diff --git a/file_processing.go b/file_processing.go
  func processKeyword(keyword string, keywordFiles []string, Rdb *redis.Client, Ctx context.Context, rootDir string, excludeRegexps []*regexp.Regexp) {
  	// 对 keywordFiles 进行排序
  	sort.Slice(keywordFiles, func(i, j int) bool {
-@@ -406,7 +415,7 @@ func getFileInfo(rdb *redis.Client, ctx context.Context, filePath string) (FileI
+@@ -406,7 +419,7 @@ func getFileInfo(rdb *redis.Client, ctx context.Context, filePath string) (FileI
  	return fileInfo, nil
  }
  
@@ -246,7 +250,7 @@ diff --git a/file_processing.go b/file_processing.go
  
  func CalculateScore(timestamps []string, fileNameLength int) float64 {
  	timestampCount := len(timestamps)
-@@ -422,3 +431,52 @@ type FileInfo struct {
+@@ -422,3 +435,52 @@ type FileInfo struct {
  func (fp *FileProcessor) getHashedKeyFromPath(path string) (string, error) {
  	return fp.Rdb.Get(fp.Ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
  }
@@ -259,7 +263,7 @@ diff --git a/file_processing.go b/file_processing.go
 +func (fp *FileProcessor) SaveFileHash(hashedKey, fileHash, fullHash, fullPath string) error {
 +	pipe := fp.Rdb.Pipeline()
 +
-+	// 保存基本哈希��息
++	// 保存基本哈希息
 +	pipe.Set(fp.Ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
 +	pipe.Set(fp.Ctx, "hashedKeyToPath:"+hashedKey, fullPath, 0)
 +	pipe.Set(fp.Ctx, "pathToHashedKey:"+fullPath, hashedKey, 0)
