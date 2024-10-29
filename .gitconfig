@@ -7,6 +7,7 @@
     remote = origin
     target = e0bd8f4fc4a3cdf6ccd11bf70609f9a74a268638
 [gdio]
+    ignore = ./.cursorrules
     ignore = ./.gitconfig
     ignore = ./.gitignore
     ignore = ./docker-compose.yml
