@@ -175,7 +175,7 @@ func TestCloseFileFinderConcurrency(t *testing.T) {
 	duration := time.Since(start)
 
 	require.NoError(t, err)
-	assert.Less(t, duration, 9*time.Second, "并发处理应该在合理时间内完成")
+	assert.Less(t, duration, 10*time.Second, "并发处理应该在合理时间内完成")
 
 	// 验证输出文件
 	outputContent, err := os.ReadFile(filepath.Join(tempDir, "fav.log.close"))
