@@ -1182,3 +1182,44 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
 		})
 	}
 }
+
+func TestCalculateFileHashWithCache(t *testing.T) {
+	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
+	defer mr.Close()
+
+	testFile := "/test_hash.txt"
+	content := []byte("test content for hash calculation")
+	err := afero.WriteFile(fs, testFile, content, 0644)
+	require.NoError(t, err)
+
+	hashedKey := fp.generateHashFunc(testFile)
+
+	t.Run("首次计算哈希", func(t *testing.T) {
+		// 确保缓存为空
+		exists, err := rdb.Exists(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), exists)
+
+		// 计算哈希
+		hash1, err := fp.calculateFileHash(testFile, 4)
+		require.NoError(t, err)
+		assert.NotEmpty(t, hash1)
+
+		// 验证缓存已创建
+		cachedHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+		require.NoError(t, err)
+		assert.Equal(t, hash1, cachedHash)
+	})
+
+	t.Run("从缓存读取哈希", func(t *testing.T) {
+		// 预设缓存值
+		expectedHash := "cached_hash_value"
+		err := rdb.Set(ctx, "hashedKeyToFileHash:"+hashedKey, expectedHash, 0).Err()
+		require.NoError(t, err)
+
+		// 尝试计算哈希（应该返回缓存值）
+		hash2, err := fp.calculateFileHash(testFile, 4)
+		require.NoError(t, err)
+		assert.Equal(t, expectedHash, hash2)
+	})
+}
