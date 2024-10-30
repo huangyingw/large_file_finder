@@ -775,7 +775,7 @@ func TestCalculateFileHash(t *testing.T) {
 		hash, err := fp.calculateFileHash("/nonexistent.txt", 4)
 		assert.Error(t, err)
 		assert.Empty(t, hash)
-		assert.Contains(t, err.Error(), "error opening file")
+		assert.Contains(t, err.Error(), "file not found:")
 	})
 
 	t.Run("零字节文件", func(t *testing.T) {
