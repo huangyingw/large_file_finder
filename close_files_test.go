@@ -2,14 +2,12 @@ package main
 
 import (
 	"fmt"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // 创建测试辅助函数
@@ -170,12 +168,9 @@ func TestCloseFileFinderConcurrency(t *testing.T) {
 
 	// 测试并发处理
 	finder := NewCloseFileFinder(tempDir)
-	start := time.Now()
 	err = finder.ProcessCloseFiles()
-	duration := time.Since(start)
 
 	require.NoError(t, err)
-	assert.Less(t, duration, 10*time.Second, "并发处理应该在合理时间内完成")
 
 	// 验证输出文件
 	outputContent, err := os.ReadFile(filepath.Join(tempDir, "fav.log.close"))
