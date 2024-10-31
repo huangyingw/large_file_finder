@@ -15,11 +15,55 @@ import (
 	"strings"
 )
 
+// Redis key 前缀
+const (
+	keyPrefixFileInfo        = "fileInfo:"
+	keyPrefixHashedKeyToPath = "hashedKeyToPath:"
+	keyPrefixPathToHashedKey = "pathToHashedKey:"
+	keyPrefixFileHash        = "fileHashToPathSet:"
+	keyPrefixDuplicateFiles  = "duplicateFiles:"
+	keyPrefixHashCache       = "hashedKeyToFileHash:"
+	keyPrefixFullHashCache   = "hashedKeyToFullHash:"
+	keyPrefixCalculating     = "calculating:"
+)
+
 // Generate a SHA-256 hash for the given string
 func generateHash(s string) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(s))
 	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func getFileInfoKey(hashedKey string) string {
+	return keyPrefixFileInfo + hashedKey
+}
+
+func getHashedKeyToPathKey(hashedKey string) string {
+	return keyPrefixHashedKeyToPath + hashedKey
+}
+
+func getPathToHashedKeyKey(path string) string {
+	return keyPrefixPathToHashedKey + path
+}
+
+func getFileHashKey(fileHash string) string {
+	return keyPrefixFileHash + fileHash
+}
+
+func getDuplicateFilesKey(fullHash string) string {
+	return keyPrefixDuplicateFiles + fullHash
+}
+
+func getHashCacheKey(hashedKey string) string {
+	return keyPrefixHashCache + hashedKey
+}
+
+func getFullHashCacheKey(hashedKey string) string {
+	return keyPrefixFullHashCache + hashedKey
+}
+
+func getCalculatingKey(path string, limit int64) string {
+	return fmt.Sprintf("%s%s:%d", keyPrefixCalculating, path, limit)
 }
 
 func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullPath string, info FileInfo, fileHash, fullHash string, calculateHashes bool) error {
@@ -33,15 +77,15 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullPath string
 
 	pipe := rdb.Pipeline()
 
-	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
-	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, fullPath, 0)
-	pipe.Set(ctx, "pathToHashedKey:"+fullPath, hashedKey, 0)
+	pipe.Set(ctx, getFileInfoKey(hashedKey), buf.Bytes(), 0)
+	pipe.Set(ctx, getHashedKeyToPathKey(hashedKey), fullPath, 0)
+	pipe.Set(ctx, getPathToHashedKeyKey(fullPath), hashedKey, 0)
 
 	if calculateHashes {
-		pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, fullPath)
-		pipe.Set(ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
+		pipe.SAdd(ctx, getFileHashKey(fileHash), fullPath)
+		pipe.Set(ctx, getHashCacheKey(hashedKey), fileHash, 0)
 		if fullHash != "" {
-			pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0)
+			pipe.Set(ctx, getFullHashCacheKey(hashedKey), fullHash, 0)
 		}
 	}
 
@@ -60,7 +104,7 @@ func SaveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
 	fileNameLength := len(filepath.Base(info.Path))
 	score := CalculateScore(timestamps, fileNameLength)
 
-	_, err := rdb.ZAdd(ctx, "duplicateFiles:"+fullHash, &redis.Z{
+	_, err := rdb.ZAdd(ctx, getDuplicateFilesKey(fullHash), &redis.Z{
 		Score:  score,
 		Member: info.Path,
 	}).Result()
@@ -102,15 +146,15 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, fullPath s
 
 	pipe := rdb.Pipeline()
 
-	pipe.Del(ctx, "fileInfo:"+hashedKey)
-	pipe.Del(ctx, "hashedKeyToPath:"+hashedKey)
-	pipe.Del(ctx, "pathToHashedKey:"+fullPath)
+	pipe.Del(ctx, getFileInfoKey(hashedKey))
+	pipe.Del(ctx, getHashedKeyToPathKey(hashedKey))
+	pipe.Del(ctx, getPathToHashedKeyKey(fullPath))
 
-	fileHashCmd := pipe.Get(ctx, "hashedKeyToFileHash:"+hashedKey)
-	pipe.Del(ctx, "hashedKeyToFileHash:"+hashedKey)
+	fileHashCmd := pipe.Get(ctx, getHashCacheKey(hashedKey))
+	pipe.Del(ctx, getHashCacheKey(hashedKey))
 
-	fullHashCmd := pipe.Get(ctx, "hashedKeyToFullHash:"+hashedKey)
-	pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)
+	fullHashCmd := pipe.Get(ctx, getFullHashCacheKey(hashedKey))
+	pipe.Del(ctx, getFullHashCacheKey(hashedKey))
 
 	_, err := pipe.Exec(ctx)
 	if err != nil && err != redis.Nil {
@@ -119,12 +163,12 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, fullPath s
 
 	fileHash, err := fileHashCmd.Result()
 	if err == nil {
-		pipe.SRem(ctx, "fileHashToPathSet:"+fileHash, fullPath)
+		pipe.SRem(ctx, getFileHashKey(fileHash), fullPath)
 	}
 
 	fullHash, err := fullHashCmd.Result()
 	if err == nil {
-		pipe.ZRem(ctx, "duplicateFiles:"+fullHash, fullPath)
+		pipe.ZRem(ctx, getDuplicateFilesKey(fullHash), fullPath)
 	}
 
 	_, err = pipe.Exec(ctx)
@@ -137,7 +181,7 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, fullPath s
 }
 
 func cleanUpHashKeys(rdb *redis.Client, ctx context.Context, fullHash, duplicateFilesKey string) error {
-	fileHashKey := "fileHashToPathSet:" + fullHash
+	fileHashKey := getFileHashKey(fullHash)
 
 	// 使用管道批量删除 Redis 键
 	pipe := rdb.TxPipeline()
