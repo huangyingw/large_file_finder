@@ -70,13 +70,13 @@ func (fp *FileProcessor) saveToFile(rootDir, filename string, sortByModTime bool
 	}
 	defer file.Close()
 
-	iter := fp.Rdb.Scan(fp.Ctx, 0, "fileInfo:*", 0).Iterator()
+	iter := fp.Rdb.Scan(fp.Ctx, 0, keyPrefixFileInfo+"*", 0).Iterator()
 	data := make(map[string]FileInfo)
 
 	for iter.Next(fp.Ctx) {
-		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
+		hashedKey := strings.TrimPrefix(iter.Val(), keyPrefixFileInfo)
 
-		originalPath, err := fp.Rdb.Get(fp.Ctx, "hashedKeyToPath:"+hashedKey).Result()
+		originalPath, err := fp.Rdb.Get(fp.Ctx, getHashedKeyToPathKey(hashedKey)).Result()
 		if err != nil {
 			log.Printf("Error getting original path for key %s: %v", hashedKey, err)
 			continue
@@ -190,10 +190,10 @@ func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile st
 	}
 	defer file.Close()
 
-	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
+	iter := rdb.Scan(ctx, 0, keyPrefixDuplicateFiles+"*", 0).Iterator()
 	for iter.Next(ctx) {
 		duplicateFilesKey := iter.Val()
-		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
+		fullHash := strings.TrimPrefix(duplicateFilesKey, keyPrefixDuplicateFiles)
 		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
 		if err != nil {
 			log.Printf("Error getting duplicate files for key %s: %v", duplicateFilesKey, err)
@@ -203,13 +203,13 @@ func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile st
 		if len(duplicateFiles) > 1 {
 			fmt.Fprintf(file, "Duplicate files for fullHash %s:\n", fullHash)
 			for i, duplicateFile := range duplicateFiles {
-				hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+duplicateFile).Result()
+				hashedKey, err := rdb.Get(ctx, getPathToHashedKeyKey(duplicateFile)).Result()
 				if err != nil {
 					log.Printf("Error getting hashed key for path %s: %v", duplicateFile, err)
 					continue
 				}
 
-				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+				fileInfoData, err := rdb.Get(ctx, getFileInfoKey(hashedKey)).Bytes()
 				if err != nil {
 					log.Printf("Error getting file info for key %s: %v", hashedKey, err)
 					continue
@@ -479,5 +479,5 @@ type FileInfo struct {
 }
 
 func (fp *FileProcessor) getHashedKeyFromPath(path string) (string, error) {
-	return fp.Rdb.Get(fp.Ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
+	return fp.Rdb.Get(fp.Ctx, getPathToHashedKeyKey(filepath.Clean(path))).Result()
 }
