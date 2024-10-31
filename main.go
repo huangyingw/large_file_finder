@@ -114,9 +114,6 @@ func main() {
 		log.Printf("Error cleaning up old records: %v", err)
 	}
 
-	// 确定是否需要计算哈希值
-	calculateHashes := findDuplicates || outputDuplicates || deleteDuplicates
-
 	// 处理文件
 	fileChan := make(chan string, workerCount)
 	var wg sync.WaitGroup
@@ -129,7 +126,7 @@ func main() {
 			for relativePath := range fileChan {
 				fullPath := filepath.Join(rootDir, relativePath)
 				if !fp.ShouldExclude(fullPath) {
-					if err := fp.ProcessFile(rootDir, relativePath, calculateHashes); err != nil {
+					if err := fp.ProcessFile(rootDir, relativePath); err != nil {
 						log.Printf("Error processing file %s: %v", fullPath, err)
 					}
 				}
