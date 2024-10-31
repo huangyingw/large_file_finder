@@ -151,7 +151,7 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string) error {
 	}
 
 	// 将文件路径添加到部分哈希集合
-	err = fp.Rdb.SAdd(fp.Ctx, "fileHashToPathSet:"+fileHash, fullPath).Err()
+	err = fp.Rdb.SAdd(fp.Ctx, getFileHashKey(fileHash), fullPath).Err()
 	if err != nil {
 		return fmt.Errorf("error adding path to hash set: %w", err)
 	}
@@ -262,7 +262,7 @@ type RedisFileInfoRetriever struct {
 
 func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
 	var fileInfo FileInfo
-	value, err := fp.Rdb.Get(fp.Ctx, "fileInfo:"+hashedKey).Bytes()
+	value, err := fp.Rdb.Get(fp.Ctx, getFileInfoKey(hashedKey)).Bytes()
 	if err != nil {
 		return fileInfo, err
 	}
@@ -300,7 +300,7 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
 	}
 
 	// 获取计算锁
-	lockKey := fmt.Sprintf("calculating:%s:%d", path, limit)
+	lockKey := getCalculatingKey(path, limit)
 	locked, err := fp.Rdb.SetNX(fp.Ctx, lockKey, "1", 5*time.Minute).Result()
 	if err != nil {
 		return "", fmt.Errorf("error acquiring lock: %w", err)
@@ -339,13 +339,16 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
 
 	hash = fmt.Sprintf("%x", h.Sum(nil))
 
-	// 获取缓存键（重用 getHashFromCache 中的逻辑）
-	prefix := "hashedKeyToFileHash"
-	if limit == FullFileReadCmd {
-		prefix = "hashedKeyToFullHash"
-	}
+	// 生成 hashedKey
 	hashedKey := fp.generateHashFunc(path)
-	cacheKey := fmt.Sprintf("%s:%s", prefix, hashedKey)
+
+	// 根据是否是全文件计算选择对应的缓存 key
+	var cacheKey string
+	if limit == FullFileReadCmd {
+		cacheKey = getFullHashCacheKey(hashedKey)
+	} else {
+		cacheKey = getHashCacheKey(hashedKey)
+	}
 
 	// 缓存结果
 	if err := fp.Rdb.Set(fp.Ctx, cacheKey, hash, 0).Err(); err != nil {
@@ -372,19 +375,16 @@ func (fp *FileProcessor) waitForHash(path string, limit int64) (string, error) {
 }
 
 func (fp *FileProcessor) getHashFromCache(path string, limit int64) (string, error) {
-	prefix := "hashedKeyToFileHash"
-	if limit == FullFileReadCmd {
-		prefix = "hashedKeyToFullHash"
-	}
 	hashedKey := fp.generateHashFunc(path)
-	cacheKey := fmt.Sprintf("%s:%s", prefix, hashedKey)
-
-	hash, err := fp.Rdb.Get(fp.Ctx, cacheKey).Result()
-	if err != nil {
-		return "", err
+	
+	var cacheKey string
+	if limit == FullFileReadCmd {
+		cacheKey = getFullHashCacheKey(hashedKey)
+	} else {
+		cacheKey = getHashCacheKey(hashedKey)
 	}
-
-	return hash, nil
+	
+	return fp.Rdb.Get(fp.Ctx, cacheKey).Result()
 }
 
 const readLimit = 100 * 1024 // 100KB
