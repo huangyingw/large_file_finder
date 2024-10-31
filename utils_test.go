@@ -473,12 +473,10 @@ func TestFindAndLogDuplicates(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// 处理文件，计算哈希值
-	calculateHashes := true
 	for _, tf := range testFiles {
 		relPath, err := filepath.Rel(rootDir, tf.path)
 		require.NoError(t, err)
-		err = fp.ProcessFile(rootDir, relPath, calculateHashes)
+		err = fp.ProcessFile(rootDir, relPath)
 		require.NoError(t, err)
 	}
 
