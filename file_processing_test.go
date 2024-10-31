@@ -821,13 +821,13 @@ func TestCleanUpOldRecords(t *testing.T) {
 
 	for _, path := range []string{existingFile, nonExistingFile} {
 		hashedKey := generateHash(path)
-		err = rdb.Set(ctx, "pathToHashedKey:"+path, hashedKey, 0).Err()
+		err = rdb.Set(ctx, getPathToHashedKeyKey(path), hashedKey, 0).Err()
 		require.NoError(t, err)
-		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0).Err()
+		err = rdb.Set(ctx, getHashedKeyToPathKey(hashedKey), path, 0).Err()
 		require.NoError(t, err)
-		err = rdb.Set(ctx, "fileInfo:"+hashedKey, "dummy_data", 0).Err()
+		err = rdb.Set(ctx, getFileInfoKey(hashedKey), "dummy_data", 0).Err()
 		require.NoError(t, err)
-		err = rdb.Set(ctx, "hashedKeyToFileHash:"+hashedKey, "dummy_hash", 0).Err()
+		err = rdb.Set(ctx, getHashCacheKey(hashedKey), "dummy_hash", 0).Err()
 		require.NoError(t, err)
 	}
 
@@ -835,12 +835,12 @@ func TestCleanUpOldRecords(t *testing.T) {
 	require.NoError(t, err)
 
 	// 检查不存在文件的记录是否被删除
-	_, err = rdb.Get(ctx, "pathToHashedKey:"+nonExistingFile).Result()
+	_, err = rdb.Get(ctx, getPathToHashedKeyKey(nonExistingFile)).Result()
 	assert.Error(t, err)
 	assert.Equal(t, redis.Nil, err)
 
 	// 检查存在文件的记录是否被保留
-	val, err := rdb.Get(ctx, "pathToHashedKey:"+existingFile).Result()
+	val, err := rdb.Get(ctx, getPathToHashedKeyKey(existingFile)).Result()
 	require.NoError(t, err)
 	assert.NotEmpty(t, val)
 }
