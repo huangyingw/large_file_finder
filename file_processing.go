@@ -135,7 +135,7 @@ const (
 	FullFileReadCmd = -1
 )
 
-func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHashes bool) error {
+func (fp *FileProcessor) ProcessFile(rootDir, relativePath string) error {
 	fullPath := filepath.Join(rootDir, relativePath)
 	log.Printf("Processing file: %s", fullPath)
 
@@ -144,47 +144,30 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
 		return fmt.Errorf("error getting file info: %w", err)
 	}
 
-	hashedKey := fp.generateHashFunc(fullPath)
-	log.Printf("Generated hashed key: %s", hashedKey)
+	// 计算部分哈希
+	fileHash, err := fp.calculateFileHashFunc(fullPath, ReadLimit)
+	if err != nil {
+		return fmt.Errorf("error calculating file hash: %w", err)
+	}
 
+	// 将文件路径添加到部分哈希集合
+	err = fp.Rdb.SAdd(fp.Ctx, "fileHashToPathSet:"+fileHash, fullPath).Err()
+	if err != nil {
+		return fmt.Errorf("error adding path to hash set: %w", err)
+	}
+
+	// 保存文件信息到 Redis
 	fileInfo := FileInfo{
 		Size:    info.Size(),
 		ModTime: info.ModTime(),
 		Path:    fullPath, // 存储绝对路径
 	}
 
-	var fileHash string
-	if calculateHashes {
-		fileHash, err = fp.calculateFileHashFunc(fullPath, ReadLimit)
-		if err != nil {
-			return fmt.Errorf("error calculating file hash: %w", err)
-		}
-		log.Printf("Calculated file hash: %s", fileHash)
-	}
-
-	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, "", calculateHashes)
+	// 调用原有的 saveFileInfoToRedis 方法，保持其签名不变
+	// 传入空的 fullHash，并设置 calculateHashes 为 true 表示需要计算哈希
+	err = saveFileInfoToRedis(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, "", true)
 	if err != nil {
 		return fmt.Errorf("error saving file info to Redis: %w", err)
-	}
-
-	if calculateHashes {
-		count, err := fp.Rdb.SCard(fp.Ctx, "fileHashToPathSet:"+fileHash).Result()
-		if err != nil {
-			return fmt.Errorf("error checking file hash duplicates: %w", err)
-		}
-
-		if count > 1 {
-			fullHash, err := fp.calculateFileHashFunc(fullPath, FullFileReadCmd)
-			if err != nil {
-				return fmt.Errorf("error calculating full file hash: %w", err)
-			}
-			log.Printf("Calculated full hash: %s", fullHash)
-
-			err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, fullHash, calculateHashes)
-			if err != nil {
-				return fmt.Errorf("error saving full hash to Redis: %w", err)
-			}
-		}
 	}
 
 	return nil
