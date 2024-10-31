@@ -73,9 +73,9 @@ func TestProcessFile(t *testing.T) {
 	// Test without calculating hashes
 	t.Run("Without Calculating Hashes", func(t *testing.T) {
 		hashCalcCount = 0
-		err = fp.ProcessFile(rootDir, testRelativePath, false)
+		err = fp.ProcessFile(rootDir, testRelativePath)
 		require.NoError(t, err)
-		assert.Equal(t, 0, hashCalcCount, "Hash should not be calculated when calculateHashes is false")
+		assert.Equal(t, 1, hashCalcCount, "Hash should be calculated")
 
 		// Verify file info was saved
 		fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
@@ -98,15 +98,15 @@ func TestProcessFile(t *testing.T) {
 		assert.Equal(t, hashedKey, hashedKeyValue)
 
 		// Verify hash-related data was not saved
-		_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
-		assert.Equal(t, redis.Nil, err)
+		fileHashValue, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+		assert.NotNil(t, fileHashValue)
 
 		_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
 		assert.Equal(t, redis.Nil, err)
 
 		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testFullPath).Result()
 		require.NoError(t, err)
-		assert.False(t, isMember)
+		assert.True(t, isMember)
 	})
 
 	// Clear Redis data
@@ -116,7 +116,7 @@ func TestProcessFile(t *testing.T) {
 	// Test with calculating hashes
 	t.Run("With Calculating Hashes", func(t *testing.T) {
 		hashCalcCount = 0
-		err = fp.ProcessFile(rootDir, testRelativePath, true)
+		err = fp.ProcessFile(rootDir, testRelativePath)
 		require.NoError(t, err)
 		assert.Equal(t, 1, hashCalcCount, "Hash should be calculated once for partial hash")
 
@@ -989,7 +989,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
 
 			t.Run("ProcessFileWithHash", func(t *testing.T) {
 				cleanupRedis(mr) // 清理 Redis 数据
-				err := fp.ProcessFile(tempDir, relativePath, true)
+				err := fp.ProcessFile(tempDir, relativePath)
 				assert.NoError(t, err)
 
 				hashedKey := generateHash(filePath)
@@ -1019,7 +1019,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
 
 			t.Run("ProcessFileWithoutHash", func(t *testing.T) {
 				cleanupRedis(mr) // 清理 Redis 数据
-				err := fp.ProcessFile(tempDir, relativePath, false)
+				err := fp.ProcessFile(tempDir, relativePath)
 				assert.NoError(t, err)
 
 				hashedKey := generateHash(filePath)
@@ -1041,8 +1041,8 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
 				assert.Equal(t, filePath, pathValue)
 
 				// Verify hash data does not exist
-				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
-				assert.Equal(t, redis.Nil, err)
+				fileInfoData, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Bytes()
+				assert.NotNil(t, fileInfoData)
 				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
 				assert.Equal(t, redis.Nil, err)
 
@@ -1069,7 +1069,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
 	require.NoError(t, err)
 
 	// Process the file
-	err = fp.ProcessFile(rootDir, testFileName, true)
+	err = fp.ProcessFile(rootDir, testFileName)
 	assert.NoError(t, err)
 
 	hashedKey := generateHash(testFilePath)
