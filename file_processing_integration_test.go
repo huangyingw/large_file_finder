@@ -51,7 +51,7 @@ func TestFileProcessorIntegration(t *testing.T) {
 	for _, tf := range testFiles {
 		relPath, err := filepath.Rel(tempDir, tf.path)
 		require.NoError(t, err)
-		err = fp.ProcessFile(tempDir, relPath, true)
+		err = fp.ProcessFile(tempDir, relPath)
 		require.NoError(t, err)
 	}
 
