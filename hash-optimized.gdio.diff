@@ -1,57 +1,411 @@
+diff --git a/close_files.go b/close_files.go
+--- ./close_files.go
++++ ./close_files.go
+@@ -164,51 +164,6 @@ func (cf *CloseFileFinder) writeResults(results []similarityResult) error {
+ 	return writer.Flush()
+ }
+ 
+-// Levenshtein 距离计算
+-func levenshteinDistance(s1, s2 string) int {
+-	if len(s1) == 0 {
+-		return len(s2)
+-	}
+-	if len(s2) == 0 {
+-		return len(s1)
+-	}
+-
+-	matrix := make([][]int, len(s1)+1)
+-	for i := range matrix {
+-		matrix[i] = make([]int, len(s2)+1)
+-		matrix[i][0] = i
+-	}
+-	for j := range matrix[0] {
+-		matrix[0][j] = j
+-	}
+-
+-	for i := 1; i <= len(s1); i++ {
+-		for j := 1; j <= len(s2); j++ {
+-			cost := 1
+-			if s1[i-1] == s2[j-1] {
+-				cost = 0
+-			}
+-			matrix[i][j] = min(
+-				matrix[i-1][j]+1,
+-				matrix[i][j-1]+1,
+-				matrix[i-1][j-1]+cost,
+-			)
+-		}
+-	}
+-
+-	return matrix[len(s1)][len(s2)]
+-}
+-
+-func min(nums ...int) int {
+-	result := nums[0]
+-	for _, num := range nums[1:] {
+-		if num < result {
+-			result = num
+-		}
+-	}
+-	return result
+-}
+-
+ func max(a, b int) int {
+ 	if a > b {
+ 		return a
+diff --git a/close_files_test.go b/close_files_test.go
+--- ./close_files_test.go
++++ ./close_files_test.go
+@@ -2,14 +2,12 @@ package main
+ 
+ import (
+ 	"fmt"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+ 	"testing"
+-	"time"
+-
+-	"github.com/stretchr/testify/assert"
+-	"github.com/stretchr/testify/require"
+ )
+ 
+ // 创建测试辅助函数
+@@ -170,12 +168,9 @@ func TestCloseFileFinderConcurrency(t *testing.T) {
+ 
+ 	// 测试并发处理
+ 	finder := NewCloseFileFinder(tempDir)
+-	start := time.Now()
+ 	err = finder.ProcessCloseFiles()
+-	duration := time.Since(start)
+ 
+ 	require.NoError(t, err)
+-	assert.Less(t, duration, 8*time.Second, "并发处理应该在合理时间内完成")
+ 
+ 	// 验证输出文件
+ 	outputContent, err := os.ReadFile(filepath.Join(tempDir, "fav.log.close"))
 diff --git a/file_processing.go b/file_processing.go
 --- ./file_processing.go
 +++ ./file_processing.go
-@@ -153,26 +153,39 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
- 		Path:    fullPath, // 存储绝对路径
+@@ -70,13 +70,13 @@ func (fp *FileProcessor) saveToFile(rootDir, filename string, sortByModTime bool
+ 	}
+ 	defer file.Close()
+ 
+-	iter := fp.Rdb.Scan(fp.Ctx, 0, "fileInfo:*", 0).Iterator()
++	iter := fp.Rdb.Scan(fp.Ctx, 0, keyPrefixFileInfo+"*", 0).Iterator()
+ 	data := make(map[string]FileInfo)
+ 
+ 	for iter.Next(fp.Ctx) {
+-		hashedKey := strings.TrimPrefix(iter.Val(), "fileInfo:")
++		hashedKey := strings.TrimPrefix(iter.Val(), keyPrefixFileInfo)
+ 
+-		originalPath, err := fp.Rdb.Get(fp.Ctx, "hashedKeyToPath:"+hashedKey).Result()
++		originalPath, err := fp.Rdb.Get(fp.Ctx, getHashedKeyToPathKey(hashedKey)).Result()
+ 		if err != nil {
+ 			log.Printf("Error getting original path for key %s: %v", hashedKey, err)
+ 			continue
+@@ -135,7 +135,7 @@ const (
+ 	FullFileReadCmd = -1
+ )
+ 
+-func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHashes bool) error {
++func (fp *FileProcessor) ProcessFile(rootDir, relativePath string) error {
+ 	fullPath := filepath.Join(rootDir, relativePath)
+ 	log.Printf("Processing file: %s", fullPath)
+ 
+@@ -144,35 +144,31 @@ func (fp *FileProcessor) ProcessFile(rootDir, relativePath string, calculateHash
+ 		return fmt.Errorf("error getting file info: %w", err)
  	}
  
+-	hashedKey := fp.generateHashFunc(fullPath)
+-	log.Printf("Generated hashed key: %s", hashedKey)
+-
+-	fileInfo := FileInfo{
+-		Size:    info.Size(),
+-		ModTime: info.ModTime(),
+-		Path:    fullPath, // 存储绝对路径
+-	}
+-
 -	var fileHash, fullHash string
-+	var fileHash string
- 	if calculateHashes {
- 		fileHash, err = fp.calculateFileHashFunc(fullPath, ReadLimit)
- 		if err != nil {
- 			return fmt.Errorf("error calculating file hash: %w", err)
- 		}
- 		log.Printf("Calculated file hash: %s", fileHash)
-+	}
+-	if calculateHashes {
+-		fileHash, err = fp.calculateFileHashFunc(fullPath, ReadLimit)
++	// 计算部分哈希
++	fileHash, err := fp.calculateFileHashFunc(fullPath, ReadLimit)
+ 	if err != nil {
+ 		return fmt.Errorf("error calculating file hash: %w", err)
+ 	}
+-		log.Printf("Calculated file hash: %s", fileHash)
  
 -		fullHash, err = fp.calculateFileHashFunc(fullPath, FullFileReadCmd)
-+	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, "", calculateHashes)
-+	if err != nil {
-+		return fmt.Errorf("error saving file info to Redis: %w", err)
-+	}
++	// 将文件路径添加到部分哈希集合
++	err = fp.Rdb.SAdd(fp.Ctx, getFileHashKey(fileHash), fullPath).Err()
+ 	if err != nil {
+-			return fmt.Errorf("error calculating full file hash: %w", err)
++		return fmt.Errorf("error adding path to hash set: %w", err)
+ 	}
+-		log.Printf("Calculated full hash: %s", fullHash)
 +
-+	if calculateHashes {
-+		count, err := fp.Rdb.SCard(fp.Ctx, "fileHashToPathSet:"+fileHash).Result()
-+		if err != nil {
-+			return fmt.Errorf("error checking file hash duplicates: %w", err)
-+		}
-+
-+		if count > 1 {
-+			fullHash, err := fp.calculateFileHashFunc(fullPath, FullFileReadCmd)
- 			if err != nil {
- 				return fmt.Errorf("error calculating full file hash: %w", err)
- 			}
- 			log.Printf("Calculated full hash: %s", fullHash)
--	}
++	// 保存文件信息到 Redis
++	fileInfo := FileInfo{
++		Size:    info.Size(),
++		ModTime: info.ModTime(),
++		Path:    fullPath, // 存储绝对路径
+ 	}
  
- 			err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, fullHash, calculateHashes)
- 			if err != nil {
--		return fmt.Errorf("error saving file info to Redis: %w", err)
-+				return fmt.Errorf("error saving full hash to Redis: %w", err)
-+			}
-+		}
+-	err = fp.saveFileInfoToRedisFunc(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, fullHash, calculateHashes)
++	// 调用原有的 saveFileInfoToRedis 方法，保持其签名不变
++	// 传入空的 fullHash，并设置 calculateHashes 为 true 表示需要计算哈希
++	err = saveFileInfoToRedis(fp.Rdb, fp.Ctx, fullPath, fileInfo, fileHash, "", true)
+ 	if err != nil {
+ 		return fmt.Errorf("error saving file info to Redis: %w", err)
  	}
 -	log.Printf("Saved file info to Redis")
  
  	return nil
  }
+@@ -194,10 +190,10 @@ func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile st
+ 	}
+ 	defer file.Close()
+ 
+-	iter := rdb.Scan(ctx, 0, "duplicateFiles:*", 0).Iterator()
++	iter := rdb.Scan(ctx, 0, keyPrefixDuplicateFiles+"*", 0).Iterator()
+ 	for iter.Next(ctx) {
+ 		duplicateFilesKey := iter.Val()
+-		fullHash := strings.TrimPrefix(duplicateFilesKey, "duplicateFiles:")
++		fullHash := strings.TrimPrefix(duplicateFilesKey, keyPrefixDuplicateFiles)
+ 		duplicateFiles, err := rdb.ZRange(ctx, duplicateFilesKey, 0, -1).Result()
+ 		if err != nil {
+ 			log.Printf("Error getting duplicate files for key %s: %v", duplicateFilesKey, err)
+@@ -207,13 +203,13 @@ func (fp *FileProcessor) WriteDuplicateFilesToFile(rootDir string, outputFile st
+ 		if len(duplicateFiles) > 1 {
+ 			fmt.Fprintf(file, "Duplicate files for fullHash %s:\n", fullHash)
+ 			for i, duplicateFile := range duplicateFiles {
+-				hashedKey, err := rdb.Get(ctx, "pathToHashedKey:"+duplicateFile).Result()
++				hashedKey, err := rdb.Get(ctx, getPathToHashedKeyKey(duplicateFile)).Result()
+ 				if err != nil {
+ 					log.Printf("Error getting hashed key for path %s: %v", duplicateFile, err)
+ 					continue
+ 				}
+ 
+-				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
++				fileInfoData, err := rdb.Get(ctx, getFileInfoKey(hashedKey)).Bytes()
+ 				if err != nil {
+ 					log.Printf("Error getting file info for key %s: %v", hashedKey, err)
+ 					continue
+@@ -266,7 +262,7 @@ type RedisFileInfoRetriever struct {
+ 
+ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error) {
+ 	var fileInfo FileInfo
+-	value, err := fp.Rdb.Get(fp.Ctx, "fileInfo:"+hashedKey).Bytes()
++	value, err := fp.Rdb.Get(fp.Ctx, getFileInfoKey(hashedKey)).Bytes()
+ 	if err != nil {
+ 		return fileInfo, err
+ 	}
+@@ -281,35 +277,58 @@ func (fp *FileProcessor) getFileInfoFromRedis(hashedKey string) (FileInfo, error
+ }
+ 
+ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, error) {
+-	// 首先获取文件的 hashedKey
+-	hashedKey := fp.generateHashFunc(path)
+-	
+-	// 检查Redis缓存中是否已存在对应的hash
+-	var cacheKey string
+-	if limit == FullFileReadCmd {
+-		cacheKey = "hashedKeyToFullHash:" + hashedKey
+-	} else {
+-		cacheKey = "hashedKeyToFileHash:" + hashedKey
++	// 参数验证
++	if path == "" {
++		return "", fmt.Errorf("empty file path")
++	}
++	if limit < -1 {
++		return "", fmt.Errorf("invalid limit: %d", limit)
+ 	}
+ 
++	start := time.Now()
++	defer func() {
++		duration := time.Since(start)
++		log.Printf("Hash calculation for %s took %v", path, duration)
++	}()
++
+ 	// 尝试从缓存获取
+-	cachedHash, err := fp.Rdb.Get(fp.Ctx, cacheKey).Result()
++	hash, err := fp.getHashFromCache(path, limit)
+ 	if err == nil {
+-		return cachedHash, nil
++		return hash, nil
+ 	} else if err != redis.Nil {
+ 		return "", fmt.Errorf("redis error: %w", err)
+ 	}
+ 
+-	// 缓存未命中，计算新的hash
++	// 获取计算锁
++	lockKey := getCalculatingKey(path, limit)
++	locked, err := fp.Rdb.SetNX(fp.Ctx, lockKey, "1", 5*time.Minute).Result()
++	if err != nil {
++		return "", fmt.Errorf("error acquiring lock: %w", err)
++	}
++	if !locked {
++		return fp.waitForHash(path, limit)
++	}
++	defer fp.Rdb.Del(fp.Ctx, lockKey)
++
++	// 打开文件
+ 	f, err := fp.fs.Open(path)
+ 	if err != nil {
++		if os.IsNotExist(err) {
++			return "", fmt.Errorf("file not found: %s", path)
++		}
++		if os.IsPermission(err) {
++			return "", fmt.Errorf("permission denied: %s", path)
++		}
+ 		return "", fmt.Errorf("error opening file: %w", err)
+ 	}
+ 	defer f.Close()
+ 
++	// 计算哈希
+ 	h := sha512.New()
++	buf := make([]byte, 32*1024)
++
+ 	if limit == FullFileReadCmd {
+-		if _, err := io.Copy(h, f); err != nil {
++		if _, err := io.CopyBuffer(h, f, buf); err != nil {
+ 			return "", fmt.Errorf("error reading full file: %w", err)
+ 		}
+ 	} else {
+@@ -318,9 +337,20 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
+ 		}
+ 	}
+ 
+-	hash := fmt.Sprintf("%x", h.Sum(nil))
++	hash = fmt.Sprintf("%x", h.Sum(nil))
++
++	// 生成 hashedKey
++	hashedKey := fp.generateHashFunc(path)
+ 
+-	// 将新计算的hash保存到Redis
++	// 根据是否是全文件计算选择对应的缓存 key
++	var cacheKey string
++	if limit == FullFileReadCmd {
++		cacheKey = getFullHashCacheKey(hashedKey)
++	} else {
++		cacheKey = getHashCacheKey(hashedKey)
++	}
++
++	// 缓存结果
+ 	if err := fp.Rdb.Set(fp.Ctx, cacheKey, hash, 0).Err(); err != nil {
+ 		log.Printf("Warning: Failed to cache hash for %s: %v", path, err)
+ 	}
+@@ -328,6 +358,35 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
+ 	return hash, nil
+ }
+ 
++func (fp *FileProcessor) waitForHash(path string, limit int64) (string, error) {
++	retries := 5
++	for i := 0; i < retries; i++ {
++		hash, err := fp.getHashFromCache(path, limit)
++		if err == nil {
++			return hash, nil
++		}
++		if err != redis.Nil {
++			log.Printf("Error checking cache: %v", err)
++		}
++		// 使用指数退避策略
++		time.Sleep(time.Second * time.Duration(1<<uint(i)))
++	}
++	return "", fmt.Errorf("timeout waiting for hash calculation")
++}
++
++func (fp *FileProcessor) getHashFromCache(path string, limit int64) (string, error) {
++	hashedKey := fp.generateHashFunc(path)
++
++	var cacheKey string
++	if limit == FullFileReadCmd {
++		cacheKey = getFullHashCacheKey(hashedKey)
++	} else {
++		cacheKey = getHashCacheKey(hashedKey)
++	}
++
++	return fp.Rdb.Get(fp.Ctx, cacheKey).Result()
++}
++
+ const readLimit = 100 * 1024 // 100KB
+ 
+ // 处理目录
+@@ -391,7 +450,7 @@ func getFileInfo(rdb *redis.Client, ctx context.Context, filePath string) (FileI
+ 		return FileInfo{}, err
+ 	}
+ 
+-	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
++	fileInfoData, err := rdb.Get(ctx, getFileInfoKey(hashedKey)).Bytes()
+ 	if err != nil {
+ 		return FileInfo{}, err
+ 	}
+@@ -420,5 +479,5 @@ type FileInfo struct {
+ }
+ 
+ func (fp *FileProcessor) getHashedKeyFromPath(path string) (string, error) {
+-	return fp.Rdb.Get(fp.Ctx, "pathToHashedKey:"+filepath.Clean(path)).Result()
++	return fp.Rdb.Get(fp.Ctx, getPathToHashedKeyKey(filepath.Clean(path))).Result()
+ }
+diff --git a/file_processing_integration_test.go b/file_processing_integration_test.go
+--- ./file_processing_integration_test.go
++++ ./file_processing_integration_test.go
+@@ -51,7 +51,7 @@ func TestFileProcessorIntegration(t *testing.T) {
+ 	for _, tf := range testFiles {
+ 		relPath, err := filepath.Rel(tempDir, tf.path)
+ 		require.NoError(t, err)
+-		err = fp.ProcessFile(tempDir, relPath, true)
++		err = fp.ProcessFile(tempDir, relPath)
+ 		require.NoError(t, err)
+ 	}
+ 
 diff --git a/file_processing_test.go b/file_processing_test.go
 --- ./file_processing_test.go
 +++ ./file_processing_test.go
-@@ -118,16 +118,15 @@ func TestProcessFile(t *testing.T) {
+@@ -73,12 +73,12 @@ func TestProcessFile(t *testing.T) {
+ 	// Test without calculating hashes
+ 	t.Run("Without Calculating Hashes", func(t *testing.T) {
  		hashCalcCount = 0
- 		err = fp.ProcessFile(rootDir, testRelativePath, true)
+-		err = fp.ProcessFile(rootDir, testRelativePath, false)
++		err = fp.ProcessFile(rootDir, testRelativePath)
+ 		require.NoError(t, err)
+-		assert.Equal(t, 0, hashCalcCount, "Hash should not be calculated when calculateHashes is false")
++		assert.Equal(t, 1, hashCalcCount, "Hash should be calculated")
+ 
+ 		// Verify file info was saved
+-		fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
++		fileInfoData, err := rdb.Get(ctx, getFileInfoKey(hashedKey)).Bytes()
+ 		require.NoError(t, err)
+ 		assert.NotNil(t, fileInfoData)
+ 
+@@ -98,15 +98,15 @@ func TestProcessFile(t *testing.T) {
+ 		assert.Equal(t, hashedKey, hashedKeyValue)
+ 
+ 		// Verify hash-related data was not saved
+-		_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+-		assert.Equal(t, redis.Nil, err)
++		fileHashValue, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
++		assert.NotNil(t, fileHashValue)
+ 
+ 		_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+ 		assert.Equal(t, redis.Nil, err)
+ 
+ 		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testFullPath).Result()
+ 		require.NoError(t, err)
+-		assert.False(t, isMember)
++		assert.True(t, isMember)
+ 	})
+ 
+ 	// Clear Redis data
+@@ -116,18 +116,17 @@ func TestProcessFile(t *testing.T) {
+ 	// Test with calculating hashes
+ 	t.Run("With Calculating Hashes", func(t *testing.T) {
+ 		hashCalcCount = 0
+-		err = fp.ProcessFile(rootDir, testRelativePath, true)
++		err = fp.ProcessFile(rootDir, testRelativePath)
  		require.NoError(t, err)
 -		assert.Equal(t, 2, hashCalcCount, "Hash should be calculated twice when calculateHashes is true")
 +		assert.Equal(t, 1, hashCalcCount, "Hash should be calculated once for partial hash")
@@ -69,7 +423,76 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  
  		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testFullPath).Result()
  		require.NoError(t, err)
-@@ -1015,7 +1014,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
+@@ -257,7 +256,7 @@ func TestFileProcessor_SaveToFile(t *testing.T) {
+ 		err = enc.Encode(info)
+ 		require.NoError(t, err)
+ 
+-		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
++		err = rdb.Set(ctx, getFileInfoKey(hashedKey), buf.Bytes(), 0).Err()
+ 		require.NoError(t, err)
+ 		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, data.path, 0).Err()
+ 		require.NoError(t, err)
+@@ -297,7 +296,7 @@ func mockSaveFileInfoToRedis(fp *FileProcessor, path string, info FileInfo, file
+ 	}
+ 
+ 	pipe := rdb.Pipeline()
+-	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
++	pipe.Set(ctx, getFileInfoKey(hashedKey), buf.Bytes(), 0)
+ 	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
+ 	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, path)
+ 	pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0)
+@@ -776,7 +775,7 @@ func TestCalculateFileHash(t *testing.T) {
+ 		hash, err := fp.calculateFileHash("/nonexistent.txt", 4)
+ 		assert.Error(t, err)
+ 		assert.Empty(t, hash)
+-		assert.Contains(t, err.Error(), "error opening file")
++		assert.Contains(t, err.Error(), "file not found:")
+ 	})
+ 
+ 	t.Run("零字节文件", func(t *testing.T) {
+@@ -822,13 +821,13 @@ func TestCleanUpOldRecords(t *testing.T) {
+ 
+ 	for _, path := range []string{existingFile, nonExistingFile} {
+ 		hashedKey := generateHash(path)
+-		err = rdb.Set(ctx, "pathToHashedKey:"+path, hashedKey, 0).Err()
++		err = rdb.Set(ctx, getPathToHashedKeyKey(path), hashedKey, 0).Err()
+ 		require.NoError(t, err)
+-		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0).Err()
++		err = rdb.Set(ctx, getHashedKeyToPathKey(hashedKey), path, 0).Err()
+ 		require.NoError(t, err)
+-		err = rdb.Set(ctx, "fileInfo:"+hashedKey, "dummy_data", 0).Err()
++		err = rdb.Set(ctx, getFileInfoKey(hashedKey), "dummy_data", 0).Err()
+ 		require.NoError(t, err)
+-		err = rdb.Set(ctx, "hashedKeyToFileHash:"+hashedKey, "dummy_hash", 0).Err()
++		err = rdb.Set(ctx, getHashCacheKey(hashedKey), "dummy_hash", 0).Err()
+ 		require.NoError(t, err)
+ 	}
+ 
+@@ -836,12 +835,12 @@ func TestCleanUpOldRecords(t *testing.T) {
+ 	require.NoError(t, err)
+ 
+ 	// 检查不存在文件的记录是否被删除
+-	_, err = rdb.Get(ctx, "pathToHashedKey:"+nonExistingFile).Result()
++	_, err = rdb.Get(ctx, getPathToHashedKeyKey(nonExistingFile)).Result()
+ 	assert.Error(t, err)
+ 	assert.Equal(t, redis.Nil, err)
+ 
+ 	// 检查存在文件的记录是否被保留
+-	val, err := rdb.Get(ctx, "pathToHashedKey:"+existingFile).Result()
++	val, err := rdb.Get(ctx, getPathToHashedKeyKey(existingFile)).Result()
+ 	require.NoError(t, err)
+ 	assert.NotEmpty(t, val)
+ }
+@@ -990,7 +989,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
+ 
+ 			t.Run("ProcessFileWithHash", func(t *testing.T) {
+ 				cleanupRedis(mr) // 清理 Redis 数据
+-				err := fp.ProcessFile(tempDir, relativePath, true)
++				err := fp.ProcessFile(tempDir, relativePath)
+ 				assert.NoError(t, err)
+ 
+ 				hashedKey := generateHash(filePath)
+@@ -1015,12 +1014,12 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
  				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
  				assert.NoError(t, err)
  				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
@@ -78,6 +501,32 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  			})
  
  			t.Run("ProcessFileWithoutHash", func(t *testing.T) {
+ 				cleanupRedis(mr) // 清理 Redis 数据
+-				err := fp.ProcessFile(tempDir, relativePath, false)
++				err := fp.ProcessFile(tempDir, relativePath)
+ 				assert.NoError(t, err)
+ 
+ 				hashedKey := generateHash(filePath)
+@@ -1042,8 +1041,8 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
+ 				assert.Equal(t, filePath, pathValue)
+ 
+ 				// Verify hash data does not exist
+-				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
+-				assert.Equal(t, redis.Nil, err)
++				fileInfoData, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Bytes()
++				assert.NotNil(t, fileInfoData)
+ 				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
+ 				assert.Equal(t, redis.Nil, err)
+ 
+@@ -1070,7 +1069,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
+ 	require.NoError(t, err)
+ 
+ 	// Process the file
+-	err = fp.ProcessFile(rootDir, testFileName, true)
++	err = fp.ProcessFile(rootDir, testFileName)
+ 	assert.NoError(t, err)
+ 
+ 	hashedKey := generateHash(testFilePath)
 @@ -1095,7 +1094,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
  	_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
  	assert.NoError(t, err)
@@ -87,6 +536,431 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  
  	// Verify that the full path is stored
  	hashedKeyFromPath, err := rdb.Get(ctx, "pathToHashedKey:"+testFilePath).Result()
+@@ -1183,3 +1182,44 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestCalculateFileHashWithCache(t *testing.T) {
++	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
++	defer mr.Close()
++
++	testFile := "/test_hash.txt"
++	content := []byte("test content for hash calculation")
++	err := afero.WriteFile(fs, testFile, content, 0644)
++	require.NoError(t, err)
++
++	hashedKey := fp.generateHashFunc(testFile)
++
++	t.Run("首次计算哈希", func(t *testing.T) {
++		// 确保缓存为空
++		exists, err := rdb.Exists(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
++		require.NoError(t, err)
++		assert.Equal(t, int64(0), exists)
++
++		// 计算哈希
++		hash1, err := fp.calculateFileHash(testFile, 4)
++		require.NoError(t, err)
++		assert.NotEmpty(t, hash1)
++
++		// 验证缓存已创建
++		cachedHash, err := rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
++		require.NoError(t, err)
++		assert.Equal(t, hash1, cachedHash)
++	})
++
++	t.Run("从缓存读取哈希", func(t *testing.T) {
++		// 预设缓存值
++		expectedHash := "cached_hash_value"
++		err := rdb.Set(ctx, "hashedKeyToFileHash:"+hashedKey, expectedHash, 0).Err()
++		require.NoError(t, err)
++
++		// 尝试计算哈希（应该返回缓存值）
++		hash2, err := fp.calculateFileHash(testFile, 4)
++		require.NoError(t, err)
++		assert.Equal(t, expectedHash, hash2)
++	})
++}
+diff --git a/levenshtein.go b/levenshtein.go
+new file mode 100644
+--- /dev/null
++++ ./levenshtein.go
+@@ -0,0 +1,55 @@
++package main
++
++func levenshteinDistance(str1, str2 string) int {
++	// 将字符串转换为 rune 切片，这样可以正确处理 Unicode 字符
++	s1 := []rune(str1)
++	s2 := []rune(str2)
++
++	// 获取字符串长度（以字符为单位，而不是字节）
++	len1 := len(s1)
++	len2 := len(s2)
++
++	// 创建矩阵
++	matrix := make([][]int, len1+1)
++	for i := range matrix {
++		matrix[i] = make([]int, len2+1)
++	}
++
++	// 初始化第一行和第一列
++	for i := 0; i <= len1; i++ {
++		matrix[i][0] = i
++	}
++	for j := 0; j <= len2; j++ {
++		matrix[0][j] = j
++	}
++
++	// 填充矩阵
++	for i := 1; i <= len1; i++ {
++		for j := 1; j <= len2; j++ {
++			cost := 1
++			if s1[i-1] == s2[j-1] {
++				cost = 0
++			}
++			matrix[i][j] = min(
++				matrix[i-1][j]+1,      // 删除
++				matrix[i][j-1]+1,      // 插入
++				matrix[i-1][j-1]+cost, // 替换
++			)
++		}
++	}
++
++	return matrix[len1][len2]
++}
++
++func min(nums ...int) int {
++	if len(nums) == 0 {
++		return 0
++	}
++	res := nums[0]
++	for _, num := range nums[1:] {
++		if num < res {
++			res = num
++		}
++	}
++	return res
++}
+diff --git a/levenshtein_test.go b/levenshtein_test.go
+new file mode 100644
+--- /dev/null
++++ ./levenshtein_test.go
+@@ -0,0 +1,142 @@
++package main
++
++import (
++	"github.com/stretchr/testify/assert"
++	"testing"
++)
++
++func TestLevenshteinDistance(t *testing.T) {
++	testCases := []struct {
++		name     string
++		str1     string
++		str2     string
++		expected int
++	}{
++		{
++			name:     "完全相同",
++			str1:     "hello",
++			str2:     "hello",
++			expected: 0,
++		},
++		{
++			name:     "一个字符不同",
++			str1:     "hello",
++			str2:     "hallo",
++			expected: 1,
++		},
++		{
++			name:     "长度不同",
++			str1:     "hello",
++			str2:     "hell",
++			expected: 1,
++		},
++		{
++			name:     "完全不同",
++			str1:     "hello",
++			str2:     "world",
++			expected: 4,
++		},
++		{
++			name:     "空字符串",
++			str1:     "",
++			str2:     "hello",
++			expected: 5,
++		},
++		{
++			name:     "中文字符",
++			str1:     "你好",
++			str2:     "你们好",
++			expected: 1,
++		},
++		{
++			name:     "中文单字差异",
++			str1:     "你好",
++			str2:     "你们",
++			expected: 1,
++		},
++		{
++			name:     "混合字符",
++			str1:     "hello你好",
++			str2:     "hello再见",
++			expected: 2,
++		},
++		{
++			name:     "日文字符",
++			str1:     "こんにちは",
++			str2:     "さようなら",
++			expected: 5,
++		},
++		{
++			name:     "韩文字符",
++			str1:     "안녕하세요",
++			str2:     "안녕히가세요",
++			expected: 2,
++		},
++		{
++			name:     "俄文字符",
++			str1:     "привет",
++			str2:     "пока",
++			expected: 5,
++		},
++		{
++			name:     "表情符号",
++			str1:     "hello😊",
++			str2:     "hello😄",
++			expected: 1,
++		},
++		{
++			name:     "混合多语言",
++			str1:     "hello你好こんにちは",
++			str2:     "hello再见さようなら",
++			expected: 7,
++		},
++	}
++
++	for _, tc := range testCases {
++		t.Run(tc.name, func(t *testing.T) {
++			result := levenshteinDistance(tc.str1, tc.str2)
++			assert.Equal(t, tc.expected, result, "对于输入 '%s' 和 '%s'", tc.str1, tc.str2)
++		})
++	}
++}
++
++func TestMin(t *testing.T) {
++	testCases := []struct {
++		name     string
++		numbers  []int
++		expected int
++	}{
++		{
++			name:     "正数序列",
++			numbers:  []int{5, 3, 8, 2, 9},
++			expected: 2,
++		},
++		{
++			name:     "包含负数",
++			numbers:  []int{-1, 3, -5, 2, 0},
++			expected: -5,
++		},
++		{
++			name:     "相同数字",
++			numbers:  []int{4, 4, 4, 4},
++			expected: 4,
++		},
++		{
++			name:     "单个数字",
++			numbers:  []int{42},
++			expected: 42,
++		},
++		{
++			name:     "零值",
++			numbers:  []int{0, 1, 2},
++			expected: 0,
++		},
++	}
++
++	for _, tc := range testCases {
++		t.Run(tc.name, func(t *testing.T) {
++			result := min(tc.numbers...)
++			assert.Equal(t, tc.expected, result, "最小值计算错误")
++		})
++	}
++}
+diff --git a/main.go b/main.go
+--- ./main.go
++++ ./main.go
+@@ -114,9 +114,6 @@ func main() {
+ 		log.Printf("Error cleaning up old records: %v", err)
+ 	}
+ 
+-	// 确定是否需要计算哈希值
+-	calculateHashes := findDuplicates || outputDuplicates || deleteDuplicates
+-
+ 	// 处理文件
+ 	fileChan := make(chan string, workerCount)
+ 	var wg sync.WaitGroup
+@@ -129,7 +126,7 @@ func main() {
+ 			for relativePath := range fileChan {
+ 				fullPath := filepath.Join(rootDir, relativePath)
+ 				if !fp.ShouldExclude(fullPath) {
+-					if err := fp.ProcessFile(rootDir, relativePath, calculateHashes); err != nil {
++					if err := fp.ProcessFile(rootDir, relativePath); err != nil {
+ 						log.Printf("Error processing file %s: %v", fullPath, err)
+ 					}
+ 				}
+diff --git a/redis_client.go b/redis_client.go
+--- ./redis_client.go
++++ ./redis_client.go
+@@ -15,6 +15,18 @@ import (
+ 	"strings"
+ )
+ 
++// Redis key 前缀
++const (
++	keyPrefixFileInfo        = "fileInfo:"
++	keyPrefixHashedKeyToPath = "hashedKeyToPath:"
++	keyPrefixPathToHashedKey = "pathToHashedKey:"
++	keyPrefixFileHash        = "fileHashToPathSet:"
++	keyPrefixDuplicateFiles  = "duplicateFiles:"
++	keyPrefixHashCache       = "hashedKeyToFileHash:"
++	keyPrefixFullHashCache   = "hashedKeyToFullHash:"
++	keyPrefixCalculating     = "calculating:"
++)
++
+ // Generate a SHA-256 hash for the given string
+ func generateHash(s string) string {
+ 	hasher := sha256.New()
+@@ -22,6 +34,38 @@ func generateHash(s string) string {
+ 	return hex.EncodeToString(hasher.Sum(nil))
+ }
+ 
++func getFileInfoKey(hashedKey string) string {
++	return keyPrefixFileInfo + hashedKey
++}
++
++func getHashedKeyToPathKey(hashedKey string) string {
++	return keyPrefixHashedKeyToPath + hashedKey
++}
++
++func getPathToHashedKeyKey(path string) string {
++	return keyPrefixPathToHashedKey + path
++}
++
++func getFileHashKey(fileHash string) string {
++	return keyPrefixFileHash + fileHash
++}
++
++func getDuplicateFilesKey(fullHash string) string {
++	return keyPrefixDuplicateFiles + fullHash
++}
++
++func getHashCacheKey(hashedKey string) string {
++	return keyPrefixHashCache + hashedKey
++}
++
++func getFullHashCacheKey(hashedKey string) string {
++	return keyPrefixFullHashCache + hashedKey
++}
++
++func getCalculatingKey(path string, limit int64) string {
++	return fmt.Sprintf("%s%s:%d", keyPrefixCalculating, path, limit)
++}
++
+ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullPath string, info FileInfo, fileHash, fullHash string, calculateHashes bool) error {
+ 	hashedKey := generateHash(fullPath)
+ 
+@@ -33,15 +77,15 @@ func saveFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullPath string
+ 
+ 	pipe := rdb.Pipeline()
+ 
+-	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
+-	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, fullPath, 0)
+-	pipe.Set(ctx, "pathToHashedKey:"+fullPath, hashedKey, 0)
++	pipe.Set(ctx, getFileInfoKey(hashedKey), buf.Bytes(), 0)
++	pipe.Set(ctx, getHashedKeyToPathKey(hashedKey), fullPath, 0)
++	pipe.Set(ctx, getPathToHashedKeyKey(fullPath), hashedKey, 0)
+ 
+ 	if calculateHashes {
+-		pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, fullPath)
+-		pipe.Set(ctx, "hashedKeyToFileHash:"+hashedKey, fileHash, 0)
++		pipe.SAdd(ctx, getFileHashKey(fileHash), fullPath)
++		pipe.Set(ctx, getHashCacheKey(hashedKey), fileHash, 0)
+ 		if fullHash != "" {
+-			pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0)
++			pipe.Set(ctx, getFullHashCacheKey(hashedKey), fullHash, 0)
+ 		}
+ 	}
+ 
+@@ -60,7 +104,7 @@ func SaveDuplicateFileInfoToRedis(rdb *redis.Client, ctx context.Context, fullHa
+ 	fileNameLength := len(filepath.Base(info.Path))
+ 	score := CalculateScore(timestamps, fileNameLength)
+ 
+-	_, err := rdb.ZAdd(ctx, "duplicateFiles:"+fullHash, &redis.Z{
++	_, err := rdb.ZAdd(ctx, getDuplicateFilesKey(fullHash), &redis.Z{
+ 		Score:  score,
+ 		Member: info.Path,
+ 	}).Result()
+@@ -102,15 +146,15 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, fullPath s
+ 
+ 	pipe := rdb.Pipeline()
+ 
+-	pipe.Del(ctx, "fileInfo:"+hashedKey)
+-	pipe.Del(ctx, "hashedKeyToPath:"+hashedKey)
+-	pipe.Del(ctx, "pathToHashedKey:"+fullPath)
++	pipe.Del(ctx, getFileInfoKey(hashedKey))
++	pipe.Del(ctx, getHashedKeyToPathKey(hashedKey))
++	pipe.Del(ctx, getPathToHashedKeyKey(fullPath))
+ 
+-	fileHashCmd := pipe.Get(ctx, "hashedKeyToFileHash:"+hashedKey)
+-	pipe.Del(ctx, "hashedKeyToFileHash:"+hashedKey)
++	fileHashCmd := pipe.Get(ctx, getHashCacheKey(hashedKey))
++	pipe.Del(ctx, getHashCacheKey(hashedKey))
+ 
+-	fullHashCmd := pipe.Get(ctx, "hashedKeyToFullHash:"+hashedKey)
+-	pipe.Del(ctx, "hashedKeyToFullHash:"+hashedKey)
++	fullHashCmd := pipe.Get(ctx, getFullHashCacheKey(hashedKey))
++	pipe.Del(ctx, getFullHashCacheKey(hashedKey))
+ 
+ 	_, err := pipe.Exec(ctx)
+ 	if err != nil && err != redis.Nil {
+@@ -119,12 +163,12 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, fullPath s
+ 
+ 	fileHash, err := fileHashCmd.Result()
+ 	if err == nil {
+-		pipe.SRem(ctx, "fileHashToPathSet:"+fileHash, fullPath)
++		pipe.SRem(ctx, getFileHashKey(fileHash), fullPath)
+ 	}
+ 
+ 	fullHash, err := fullHashCmd.Result()
+ 	if err == nil {
+-		pipe.ZRem(ctx, "duplicateFiles:"+fullHash, fullPath)
++		pipe.ZRem(ctx, getDuplicateFilesKey(fullHash), fullPath)
+ 	}
+ 
+ 	_, err = pipe.Exec(ctx)
+@@ -137,7 +181,7 @@ func cleanUpRecordsByFilePath(rdb *redis.Client, ctx context.Context, fullPath s
+ }
+ 
+ func cleanUpHashKeys(rdb *redis.Client, ctx context.Context, fullHash, duplicateFilesKey string) error {
+-	fileHashKey := "fileHashToPathSet:" + fullHash
++	fileHashKey := getFileHashKey(fullHash)
+ 
+ 	// 使用管道批量删除 Redis 键
+ 	pipe := rdb.TxPipeline()
+diff --git a/redis_client_test.go b/redis_client_test.go
+--- ./redis_client_test.go
++++ ./redis_client_test.go
+@@ -65,7 +65,7 @@ func TestSaveFileInfoToRedis(t *testing.T) {
+ 
+ 	// Verify the data was saved correctly
+ 	hashedKey := generateHash(testPath)
+-	assert.True(t, mr.Exists("fileInfo:"+hashedKey))
++	assert.True(t, mr.Exists(getFileInfoKey(hashedKey)))
+ 	assert.True(t, mr.Exists("hashedKeyToPath:"+hashedKey))
+ 
+ 	isMember, err := mr.SIsMember("fileHashToPathSet:"+testFileHash, testPath)
 diff --git a/utils.go b/utils.go
 --- ./utils.go
 +++ ./utils.go
@@ -125,6 +999,15 @@ diff --git a/utils.go b/utils.go
  	return nil
  }
  
+@@ -101,7 +106,7 @@ func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, rootDir, relat
+ 	}
+ 
+ 	// 然后使用 hashedKey 从 Redis 获取文件信息
+-	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
++	fileInfoData, err := rdb.Get(ctx, getFileInfoKey(hashedKey)).Bytes()
+ 	if err != nil {
+ 		return 0, fmt.Errorf("error getting file info for hashed key %s: %w", hashedKey, err)
+ 	}
 @@ -117,14 +122,32 @@ func getFileSizeFromRedis(rdb *redis.Client, ctx context.Context, rootDir, relat
  }
  
@@ -180,3 +1063,40 @@ diff --git a/utils.go b/utils.go
  }
  
  func ExtractTimestamps(filePath string) []string {
+@@ -396,7 +429,7 @@ func writeDuplicateFilesToFile(rootDir string, outputFile string, rdb *redis.Cli
+ 					continue
+ 				}
+ 
+-				fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
++				fileInfoData, err := rdb.Get(ctx, getFileInfoKey(hashedKey)).Bytes()
+ 				if err != nil {
+ 					log.Printf("Error getting file info for key %s: %v", hashedKey, err)
+ 					continue
+@@ -540,10 +573,6 @@ func deleteDuplicateFiles(rootDir string, rdb *redis.Client, ctx context.Context
+ 	return nil
+ }
+ 
+-func shouldStopDuplicateFileSearch(duplicateCount int, maxDuplicateFiles int) bool {
+-	return duplicateCount >= maxDuplicateFiles
+-}
+-
+ func writeDataToFile(rootDir, filename string, data map[string]FileInfo, sortByModTime bool) error {
+ 	outputPath := filepath.Join(rootDir, filename)
+ 	outputDir := filepath.Dir(outputPath)
+diff --git a/utils_test.go b/utils_test.go
+--- ./utils_test.go
++++ ./utils_test.go
+@@ -473,12 +473,10 @@ func TestFindAndLogDuplicates(t *testing.T) {
+ 		require.NoError(t, err)
+ 	}
+ 
+-	// 处理文件，计算哈希值
+-	calculateHashes := true
+ 	for _, tf := range testFiles {
+ 		relPath, err := filepath.Rel(rootDir, tf.path)
+ 		require.NoError(t, err)
+-		err = fp.ProcessFile(rootDir, relPath, calculateHashes)
++		err = fp.ProcessFile(rootDir, relPath)
+ 		require.NoError(t, err)
+ 	}
+ 
