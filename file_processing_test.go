@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1510,4 +1511,59 @@ func TestHashCalculationLocking(t *testing.T) {
 		assert.Error(t, errors[i])
 		assert.Contains(t, errors[i].Error(), "timeout waiting for hash calculation")
 	}
+}
+
+func TestLargeFileHashing(t *testing.T) {
+	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
+	defer mr.Close()
+
+	testFile := "/large_file.bin"
+	size := int64(100 * 1024 * 1024) // 100MB
+	err := createLargeFile(fs, testFile, size)
+	require.NoError(t, err)
+
+	// 测试部分哈希计算
+	partialHash, err := fp.calculateFileHash(testFile, 1024*1024)
+	require.NoError(t, err)
+	assert.NotEmpty(t, partialHash)
+
+	// 测试完整哈希计算
+	fullHash, err := fp.calculateFileHash(testFile, -1)
+	require.NoError(t, err)
+	assert.NotEmpty(t, fullHash)
+	assert.NotEqual(t, partialHash, fullHash)
+
+	// 验证缓存
+	hashedKey := fp.generateHashFunc(testFile)
+	cachedPartialHash, err := rdb.Get(ctx, getHashCacheKey(hashedKey)).Result()
+	require.NoError(t, err)
+	assert.Equal(t, partialHash, cachedPartialHash)
+
+	cachedFullHash, err := rdb.Get(ctx, getFullHashCacheKey(hashedKey)).Result()
+	require.NoError(t, err)
+	assert.Equal(t, fullHash, cachedFullHash)
+}
+
+func createLargeFile(fs afero.Fs, path string, size int64) error {
+	f, err := fs.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// 使用随机数据填充文件
+	buf := make([]byte, 1024*1024)
+	remaining := size
+	for remaining > 0 {
+		writeSize := int64(len(buf))
+		if remaining < writeSize {
+			writeSize = remaining
+		}
+		rand.Read(buf[:writeSize])
+		if _, err := f.Write(buf[:writeSize]); err != nil {
+			return err
+		}
+		remaining -= writeSize
+	}
+	return nil
 }
