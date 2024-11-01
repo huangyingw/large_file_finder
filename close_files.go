@@ -8,7 +8,10 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"regexp"
 )
+
+var movieCodePattern = regexp.MustCompile(`(?i)([a-z]+-\d+)`)
 
 type CloseFileFinder struct {
 	rootDir     string
@@ -120,23 +123,39 @@ func (cf *CloseFileFinder) findCloseFiles(files []string) []similarityResult {
 
 // 计算两个文件名的相似度
 func calculateSimilarity(name1, name2 string) float64 {
-	// 移除扩展名
+	// 先尝试提取番号
+	code1 := extractMovieCode(name1)
+	code2 := extractMovieCode(name2)
+	
+	// 如果两个文件都有番号且相同，则返回最高相似度
+	if code1 != "" && code2 != "" && code1 == code2 {
+		return 1.0
+	}
+	
+	// 如果没有匹配到番号，使用原有的相似度计算逻辑
 	name1 = strings.TrimSuffix(name1, filepath.Ext(name1))
 	name2 = strings.TrimSuffix(name2, filepath.Ext(name2))
-
-	// 转换为小写进行比较
+	
 	name1 = strings.ToLower(name1)
 	name2 = strings.ToLower(name2)
-
-	// 使用 Levenshtein 距离计算相似度
+	
 	distance := levenshteinDistance(name1, name2)
 	maxLen := float64(max(len(name1), len(name2)))
-
+	
 	if maxLen == 0 {
 		return 0
 	}
-
+	
 	return 1 - float64(distance)/maxLen
+}
+
+// 提取并标准化电影番号
+func extractMovieCode(fileName string) string {
+	matches := movieCodePattern.FindStringSubmatch(fileName)
+	if len(matches) > 1 {
+		return strings.ToUpper(matches[1]) // 转换为大写以便统一比较
+	}
+	return ""
 }
 
 // 写入结果到 fav.log.close
