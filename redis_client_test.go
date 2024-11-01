@@ -65,7 +65,7 @@ func TestSaveFileInfoToRedis(t *testing.T) {
 
 	// Verify the data was saved correctly
 	hashedKey := generateHash(testPath)
-	assert.True(t, mr.Exists("fileInfo:"+hashedKey))
+	assert.True(t, mr.Exists(getFileInfoKey(hashedKey)))
 	assert.True(t, mr.Exists("hashedKeyToPath:"+hashedKey))
 
 	isMember, err := mr.SIsMember("fileHashToPathSet:"+testFileHash, testPath)
