@@ -1473,3 +1473,41 @@ func TestHashCacheConsistency(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, hash1, hash3, "文件内容改变后，新的哈希值应该不同")
 }
+
+func TestHashCalculationLocking(t *testing.T) {
+	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
+	defer mr.Close()
+
+	testFile := "/test_lock.txt"
+	content := []byte("test content for lock testing")
+	err := afero.WriteFile(fs, testFile, content, 0644)
+	require.NoError(t, err)
+
+	// 模拟计算锁
+	lockKey := getCalculatingKey(testFile, 100)
+	err = rdb.Set(ctx, lockKey, "1", 5*time.Second).Err()
+	require.NoError(t, err)
+
+	// 启动多个并发计算
+	var wg sync.WaitGroup
+	results := make([]string, 3)
+	errors := make([]error, 3)
+
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			hash, err := fp.calculateFileHash(testFile, 100)
+			results[index] = hash
+			errors[index] = err
+		}(i)
+	}
+
+	wg.Wait()
+
+	// 验证所有并发请求是否都等待了锁
+	for i := 0; i < 3; i++ {
+		assert.Error(t, errors[i])
+		assert.Contains(t, errors[i].Error(), "timeout waiting for hash calculation")
+	}
+}
