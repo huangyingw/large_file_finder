@@ -1441,3 +1441,35 @@ func TestPartialVsFullHash(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, fullHash, cachedFullHash)
 }
+
+func TestHashCacheConsistency(t *testing.T) {
+	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
+	defer mr.Close()
+
+	testFile := "/test_consistency.txt"
+	content := []byte("test content for consistency check")
+	err := afero.WriteFile(fs, testFile, content, 0644)
+	require.NoError(t, err)
+
+	// 第一次计算，应该写入缓存
+	hash1, err := fp.calculateFileHash(testFile, 100)
+	require.NoError(t, err)
+
+	// 修改文件内容
+	err = afero.WriteFile(fs, testFile, []byte("modified content"), 0644)
+	require.NoError(t, err)
+
+	// 第二次计算，应该返回缓存的值
+	hash2, err := fp.calculateFileHash(testFile, 100)
+	require.NoError(t, err)
+	assert.Equal(t, hash1, hash2, "应该返回缓存的哈希值")
+
+	// 清除缓存后重新计算
+	hashedKey := fp.generateHashFunc(testFile)
+	err = rdb.Del(ctx, getHashCacheKey(hashedKey)).Err()
+	require.NoError(t, err)
+
+	hash3, err := fp.calculateFileHash(testFile, 100)
+	require.NoError(t, err)
+	assert.NotEqual(t, hash1, hash3, "文件内容改变后，新的哈希值应该不同")
+}
