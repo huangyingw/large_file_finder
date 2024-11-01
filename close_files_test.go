@@ -222,3 +222,44 @@ func TestCloseFileFinderWithEmptyFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, string(content))
 }
+
+func TestCalculateSimilarityWithMovieCodes(t *testing.T) {
+	testCases := []struct {
+		name     string
+		file1    string
+		file2    string
+		expected float64
+	}{
+		{
+			name:     "相同番号不同大小写",
+			file1:    "abp-0441 video.mp4",
+			file2:    "ABP-0441 movie.mkv",
+			expected: 1.0,
+		},
+		{
+			name:     "相同番号带其他文字",
+			file1:    "my favorite ABP-0441.mp4",
+			file2:    "[subgroup] abp-0441 1080p.mkv",
+			expected: 1.0,
+		},
+		{
+			name:     "不同番号",
+			file1:    "ABP-0441.mp4",
+			file2:    "ABP-0442.mp4",
+			expected: 0.875,
+		},
+		{
+			name:     "一个文件没有番号",
+			file1:    "ABP-0441.mp4",
+			file2:    "normal_video.mp4",
+			expected: 0.08333333333333337,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			score := calculateSimilarity(tc.file1, tc.file2)
+			assert.InDelta(t, tc.expected, score, 0.01)
+		})
+	}
+}
