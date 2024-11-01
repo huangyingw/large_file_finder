@@ -365,7 +365,31 @@ diff --git a/file_processing_integration_test.go b/file_processing_integration_t
 diff --git a/file_processing_test.go b/file_processing_test.go
 --- ./file_processing_test.go
 +++ ./file_processing_test.go
-@@ -73,12 +73,12 @@ func TestProcessFile(t *testing.T) {
+@@ -7,18 +7,17 @@ import (
+ 	"context"
+ 	"encoding/gob"
+ 	"fmt"
+-	"io/ioutil"
+-	"os"
+-	"path/filepath"
+-	"testing"
+-	"time"
+-
+ 	"github.com/alicebob/miniredis/v2"
+ 	"github.com/go-redis/redis/v8"
+ 	"github.com/go-redis/redismock/v8"
+ 	"github.com/spf13/afero"
+ 	"github.com/stretchr/testify/assert"
+ 	"github.com/stretchr/testify/require"
++	"io/ioutil"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
+ )
+ 
+ func setupTestEnvironment(t *testing.T) (*miniredis.Miniredis, *redis.Client, context.Context, afero.Fs, *FileProcessor) {
+@@ -73,12 +72,12 @@ func TestProcessFile(t *testing.T) {
  	// Test without calculating hashes
  	t.Run("Without Calculating Hashes", func(t *testing.T) {
  		hashCalcCount = 0
@@ -381,7 +405,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  		require.NoError(t, err)
  		assert.NotNil(t, fileInfoData)
  
-@@ -98,15 +98,15 @@ func TestProcessFile(t *testing.T) {
+@@ -98,15 +97,15 @@ func TestProcessFile(t *testing.T) {
  		assert.Equal(t, hashedKey, hashedKeyValue)
  
  		// Verify hash-related data was not saved
@@ -400,7 +424,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  	})
  
  	// Clear Redis data
-@@ -116,18 +116,17 @@ func TestProcessFile(t *testing.T) {
+@@ -116,18 +115,17 @@ func TestProcessFile(t *testing.T) {
  	// Test with calculating hashes
  	t.Run("With Calculating Hashes", func(t *testing.T) {
  		hashCalcCount = 0
@@ -423,7 +447,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  
  		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testFullPath).Result()
  		require.NoError(t, err)
-@@ -257,7 +256,7 @@ func TestFileProcessor_SaveToFile(t *testing.T) {
+@@ -257,7 +255,7 @@ func TestFileProcessor_SaveToFile(t *testing.T) {
  		err = enc.Encode(info)
  		require.NoError(t, err)
  
@@ -432,7 +456,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  		require.NoError(t, err)
  		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, data.path, 0).Err()
  		require.NoError(t, err)
-@@ -297,7 +296,7 @@ func mockSaveFileInfoToRedis(fp *FileProcessor, path string, info FileInfo, file
+@@ -297,7 +295,7 @@ func mockSaveFileInfoToRedis(fp *FileProcessor, path string, info FileInfo, file
  	}
  
  	pipe := rdb.Pipeline()
@@ -441,7 +465,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
  	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, path)
  	pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0)
-@@ -776,7 +775,7 @@ func TestCalculateFileHash(t *testing.T) {
+@@ -776,7 +774,7 @@ func TestCalculateFileHash(t *testing.T) {
  		hash, err := fp.calculateFileHash("/nonexistent.txt", 4)
  		assert.Error(t, err)
  		assert.Empty(t, hash)
@@ -450,7 +474,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  	})
  
  	t.Run("零字节文件", func(t *testing.T) {
-@@ -822,13 +821,13 @@ func TestCleanUpOldRecords(t *testing.T) {
+@@ -822,13 +820,13 @@ func TestCleanUpOldRecords(t *testing.T) {
  
  	for _, path := range []string{existingFile, nonExistingFile} {
  		hashedKey := generateHash(path)
@@ -468,7 +492,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  		require.NoError(t, err)
  	}
  
-@@ -836,12 +835,12 @@ func TestCleanUpOldRecords(t *testing.T) {
+@@ -836,12 +834,12 @@ func TestCleanUpOldRecords(t *testing.T) {
  	require.NoError(t, err)
  
  	// 检查不存在文件的记录是否被删除
@@ -483,7 +507,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  	require.NoError(t, err)
  	assert.NotEmpty(t, val)
  }
-@@ -990,7 +989,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
+@@ -990,7 +988,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
  
  			t.Run("ProcessFileWithHash", func(t *testing.T) {
  				cleanupRedis(mr) // 清理 Redis 数据
@@ -492,7 +516,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  				assert.NoError(t, err)
  
  				hashedKey := generateHash(filePath)
-@@ -1015,12 +1014,12 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
+@@ -1015,12 +1013,12 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
  				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
  				assert.NoError(t, err)
  				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
@@ -507,7 +531,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  				assert.NoError(t, err)
  
  				hashedKey := generateHash(filePath)
-@@ -1042,8 +1041,8 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
+@@ -1042,8 +1040,8 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
  				assert.Equal(t, filePath, pathValue)
  
  				// Verify hash data does not exist
@@ -518,7 +542,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
  				assert.Equal(t, redis.Nil, err)
  
-@@ -1070,7 +1069,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
+@@ -1070,7 +1068,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
  	require.NoError(t, err)
  
  	// Process the file
@@ -527,7 +551,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  	assert.NoError(t, err)
  
  	hashedKey := generateHash(testFilePath)
-@@ -1095,7 +1094,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
+@@ -1095,7 +1093,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
  	_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
  	assert.NoError(t, err)
  	_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
@@ -536,7 +560,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  
  	// Verify that the full path is stored
  	hashedKeyFromPath, err := rdb.Get(ctx, "pathToHashedKey:"+testFilePath).Result()
-@@ -1183,3 +1182,44 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
+@@ -1183,3 +1181,44 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
  		})
  	}
  }
@@ -952,15 +976,38 @@ diff --git a/redis_client.go b/redis_client.go
 diff --git a/redis_client_test.go b/redis_client_test.go
 --- ./redis_client_test.go
 +++ ./redis_client_test.go
-@@ -65,7 +65,7 @@ func TestSaveFileInfoToRedis(t *testing.T) {
+@@ -65,16 +65,16 @@ func TestSaveFileInfoToRedis(t *testing.T) {
  
  	// Verify the data was saved correctly
  	hashedKey := generateHash(testPath)
 -	assert.True(t, mr.Exists("fileInfo:"+hashedKey))
+-	assert.True(t, mr.Exists("hashedKeyToPath:"+hashedKey))
 +	assert.True(t, mr.Exists(getFileInfoKey(hashedKey)))
- 	assert.True(t, mr.Exists("hashedKeyToPath:"+hashedKey))
++	assert.True(t, mr.Exists(getHashedKeyToPathKey(hashedKey)))
  
  	isMember, err := mr.SIsMember("fileHashToPathSet:"+testFileHash, testPath)
+ 	assert.NoError(t, err)
+ 	assert.True(t, isMember)
+ 
+ 	assert.True(t, mr.Exists("hashedKeyToFullHash:"+hashedKey))
+-	assert.True(t, mr.Exists("pathToHashedKey:"+testPath))
+-	assert.True(t, mr.Exists("hashedKeyToFileHash:"+hashedKey))
++	assert.True(t, mr.Exists(getPathToHashedKeyKey(testPath)))
++	assert.True(t, mr.Exists(getHashCacheKey(hashedKey)))
+ }
+ 
+ func TestCleanUpHashKeys(t *testing.T) {
+@@ -90,8 +90,8 @@ func TestCleanUpHashKeys(t *testing.T) {
+ 	ctx := context.Background()
+ 
+ 	fullHash := "testfullhash"
+-	duplicateFilesKey := "duplicateFiles:" + fullHash
+-	fileHashKey := "fileHashToPathSet:" + fullHash
++	duplicateFilesKey := getDuplicateFilesKey(fullHash)
++	fileHashKey := getFileHashKey(fullHash)
+ 
+ 	// Set up test data
+ 	_ = rdb.Set(ctx, duplicateFilesKey, "dummy_data", 0)
 diff --git a/utils.go b/utils.go
 --- ./utils.go
 +++ ./utils.go
