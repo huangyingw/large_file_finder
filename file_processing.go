@@ -376,14 +376,14 @@ func (fp *FileProcessor) waitForHash(path string, limit int64) (string, error) {
 
 func (fp *FileProcessor) getHashFromCache(path string, limit int64) (string, error) {
 	hashedKey := fp.generateHashFunc(path)
-	
+
 	var cacheKey string
 	if limit == FullFileReadCmd {
 		cacheKey = getFullHashCacheKey(hashedKey)
 	} else {
 		cacheKey = getHashCacheKey(hashedKey)
 	}
-	
+
 	return fp.Rdb.Get(fp.Ctx, cacheKey).Result()
 }
 
@@ -450,7 +450,7 @@ func getFileInfo(rdb *redis.Client, ctx context.Context, filePath string) (FileI
 		return FileInfo{}, err
 	}
 
-	fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+	fileInfoData, err := rdb.Get(ctx, getFileInfoKey(hashedKey)).Bytes()
 	if err != nil {
 		return FileInfo{}, err
 	}
