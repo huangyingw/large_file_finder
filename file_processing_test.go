@@ -7,18 +7,17 @@ import (
 	"context"
 	"encoding/gob"
 	"fmt"
-	"io/ioutil"
-	"os"
-	"path/filepath"
-	"testing"
-	"time"
-
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 	"github.com/go-redis/redismock/v8"
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
 )
 
 func setupTestEnvironment(t *testing.T) (*miniredis.Miniredis, *redis.Client, context.Context, afero.Fs, *FileProcessor) {
