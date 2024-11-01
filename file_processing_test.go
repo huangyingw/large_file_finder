@@ -78,7 +78,7 @@ func TestProcessFile(t *testing.T) {
 		assert.Equal(t, 1, hashCalcCount, "Hash should be calculated")
 
 		// Verify file info was saved
-		fileInfoData, err := rdb.Get(ctx, "fileInfo:"+hashedKey).Bytes()
+		fileInfoData, err := rdb.Get(ctx, getFileInfoKey(hashedKey)).Bytes()
 		require.NoError(t, err)
 		assert.NotNil(t, fileInfoData)
 
@@ -256,7 +256,7 @@ func TestFileProcessor_SaveToFile(t *testing.T) {
 		err = enc.Encode(info)
 		require.NoError(t, err)
 
-		err = rdb.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0).Err()
+		err = rdb.Set(ctx, getFileInfoKey(hashedKey), buf.Bytes(), 0).Err()
 		require.NoError(t, err)
 		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, data.path, 0).Err()
 		require.NoError(t, err)
@@ -296,7 +296,7 @@ func mockSaveFileInfoToRedis(fp *FileProcessor, path string, info FileInfo, file
 	}
 
 	pipe := rdb.Pipeline()
-	pipe.Set(ctx, "fileInfo:"+hashedKey, buf.Bytes(), 0)
+	pipe.Set(ctx, getFileInfoKey(hashedKey), buf.Bytes(), 0)
 	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
 	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, path)
 	pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0)
