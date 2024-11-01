@@ -16,6 +16,8 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1220,5 +1222,125 @@ func TestCalculateFileHashWithCache(t *testing.T) {
 		hash2, err := fp.calculateFileHash(testFile, 4)
 		require.NoError(t, err)
 		assert.Equal(t, expectedHash, hash2)
+	})
+}
+
+func TestCalculateFileHashComplete(t *testing.T) {
+	// 设置测试环境
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	defer rdb.Close()
+	ctx := context.Background()
+	fs := afero.NewMemMapFs()
+	fp := CreateFileProcessor(rdb, ctx, nil)
+	fp.fs = fs
+
+	// 创建测试文件
+	testCases := []struct {
+		name    string
+		content string
+		limit   int64
+	}{
+		{
+			name:    "small_file.txt",
+			content: "small content",
+			limit:   4,
+		},
+		{
+			name:    "large_file.txt",
+			content: strings.Repeat("large content ", 1000),
+			limit:   -1, // 完整文件哈希
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 创建测试文件
+			filePath := filepath.Join("/", tc.name)
+			err := afero.WriteFile(fs, filePath, []byte(tc.content), 0644)
+			require.NoError(t, err)
+
+			// 第一次计算哈希
+			hash1, err := fp.calculateFileHash(filePath, tc.limit)
+			require.NoError(t, err)
+			assert.NotEmpty(t, hash1)
+
+			// 验证哈希已缓存
+			hashedKey := generateHash(filePath)
+			var cacheKey string
+			if tc.limit == -1 {
+				cacheKey = getFullHashCacheKey(hashedKey)
+			} else {
+				cacheKey = getHashCacheKey(hashedKey)
+			}
+			cachedHash, err := rdb.Get(ctx, cacheKey).Result()
+			require.NoError(t, err)
+			assert.Equal(t, hash1, cachedHash)
+
+			// 第二次计算哈希（应该从缓存读取）
+			hash2, err := fp.calculateFileHash(filePath, tc.limit)
+			require.NoError(t, err)
+			assert.Equal(t, hash1, hash2)
+
+			// 测试并发计算
+			var wg sync.WaitGroup
+			for i := 0; i < 5; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					hash, err := fp.calculateFileHash(filePath, tc.limit)
+					assert.NoError(t, err)
+					assert.Equal(t, hash1, hash)
+				}()
+			}
+			wg.Wait()
+		})
+	}
+}
+
+func TestCalculateFileHashErrors(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	defer rdb.Close()
+	ctx := context.Background()
+	fs := afero.NewMemMapFs()
+	fp := CreateFileProcessor(rdb, ctx, nil)
+	fp.fs = fs
+
+	t.Run("NonexistentFile", func(t *testing.T) {
+		_, err := fp.calculateFileHash("/nonexistent.txt", 100)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "file not found")
+	})
+
+	t.Run("InvalidLimit", func(t *testing.T) {
+		filePath := "/test.txt"
+		err := afero.WriteFile(fs, filePath, []byte("test"), 0644)
+		require.NoError(t, err)
+
+		_, err = fp.calculateFileHash(filePath, -2)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid limit")
+	})
+
+	t.Run("RedisError", func(t *testing.T) {
+		filePath := "/test.txt"
+		err := afero.WriteFile(fs, filePath, []byte("test"), 0644)
+		require.NoError(t, err)
+
+		// 关闭 Redis 连接模拟错误
+		rdb.Close()
+		_, err = fp.calculateFileHash(filePath, 100)
+		assert.Error(t, err)
 	})
 }
