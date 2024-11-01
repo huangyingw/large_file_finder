@@ -1344,3 +1344,100 @@ func TestCalculateFileHashErrors(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+// 添加一个测试辅助函数，用于设置测试环境
+func setupFileHashTest(t *testing.T) (*redis.Client, afero.Fs, *FileProcessor, func()) {
+	// 设置 Redis
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+	ctx := context.Background()
+
+	// 设置文件系统
+	fs := afero.NewMemMapFs()
+	fp := CreateFileProcessor(rdb, ctx, nil)
+	fp.fs = fs
+
+	// 返回清理函数
+	cleanup := func() {
+		rdb.Close()
+		mr.Close()
+	}
+
+	return rdb, fs, fp, cleanup
+}
+
+// 可以添加更多具体场景的测试
+func TestFileHashConcurrency(t *testing.T) {
+	rdb, fs, fp, cleanup := setupFileHashTest(t)
+	defer cleanup()
+
+	// 创建测试文件
+	testFile := "/concurrent_test.txt"
+	content := strings.Repeat("test content", 1000)
+	err := afero.WriteFile(fs, testFile, []byte(content), 0644)
+	require.NoError(t, err)
+
+	// 并发测试
+	var wg sync.WaitGroup
+	concurrentRequests := 10
+	results := make([]string, concurrentRequests)
+
+	for i := 0; i < concurrentRequests; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			hash, err := fp.calculateFileHash(testFile, -1) // 完整文件哈希
+			require.NoError(t, err)
+			results[index] = hash
+		}(i)
+	}
+	wg.Wait()
+
+	// 验证所有结果一致
+	for i := 1; i < len(results); i++ {
+		assert.Equal(t, results[0], results[i], "所有并发请求应返回相同的哈希值")
+	}
+
+	// 验证 Redis 缓存
+	hashedKey := generateHash(testFile)
+	cachedHash, err := rdb.Get(fp.Ctx, getFullHashCacheKey(hashedKey)).Result()
+	require.NoError(t, err)
+	assert.Equal(t, results[0], cachedHash, "缓存的哈希值应与计算结果一致")
+}
+
+func TestPartialVsFullHash(t *testing.T) {
+	rdb, fs, fp, cleanup := setupFileHashTest(t)
+	defer cleanup()
+
+	// 创建测试文件
+	testFile := "/hash_comparison.txt"
+	content := strings.Repeat("test content", 100)
+	err := afero.WriteFile(fs, testFile, []byte(content), 0644)
+	require.NoError(t, err)
+
+	// 计算部分哈希
+	partialHash, err := fp.calculateFileHash(testFile, 100)
+	require.NoError(t, err)
+
+	// 计算完整哈希
+	fullHash, err := fp.calculateFileHash(testFile, -1)
+	require.NoError(t, err)
+
+	// 验证部分哈希和完整哈希不同
+	assert.NotEqual(t, partialHash, fullHash, "部分哈希和完整哈希应该不同")
+
+	// 验证缓存正确存储了两种哈希
+	hashedKey := generateHash(testFile)
+
+	cachedPartialHash, err := rdb.Get(fp.Ctx, getHashCacheKey(hashedKey)).Result()
+	require.NoError(t, err)
+	assert.Equal(t, partialHash, cachedPartialHash)
+
+	cachedFullHash, err := rdb.Get(fp.Ctx, getFullHashCacheKey(hashedKey)).Result()
+	require.NoError(t, err)
+	assert.Equal(t, fullHash, cachedFullHash)
+}
