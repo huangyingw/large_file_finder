@@ -90,8 +90,8 @@ func TestCleanUpHashKeys(t *testing.T) {
 	ctx := context.Background()
 
 	fullHash := "testfullhash"
-	duplicateFilesKey := "duplicateFiles:" + fullHash
-	fileHashKey := "fileHashToPathSet:" + fullHash
+	duplicateFilesKey := getDuplicateFilesKey(fullHash)
+	fileHashKey := getFileHashKey(fullHash)
 
 	// Set up test data
 	_ = rdb.Set(ctx, duplicateFilesKey, "dummy_data", 0)
