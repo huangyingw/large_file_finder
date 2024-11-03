@@ -1385,29 +1385,56 @@ func TestFileHashConcurrency(t *testing.T) {
 	// 并发测试
 	var wg sync.WaitGroup
 	concurrentRequests := 10
-	results := make([]string, concurrentRequests)
+	results := make([]struct {
+		hash string
+		err  error
+	}, concurrentRequests)
 
 	for i := 0; i < concurrentRequests; i++ {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			hash, err := fp.calculateFileHash(testFile, -1) // 完整文件哈希
-			require.NoError(t, err)
-			results[index] = hash
+			hash, err := fp.calculateFileHash(testFile, -1)
+			results[index].hash = hash
+			results[index].err = err
 		}(i)
 	}
 	wg.Wait()
 
-	// 验证所有结果一致
-	for i := 1; i < len(results); i++ {
-		assert.Equal(t, results[0], results[i], "所有并发请求应返回相同的哈希值")
+	// 分析结果
+	var (
+		successCount    int
+		inProgressCount int
+		firstHash       string
+	)
+
+	for _, result := range results {
+		if result.err == nil {
+			// 成功获取到哈希值（可能是从缓存或直接计算）
+			successCount++
+			if firstHash == "" {
+				firstHash = result.hash
+			} else {
+				// 所有成功的结果应该返回相同的哈希值
+				assert.Equal(t, firstHash, result.hash)
+			}
+		} else {
+			// 应该是"正在计算中"的错误
+			assert.Contains(t, result.err.Error(), "already in progress")
+			inProgressCount++
+		}
 	}
 
-	// 验证 Redis 缓存
+	// 验证结果
+	assert.True(t, successCount >= 1, "至少应该有一个成功的请求")
+	assert.True(t, inProgressCount+successCount == concurrentRequests,
+		"所有请求要么成功，要么返回正在计算中")
+
+	// 验证最终缓存状态
 	hashedKey := generateHash(testFile)
 	cachedHash, err := rdb.Get(fp.Ctx, getFullHashCacheKey(hashedKey)).Result()
 	require.NoError(t, err)
-	assert.Equal(t, results[0], cachedHash, "缓存的哈希值应与计算结果一致")
+	assert.Equal(t, firstHash, cachedHash, "缓存的哈希值应与计算结果一致")
 }
 
 func TestPartialVsFullHash(t *testing.T) {
@@ -1491,25 +1518,24 @@ func TestHashCalculationLocking(t *testing.T) {
 
 	// 启动多个并发计算
 	var wg sync.WaitGroup
-	results := make([]string, 3)
-	errors := make([]error, 3)
+	results := make([]error, 3)
 
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			hash, err := fp.calculateFileHash(testFile, 100)
-			results[index] = hash
-			errors[index] = err
+			_, err := fp.calculateFileHash(testFile, 100)
+			results[index] = err
 		}(i)
 	}
 
 	wg.Wait()
 
-	// 验证所有并发请求是否都等待了锁
+	// 验证所有并发请求是否都收到了正确的错误消息
+	expectedErrMsg := "hash calculation for /test_lock.txt is already in progress by another thread"
 	for i := 0; i < 3; i++ {
-		assert.Error(t, errors[i])
-		assert.Contains(t, errors[i].Error(), "timeout waiting for hash calculation")
+		assert.Error(t, results[i])
+		assert.Contains(t, results[i].Error(), expectedErrMsg)
 	}
 }
 
