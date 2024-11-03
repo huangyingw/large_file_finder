@@ -306,7 +306,7 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
 		return "", fmt.Errorf("error acquiring lock: %w", err)
 	}
 	if !locked {
-		return fp.waitForHash(path, limit)
+		return "", fmt.Errorf("hash calculation for %s is already in progress by another thread", path)
 	}
 	defer fp.Rdb.Del(fp.Ctx, lockKey)
 
@@ -356,22 +356,6 @@ func (fp *FileProcessor) calculateFileHash(path string, limit int64) (string, er
 	}
 
 	return hash, nil
-}
-
-func (fp *FileProcessor) waitForHash(path string, limit int64) (string, error) {
-	retries := 5
-	for i := 0; i < retries; i++ {
-		hash, err := fp.getHashFromCache(path, limit)
-		if err == nil {
-			return hash, nil
-		}
-		if err != redis.Nil {
-			log.Printf("Error checking cache: %v", err)
-		}
-		// 使用指数退避策略
-		time.Sleep(time.Second * time.Duration(1<<uint(i)))
-	}
-	return "", fmt.Errorf("timeout waiting for hash calculation")
 }
 
 func (fp *FileProcessor) getHashFromCache(path string, limit int64) (string, error) {
