@@ -29,6 +29,7 @@ var (
 	outputDuplicates bool
 	maxDuplicates    int
 	semaphore        chan struct{}
+	findCloseFiles   bool
 )
 
 var excludeRegexps []*regexp.Regexp
@@ -42,6 +43,7 @@ func init() {
 	flag.BoolVar(&findDuplicates, "find-duplicates", false, "Find duplicate files")
 	flag.BoolVar(&outputDuplicates, "output-duplicates", false, "Output duplicate files")
 	flag.IntVar(&maxDuplicates, "max-duplicates", 50, "Maximum number of duplicates to process")
+	flag.BoolVar(&findCloseFiles, "find-close", false, "Find files with similar names")
 }
 
 func loadExcludePatterns(filename string, fs afero.Fs) ([]*regexp.Regexp, error) {
@@ -114,70 +116,76 @@ func main() {
 		log.Printf("Error cleaning up old records: %v", err)
 	}
 
-	// 处理文件
-	fileChan := make(chan string, workerCount)
-	var wg sync.WaitGroup
+	// 只在基本扫描时执行文件处理
+	if !findDuplicates && !outputDuplicates && !deleteDuplicates && !findCloseFiles {
+		// 处理文件
+		fileChan := make(chan string, workerCount)
+		var wg sync.WaitGroup
 
-	// Start worker goroutines
-	for i := 0; i < workerCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for relativePath := range fileChan {
-				fullPath := filepath.Join(rootDir, relativePath)
-				if !fp.ShouldExclude(fullPath) {
-					if err := fp.ProcessFile(rootDir, relativePath); err != nil {
-						log.Printf("Error processing file %s: %v", fullPath, err)
+		// Start worker goroutines
+		for i := 0; i < workerCount; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for relativePath := range fileChan {
+					fullPath := filepath.Join(rootDir, relativePath)
+					if !fp.ShouldExclude(fullPath) {
+						if err := fp.ProcessFile(rootDir, relativePath); err != nil {
+							log.Printf("Error processing file %s: %v", fullPath, err)
+						}
 					}
 				}
+			}()
+		}
+
+		// Start progress monitoring
+		go monitorProgress(ctx)
+
+		err = walkFiles(rootDir, minSizeBytes, fileChan, fp)
+		close(fileChan)
+		if err != nil {
+			log.Printf("Error walking files: %v", err)
+		}
+
+		wg.Wait()
+
+		// 生成基本的文件日志
+		if err := fp.saveToFile(rootDir, "fav.log", false); err != nil {
+			log.Printf("Error writing fav.log: %v", err)
+		}
+		if err := fp.saveToFile(rootDir, "fav.log.sort", true); err != nil {
+			log.Printf("Error writing fav.log.sort: %v", err)
+		}
+	} else {
+		// 根据标志执行单一操作
+		if findDuplicates {
+			if err := findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates, excludeRegexps, fp.fs); err != nil {
+				log.Fatalf("Error finding duplicates: %v", err)
 			}
-		}()
-	}
-
-	// Start progress monitoring
-	go monitorProgress(ctx)
-
-	err = walkFiles(rootDir, minSizeBytes, fileChan, fp)
-	close(fileChan)
-	if err != nil {
-		log.Printf("Error walking files: %v", err)
-	}
-
-	wg.Wait()
-
-	// 在处理完文件后，根据标志执行相应操作
-	if findDuplicates {
-		if err := findAndLogDuplicates(rootDir, rdb, ctx, maxDuplicates, excludeRegexps, fp.fs); err != nil {
-			log.Fatalf("Error finding duplicates: %v", err)
+			return
 		}
-	}
 
-	if outputDuplicates {
-		if err := fp.WriteDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx); err != nil {
-			log.Fatalf("Error writing duplicates to file: %v", err)
+		if outputDuplicates {
+			if err := fp.WriteDuplicateFilesToFile(rootDir, "fav.log.dup", rdb, ctx); err != nil {
+				log.Fatalf("Error writing duplicates to file: %v", err)
+			}
+			return
 		}
-	}
 
-	if deleteDuplicates {
-		if err := deleteDuplicateFiles(rootDir, rdb, ctx, fp.fs); err != nil {
-			log.Fatalf("Error deleting duplicate files: %v", err)
+		if deleteDuplicates {
+			if err := deleteDuplicateFiles(rootDir, rdb, ctx, fp.fs); err != nil {
+				log.Fatalf("Error deleting duplicate files: %v", err)
+			}
+			return
 		}
-	}
 
-	// 生成 fav.log（按大小排序）
-	if err := fp.saveToFile(rootDir, "fav.log", false); err != nil {
-		log.Printf("Error writing fav.log: %v", err)
-	}
-
-	// 生成 fav.log.sort（按修改时间排序）
-	if err := fp.saveToFile(rootDir, "fav.log.sort", true); err != nil {
-		log.Printf("Error writing fav.log.sort: %v", err)
-	}
-
-	// 处理相似文件
-	finder := NewCloseFileFinder(rootDir)
-	if err := finder.ProcessCloseFiles(); err != nil {
-		log.Printf("Error processing close files: %v", err)
+		if findCloseFiles {
+			finder := NewCloseFileFinder(rootDir)
+			if err := finder.ProcessCloseFiles(); err != nil {
+				log.Fatalf("Error processing close files: %v", err)
+			}
+			return
+		}
 	}
 
 	log.Println("Processing complete")
