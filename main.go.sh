@@ -30,3 +30,4 @@ go test -coverprofile=coverage.out ./... || exit 1
 #go run . --rootDir="$rootDir" --find-duplicates --max-duplicates=10000000000000
 #go run . --rootDir="$rootDir" --output-duplicates
 #go run . --rootDir="$rootDir" --delete-duplicates
+#go run . --rootDir="$rootDir" --find-close
