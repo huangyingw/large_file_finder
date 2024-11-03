@@ -1,7 +1,61 @@
 diff --git a/close_files.go b/close_files.go
 --- ./close_files.go
 +++ ./close_files.go
-@@ -164,51 +164,6 @@ func (cf *CloseFileFinder) writeResults(results []similarityResult) error {
+@@ -8,8 +8,11 @@ import (
+ 	"runtime"
+ 	"strings"
+ 	"sync"
++	"regexp"
+ )
+ 
++var movieCodePattern = regexp.MustCompile(`(?i)([a-z]+-\d+)`)
++
+ type CloseFileFinder struct {
+ 	rootDir     string
+ 	workerCount int
+@@ -120,15 +123,22 @@ func (cf *CloseFileFinder) findCloseFiles(files []string) []similarityResult {
+ 
+ // 计算两个文件名的相似度
+ func calculateSimilarity(name1, name2 string) float64 {
+-	// 移除扩展名
++	// 先尝试提取番号
++	code1 := extractMovieCode(name1)
++	code2 := extractMovieCode(name2)
++	
++	// 如果两个文件都有番号且相同，则返回最高相似度
++	if code1 != "" && code2 != "" && code1 == code2 {
++		return 1.0
++	}
++	
++	// 如果没有匹配到番号，使用原有的相似度计算逻辑
+ 	name1 = strings.TrimSuffix(name1, filepath.Ext(name1))
+ 	name2 = strings.TrimSuffix(name2, filepath.Ext(name2))
+ 	
+-	// 转换为小写进行比较
+ 	name1 = strings.ToLower(name1)
+ 	name2 = strings.ToLower(name2)
+ 	
+-	// 使用 Levenshtein 距离计算相似度
+ 	distance := levenshteinDistance(name1, name2)
+ 	maxLen := float64(max(len(name1), len(name2)))
+ 	
+@@ -139,6 +149,15 @@ func calculateSimilarity(name1, name2 string) float64 {
+ 	return 1 - float64(distance)/maxLen
+ }
+ 
++// 提取并标准化电影番号
++func extractMovieCode(fileName string) string {
++	matches := movieCodePattern.FindStringSubmatch(fileName)
++	if len(matches) > 1 {
++		return strings.ToUpper(matches[1]) // 转换为大写以便统一比较
++	}
++	return ""
++}
++
+ // 写入结果到 fav.log.close
+ func (cf *CloseFileFinder) writeResults(results []similarityResult) error {
+ 	outputPath := filepath.Join(cf.rootDir, "fav.log.close")
+@@ -164,51 +183,6 @@ func (cf *CloseFileFinder) writeResults(results []similarityResult) error {
  	return writer.Flush()
  }
  
@@ -86,6 +140,51 @@ diff --git a/close_files_test.go b/close_files_test.go
  
  	// 验证输出文件
  	outputContent, err := os.ReadFile(filepath.Join(tempDir, "fav.log.close"))
+@@ -227,3 +222,44 @@ func TestCloseFileFinderWithEmptyFile(t *testing.T) {
+ 	require.NoError(t, err)
+ 	assert.Empty(t, string(content))
+ }
++
++func TestCalculateSimilarityWithMovieCodes(t *testing.T) {
++	testCases := []struct {
++		name     string
++		file1    string
++		file2    string
++		expected float64
++	}{
++		{
++			name:     "相同番号不同大小写",
++			file1:    "abp-0441 video.mp4",
++			file2:    "ABP-0441 movie.mkv",
++			expected: 1.0,
++		},
++		{
++			name:     "相同番号带其他文字",
++			file1:    "my favorite ABP-0441.mp4",
++			file2:    "[subgroup] abp-0441 1080p.mkv",
++			expected: 1.0,
++		},
++		{
++			name:     "不同番号",
++			file1:    "ABP-0441.mp4",
++			file2:    "ABP-0442.mp4",
++			expected: 0.875,
++		},
++		{
++			name:     "一个文件没有番号",
++			file1:    "ABP-0441.mp4",
++			file2:    "normal_video.mp4",
++			expected: 0.08333333333333337,
++		},
++	}
++
++	for _, tc := range testCases {
++		t.Run(tc.name, func(t *testing.T) {
++			score := calculateSimilarity(tc.file1, tc.file2)
++			assert.InDelta(t, tc.expected, score, 0.01)
++		})
++	}
++}
 diff --git a/file_processing.go b/file_processing.go
 --- ./file_processing.go
 +++ ./file_processing.go
@@ -365,7 +464,7 @@ diff --git a/file_processing_integration_test.go b/file_processing_integration_t
 diff --git a/file_processing_test.go b/file_processing_test.go
 --- ./file_processing_test.go
 +++ ./file_processing_test.go
-@@ -7,18 +7,17 @@ import (
+@@ -7,18 +7,20 @@ import (
  	"context"
  	"encoding/gob"
  	"fmt"
@@ -382,14 +481,17 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  	"github.com/stretchr/testify/assert"
  	"github.com/stretchr/testify/require"
 +	"io/ioutil"
++	"math/rand"
 +	"os"
 +	"path/filepath"
++	"strings"
++	"sync"
 +	"testing"
 +	"time"
  )
  
  func setupTestEnvironment(t *testing.T) (*miniredis.Miniredis, *redis.Client, context.Context, afero.Fs, *FileProcessor) {
-@@ -73,12 +72,12 @@ func TestProcessFile(t *testing.T) {
+@@ -73,12 +75,12 @@ func TestProcessFile(t *testing.T) {
  	// Test without calculating hashes
  	t.Run("Without Calculating Hashes", func(t *testing.T) {
  		hashCalcCount = 0
@@ -405,7 +507,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  		require.NoError(t, err)
  		assert.NotNil(t, fileInfoData)
  
-@@ -98,15 +97,15 @@ func TestProcessFile(t *testing.T) {
+@@ -98,15 +100,15 @@ func TestProcessFile(t *testing.T) {
  		assert.Equal(t, hashedKey, hashedKeyValue)
  
  		// Verify hash-related data was not saved
@@ -424,7 +526,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  	})
  
  	// Clear Redis data
-@@ -116,18 +115,17 @@ func TestProcessFile(t *testing.T) {
+@@ -116,18 +118,17 @@ func TestProcessFile(t *testing.T) {
  	// Test with calculating hashes
  	t.Run("With Calculating Hashes", func(t *testing.T) {
  		hashCalcCount = 0
@@ -447,7 +549,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  
  		isMember, err := rdb.SIsMember(ctx, "fileHashToPathSet:partialhash", testFullPath).Result()
  		require.NoError(t, err)
-@@ -257,7 +255,7 @@ func TestFileProcessor_SaveToFile(t *testing.T) {
+@@ -257,7 +258,7 @@ func TestFileProcessor_SaveToFile(t *testing.T) {
  		err = enc.Encode(info)
  		require.NoError(t, err)
  
@@ -456,7 +558,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  		require.NoError(t, err)
  		err = rdb.Set(ctx, "hashedKeyToPath:"+hashedKey, data.path, 0).Err()
  		require.NoError(t, err)
-@@ -297,7 +295,7 @@ func mockSaveFileInfoToRedis(fp *FileProcessor, path string, info FileInfo, file
+@@ -297,7 +298,7 @@ func mockSaveFileInfoToRedis(fp *FileProcessor, path string, info FileInfo, file
  	}
  
  	pipe := rdb.Pipeline()
@@ -465,7 +567,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  	pipe.Set(ctx, "hashedKeyToPath:"+hashedKey, path, 0)
  	pipe.SAdd(ctx, "fileHashToPathSet:"+fileHash, path)
  	pipe.Set(ctx, "hashedKeyToFullHash:"+hashedKey, fullHash, 0)
-@@ -776,7 +774,7 @@ func TestCalculateFileHash(t *testing.T) {
+@@ -776,7 +777,7 @@ func TestCalculateFileHash(t *testing.T) {
  		hash, err := fp.calculateFileHash("/nonexistent.txt", 4)
  		assert.Error(t, err)
  		assert.Empty(t, hash)
@@ -474,7 +576,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  	})
  
  	t.Run("零字节文件", func(t *testing.T) {
-@@ -822,13 +820,13 @@ func TestCleanUpOldRecords(t *testing.T) {
+@@ -822,13 +823,13 @@ func TestCleanUpOldRecords(t *testing.T) {
  
  	for _, path := range []string{existingFile, nonExistingFile} {
  		hashedKey := generateHash(path)
@@ -492,7 +594,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  		require.NoError(t, err)
  	}
  
-@@ -836,12 +834,12 @@ func TestCleanUpOldRecords(t *testing.T) {
+@@ -836,12 +837,12 @@ func TestCleanUpOldRecords(t *testing.T) {
  	require.NoError(t, err)
  
  	// 检查不存在文件的记录是否被删除
@@ -507,7 +609,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  	require.NoError(t, err)
  	assert.NotEmpty(t, val)
  }
-@@ -990,7 +988,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
+@@ -990,7 +991,7 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
  
  			t.Run("ProcessFileWithHash", func(t *testing.T) {
  				cleanupRedis(mr) // 清理 Redis 数据
@@ -516,7 +618,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  				assert.NoError(t, err)
  
  				hashedKey := generateHash(filePath)
-@@ -1015,12 +1013,12 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
+@@ -1015,12 +1016,12 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
  				_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
  				assert.NoError(t, err)
  				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
@@ -531,7 +633,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  				assert.NoError(t, err)
  
  				hashedKey := generateHash(filePath)
-@@ -1042,8 +1040,8 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
+@@ -1042,8 +1043,8 @@ func TestFileOperationsWithSpecialChars(t *testing.T) {
  				assert.Equal(t, filePath, pathValue)
  
  				// Verify hash data does not exist
@@ -542,7 +644,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  				_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
  				assert.Equal(t, redis.Nil, err)
  
-@@ -1070,7 +1068,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
+@@ -1070,7 +1071,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
  	require.NoError(t, err)
  
  	// Process the file
@@ -551,7 +653,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  	assert.NoError(t, err)
  
  	hashedKey := generateHash(testFilePath)
-@@ -1095,7 +1093,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
+@@ -1095,7 +1096,7 @@ func TestFileProcessor_ProcessFile(t *testing.T) {
  	_, err = rdb.Get(ctx, "hashedKeyToFileHash:"+hashedKey).Result()
  	assert.NoError(t, err)
  	_, err = rdb.Get(ctx, "hashedKeyToFullHash:"+hashedKey).Result()
@@ -560,7 +662,7 @@ diff --git a/file_processing_test.go b/file_processing_test.go
  
  	// Verify that the full path is stored
  	hashedKeyFromPath, err := rdb.Get(ctx, "pathToHashedKey:"+testFilePath).Result()
-@@ -1183,3 +1181,44 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
+@@ -1183,3 +1184,386 @@ func TestFileProcessor_ShouldExclude(t *testing.T) {
  		})
  	}
  }
@@ -604,6 +706,348 @@ diff --git a/file_processing_test.go b/file_processing_test.go
 +		require.NoError(t, err)
 +		assert.Equal(t, expectedHash, hash2)
 +	})
++}
++
++func TestCalculateFileHashComplete(t *testing.T) {
++	// 设置测试环境
++	mr, err := miniredis.Run()
++	require.NoError(t, err)
++	defer mr.Close()
++
++	rdb := redis.NewClient(&redis.Options{
++		Addr: mr.Addr(),
++	})
++	defer rdb.Close()
++	ctx := context.Background()
++	fs := afero.NewMemMapFs()
++	fp := CreateFileProcessor(rdb, ctx, nil)
++	fp.fs = fs
++
++	// 创建测试文件
++	testCases := []struct {
++		name    string
++		content string
++		limit   int64
++	}{
++		{
++			name:    "small_file.txt",
++			content: "small content",
++			limit:   4,
++		},
++		{
++			name:    "large_file.txt",
++			content: strings.Repeat("large content ", 1000),
++			limit:   -1, // 完整文件哈希
++		},
++	}
++
++	for _, tc := range testCases {
++		t.Run(tc.name, func(t *testing.T) {
++			// 创建测试文件
++			filePath := filepath.Join("/", tc.name)
++			err := afero.WriteFile(fs, filePath, []byte(tc.content), 0644)
++			require.NoError(t, err)
++
++			// 第一次计算哈希
++			hash1, err := fp.calculateFileHash(filePath, tc.limit)
++			require.NoError(t, err)
++			assert.NotEmpty(t, hash1)
++
++			// 验证哈希已缓存
++			hashedKey := generateHash(filePath)
++			var cacheKey string
++			if tc.limit == -1 {
++				cacheKey = getFullHashCacheKey(hashedKey)
++			} else {
++				cacheKey = getHashCacheKey(hashedKey)
++			}
++			cachedHash, err := rdb.Get(ctx, cacheKey).Result()
++			require.NoError(t, err)
++			assert.Equal(t, hash1, cachedHash)
++
++			// 第二次计算哈希（应该从缓存读取）
++			hash2, err := fp.calculateFileHash(filePath, tc.limit)
++			require.NoError(t, err)
++			assert.Equal(t, hash1, hash2)
++
++			// 测试并发计算
++			var wg sync.WaitGroup
++			for i := 0; i < 5; i++ {
++				wg.Add(1)
++				go func() {
++					defer wg.Done()
++					hash, err := fp.calculateFileHash(filePath, tc.limit)
++					assert.NoError(t, err)
++					assert.Equal(t, hash1, hash)
++				}()
++			}
++			wg.Wait()
++		})
++	}
++}
++
++func TestCalculateFileHashErrors(t *testing.T) {
++	mr, err := miniredis.Run()
++	require.NoError(t, err)
++	defer mr.Close()
++
++	rdb := redis.NewClient(&redis.Options{
++		Addr: mr.Addr(),
++	})
++	defer rdb.Close()
++	ctx := context.Background()
++	fs := afero.NewMemMapFs()
++	fp := CreateFileProcessor(rdb, ctx, nil)
++	fp.fs = fs
++
++	t.Run("NonexistentFile", func(t *testing.T) {
++		_, err := fp.calculateFileHash("/nonexistent.txt", 100)
++		assert.Error(t, err)
++		assert.Contains(t, err.Error(), "file not found")
++	})
++
++	t.Run("InvalidLimit", func(t *testing.T) {
++		filePath := "/test.txt"
++		err := afero.WriteFile(fs, filePath, []byte("test"), 0644)
++		require.NoError(t, err)
++
++		_, err = fp.calculateFileHash(filePath, -2)
++		assert.Error(t, err)
++		assert.Contains(t, err.Error(), "invalid limit")
++	})
++
++	t.Run("RedisError", func(t *testing.T) {
++		filePath := "/test.txt"
++		err := afero.WriteFile(fs, filePath, []byte("test"), 0644)
++		require.NoError(t, err)
++
++		// 关闭 Redis 连接模拟错误
++		rdb.Close()
++		_, err = fp.calculateFileHash(filePath, 100)
++		assert.Error(t, err)
++	})
++}
++
++// 添加一个测试辅助函数，用于设置测试环境
++func setupFileHashTest(t *testing.T) (*redis.Client, afero.Fs, *FileProcessor, func()) {
++	// 设置 Redis
++	mr, err := miniredis.Run()
++	require.NoError(t, err)
++
++	rdb := redis.NewClient(&redis.Options{
++		Addr: mr.Addr(),
++	})
++	ctx := context.Background()
++
++	// 设置文件系统
++	fs := afero.NewMemMapFs()
++	fp := CreateFileProcessor(rdb, ctx, nil)
++	fp.fs = fs
++
++	// 返回清理函数
++	cleanup := func() {
++		rdb.Close()
++		mr.Close()
++	}
++
++	return rdb, fs, fp, cleanup
++}
++
++// 可以添加更多具体场景的测试
++func TestFileHashConcurrency(t *testing.T) {
++	rdb, fs, fp, cleanup := setupFileHashTest(t)
++	defer cleanup()
++
++	// 创建测试文件
++	testFile := "/concurrent_test.txt"
++	content := strings.Repeat("test content", 1000)
++	err := afero.WriteFile(fs, testFile, []byte(content), 0644)
++	require.NoError(t, err)
++
++	// 并发测试
++	var wg sync.WaitGroup
++	concurrentRequests := 10
++	results := make([]string, concurrentRequests)
++
++	for i := 0; i < concurrentRequests; i++ {
++		wg.Add(1)
++		go func(index int) {
++			defer wg.Done()
++			hash, err := fp.calculateFileHash(testFile, -1) // 完整文件哈希
++			require.NoError(t, err)
++			results[index] = hash
++		}(i)
++	}
++	wg.Wait()
++
++	// 验证所有结果一致
++	for i := 1; i < len(results); i++ {
++		assert.Equal(t, results[0], results[i], "所有并发请求应返回相同的哈希值")
++	}
++
++	// 验证 Redis 缓存
++	hashedKey := generateHash(testFile)
++	cachedHash, err := rdb.Get(fp.Ctx, getFullHashCacheKey(hashedKey)).Result()
++	require.NoError(t, err)
++	assert.Equal(t, results[0], cachedHash, "缓存的哈希值应与计算结果一致")
++}
++
++func TestPartialVsFullHash(t *testing.T) {
++	rdb, fs, fp, cleanup := setupFileHashTest(t)
++	defer cleanup()
++
++	// 创建测试文件
++	testFile := "/hash_comparison.txt"
++	content := strings.Repeat("test content", 100)
++	err := afero.WriteFile(fs, testFile, []byte(content), 0644)
++	require.NoError(t, err)
++
++	// 计算部分哈希
++	partialHash, err := fp.calculateFileHash(testFile, 100)
++	require.NoError(t, err)
++
++	// 计算完整哈希
++	fullHash, err := fp.calculateFileHash(testFile, -1)
++	require.NoError(t, err)
++
++	// 验证部分哈希和完整哈希不同
++	assert.NotEqual(t, partialHash, fullHash, "部分哈希和完整哈希应该不同")
++
++	// 验证缓存正确存储了两种哈希
++	hashedKey := generateHash(testFile)
++
++	cachedPartialHash, err := rdb.Get(fp.Ctx, getHashCacheKey(hashedKey)).Result()
++	require.NoError(t, err)
++	assert.Equal(t, partialHash, cachedPartialHash)
++
++	cachedFullHash, err := rdb.Get(fp.Ctx, getFullHashCacheKey(hashedKey)).Result()
++	require.NoError(t, err)
++	assert.Equal(t, fullHash, cachedFullHash)
++}
++
++func TestHashCacheConsistency(t *testing.T) {
++	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
++	defer mr.Close()
++
++	testFile := "/test_consistency.txt"
++	content := []byte("test content for consistency check")
++	err := afero.WriteFile(fs, testFile, content, 0644)
++	require.NoError(t, err)
++
++	// 第一次计算，应该写入缓存
++	hash1, err := fp.calculateFileHash(testFile, 100)
++	require.NoError(t, err)
++
++	// 修改文件内容
++	err = afero.WriteFile(fs, testFile, []byte("modified content"), 0644)
++	require.NoError(t, err)
++
++	// 第二次计算，应该返回缓存的值
++	hash2, err := fp.calculateFileHash(testFile, 100)
++	require.NoError(t, err)
++	assert.Equal(t, hash1, hash2, "应该返回缓存的哈希值")
++
++	// 清除缓存后重新计算
++	hashedKey := fp.generateHashFunc(testFile)
++	err = rdb.Del(ctx, getHashCacheKey(hashedKey)).Err()
++	require.NoError(t, err)
++
++	hash3, err := fp.calculateFileHash(testFile, 100)
++	require.NoError(t, err)
++	assert.NotEqual(t, hash1, hash3, "文件内容改变后，新的哈希值应该不同")
++}
++
++func TestHashCalculationLocking(t *testing.T) {
++	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
++	defer mr.Close()
++
++	testFile := "/test_lock.txt"
++	content := []byte("test content for lock testing")
++	err := afero.WriteFile(fs, testFile, content, 0644)
++	require.NoError(t, err)
++
++	// 模拟计算锁
++	lockKey := getCalculatingKey(testFile, 100)
++	err = rdb.Set(ctx, lockKey, "1", 5*time.Second).Err()
++	require.NoError(t, err)
++
++	// 启动多个并发计算
++	var wg sync.WaitGroup
++	results := make([]string, 3)
++	errors := make([]error, 3)
++
++	for i := 0; i < 3; i++ {
++		wg.Add(1)
++		go func(index int) {
++			defer wg.Done()
++			hash, err := fp.calculateFileHash(testFile, 100)
++			results[index] = hash
++			errors[index] = err
++		}(i)
++	}
++
++	wg.Wait()
++
++	// 验证所有并发请求是否都等待了锁
++	for i := 0; i < 3; i++ {
++		assert.Error(t, errors[i])
++		assert.Contains(t, errors[i].Error(), "timeout waiting for hash calculation")
++	}
++}
++
++func TestLargeFileHashing(t *testing.T) {
++	mr, rdb, ctx, fs, fp := setupTestEnvironment(t)
++	defer mr.Close()
++
++	testFile := "/large_file.bin"
++	size := int64(100 * 1024 * 1024) // 100MB
++	err := createLargeFile(fs, testFile, size)
++	require.NoError(t, err)
++
++	// 测试部分哈希计算
++	partialHash, err := fp.calculateFileHash(testFile, 1024*1024)
++	require.NoError(t, err)
++	assert.NotEmpty(t, partialHash)
++
++	// 测试完整哈希计算
++	fullHash, err := fp.calculateFileHash(testFile, -1)
++	require.NoError(t, err)
++	assert.NotEmpty(t, fullHash)
++	assert.NotEqual(t, partialHash, fullHash)
++
++	// 验证缓存
++	hashedKey := fp.generateHashFunc(testFile)
++	cachedPartialHash, err := rdb.Get(ctx, getHashCacheKey(hashedKey)).Result()
++	require.NoError(t, err)
++	assert.Equal(t, partialHash, cachedPartialHash)
++
++	cachedFullHash, err := rdb.Get(ctx, getFullHashCacheKey(hashedKey)).Result()
++	require.NoError(t, err)
++	assert.Equal(t, fullHash, cachedFullHash)
++}
++
++func createLargeFile(fs afero.Fs, path string, size int64) error {
++	f, err := fs.Create(path)
++	if err != nil {
++		return err
++	}
++	defer f.Close()
++
++	// 使用随机数据填充文件
++	buf := make([]byte, 1024*1024)
++	remaining := size
++	for remaining > 0 {
++		writeSize := int64(len(buf))
++		if remaining < writeSize {
++			writeSize = remaining
++		}
++		rand.Read(buf[:writeSize])
++		if _, err := f.Write(buf[:writeSize]); err != nil {
++			return err
++		}
++		remaining -= writeSize
++	}
++	return nil
 +}
 diff --git a/levenshtein.go b/levenshtein.go
 new file mode 100644
