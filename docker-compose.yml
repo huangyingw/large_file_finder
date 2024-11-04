@@ -6,7 +6,16 @@ services:
       - "6379:6379"
     volumes:
       - ./data:/data
-    command: redis-server --appendonly yes --save 60 1 --loglevel notice --maxmemory 2gb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server 
+      --appendonly yes 
+      --save 900 1 --save 300 10 --save 60 10000
+      --loglevel warning
+      --maxmemory 2gb 
+      --maxmemory-policy volatile-lru
+      --tcp-keepalive 300
+      --activedefrag yes
+      --maxmemory-samples 10
     environment:
       - TZ=Asia/Shanghai
     restart: always
