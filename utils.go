@@ -73,23 +73,9 @@ func findAndLogDuplicates(rootDir string, rdb *redis.Client, ctx context.Context
 	stopFunc()
 	log.Println("Stopped worker pool, waiting for tasks to complete")
 
-	// 使用带超时的 context 等待
-	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	waitCh := make(chan struct{})
-	go func() {
-		poolWg.Wait()
-		close(waitCh)
-	}()
-
-	select {
-	case <-waitCh:
-		log.Println("All tasks completed successfully")
-	case <-waitCtx.Done():
-		log.Println("Timeout waiting for tasks to complete")
-		return fmt.Errorf("timeout waiting for tasks to complete")
-	}
+	// 直接等待所有任务完成
+	poolWg.Wait()
+	log.Println("All tasks completed successfully")
 
 	log.Printf("Total duplicates found: %d", fileCount)
 	return nil
